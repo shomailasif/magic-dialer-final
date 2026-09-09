@@ -15,6 +15,7 @@
 const crypto = require("node:crypto");
 const net = require("node:net");
 const tls = require("node:tls");
+const { sipCallOnce } = require("./softphone");
 
 // Hosted provider -> default SIP registration domain (used by the cloud to
 // register the trunk later, and by driver selection today).
@@ -206,6 +207,47 @@ async function rcToken(ctx, settings) {
 }
 
 async function dialViaRingCentral(ctx, session, settings) {
+  // Preferred path: direct SIP soft-phone trunk (TLS + SRTP-SDES), which is
+  // fully unattended (no human ever answers the origin leg). Used when the
+  // customer's VOIP settings carry the SIP device credentials (username +
+  // sipPassword, plus optional authId / host / port). Falls back to RingOut
+  // REST for accounts that only have Developer-app credentials.
+  const user = String(settings.username || "").trim();
+  const sipPass = String(settings.sipPassword || "").trim();
+  if (user && sipPass) {
+    session.status = "dialing";
+    session.providerLabel = "RingCentral SIP (TLS+SRTP)";
+    session.provider = "ringcentral-sip";
+    const talkMs = Math.max(2000, 1000 * Number(settings.speakSeconds || 20));
+    sipCallOnce({
+      user,
+      pass: sipPass,
+      authId: String(settings.authId || user).trim(),
+      domain: String(settings.domain || "sip.ringcentral.com"),
+      proxy: String(settings.host || "sip40.ringcentral.com"),
+      port: Number(settings.port || 5096),
+      number: session.destination,
+      durationMs: talkMs,
+      codec: settings.codec === "opus" ? "opus" : "pcmu",
+    }).then((r) => {
+      if (!r.ok) {
+        failSession(session, "RingCentral SIP call failed: " + (r.last || "unknown") + (r.steps && r.steps.length ? " [" + r.steps.join(" -> ") + "]" : ""));
+        return;
+      }
+      session.status = "connected";
+      session.answeredAt = session.answeredAt || Date.now();
+      session.endedAt = Date.now();
+      session.sip = {
+        steps: r.steps,
+        remoteIp: (r.media || {}).remoteIp,
+        remotePort: (r.media || {}).remotePort,
+        srtp: !!(r.media || {}).remoteKey,
+        byes: r.extra || r.last || null,
+      };
+    });
+    return session;
+  }
+
   const fet = ctx.fetch || fetch;
   const number = normalizeNumber(settings.number);
   const destination = session.destination;
@@ -472,55 +514,58 @@ function sipRegisterOnce(o) {
   const pass = String(o.pass || "");
   const authId = String(o.authId || user);
   const ext = String(o.ext || "");
-  const host = String(o.host || "");
+  const domain = String(o.domain || "sip.ringcentral.com").replace(/:\d+$/, "");
+  const proxy = String(o.host || "sip40.ringcentral.com");
   const port = Number(o.port || 5096);
   const proto = o.proto === "tcp" ? "tcp" : "tls";
   return new Promise((resolve) => {
-    const HOST = host || (proto === "tls" ? "sip.ringcentral.com:5096" : "sip.ringcentral.com");
-    const aorUser = user;
-    const aor = `sip:${aorUser}@${HOST}`;
-    const viaHost = host || (proto === "tls" ? "sip.ringcentral.com:5096" : "sip.ringcentral.com");
+    const aor = `sip:${user}@${domain}`;
+    const contact = `sip:${user}@${proxy}`;
     const steps = [];
-    let nonce = null, qop = null, authed = false, realm = null;
+    let nonce = null, qop = null, authed = false, realm = null, challenge = "";
     const authUser = authId || user;
     const buildMsg = (cseq) => {
       const lines = [
         "REGISTER " + aor + " SIP/2.0",
-        `Via: SIP/2.0/${proto.toUpperCase()} ${viaHost};branch=z9hG4bK` + crypto.randomBytes(6).toString("hex"),
+        `Via: SIP/2.0/${proto.toUpperCase()} ${proxy};branch=z9hG4bK` + crypto.randomBytes(6).toString("hex"),
         "Max-Forwards: 70",
-        "From: <" + aor + ">;tag=" + crypto.randomBytes(6).toString("hex"),
-        "To: <" + aor + ">",
+        "From: <" + contact + ">;tag=" + crypto.randomBytes(6).toString("hex"),
+        "To: <" + contact + ">",
         "Call-ID: " + crypto.randomBytes(8).toString("hex"),
         "CSeq: " + cseq + " REGISTER",
-        "Contact: <" + aor + ">",
+        "Contact: <" + contact + ">",
         "Expires: 300",
         "User-Agent: MagicDialer-SIP/0.1",
       ];
       if (authed && nonce) {
-        const rlm = realm || HOST;
-        const HA1 = md5(`${authUser}:${rlm}:${pass}`);
+        const HA1 = md5(`${authUser}:${domain}:${pass}`);
         let resp;
         if (qop) {
           const nc = "00000001", cn = crypto.randomBytes(4).toString("hex");
           resp = md5(`${HA1}:${nonce}:${nc}:${cn}:${qop}:${md5("REGISTER:" + aor)}`);
-          lines.push(`Authorization: Digest username="${authUser}", realm="${rlm}", nonce="${nonce}", uri="${aor}", qop=${qop}, nc=${nc}, cnonce="${cn}", response="${resp}"`);
+          lines.push(`Authorization: Digest username="${authUser}", realm="${realm || domain}", nonce="${nonce}", uri="${aor}", qop=${qop}, nc=${nc}, cnonce="${cn}", response="${resp}"`);
         } else {
           resp = md5(`${HA1}:${nonce}:${md5("REGISTER:" + aor)}`);
-          lines.push(`Authorization: Digest username="${authUser}", realm="${rlm}", nonce="${nonce}", uri="${aor}", response="${resp}"`);
+          lines.push(`Authorization: Digest username="${authUser}", realm="${realm || domain}", nonce="${nonce}", uri="${aor}", response="${resp}"`);
         }
       }
       lines.push("Content-Length: 0", "", "");
       return lines.join("\r\n");
     };
+    let settled = false;
     const done = (ok, line, extra) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardGate);
       try { sock.destroy(); } catch {}
-      resolve({ ok, host: viaHost, port, proto, user, authId: authUser, ext, steps, pass: "(hidden)", last: line, extra });
+      resolve({ ok, host: proxy, port, proto, user, authId: authUser, ext, domain, steps, pass: "(hidden)", last: line, extra });
     };
     const onConn = () => sock.write(buildMsg(1));
     const sock = proto === "tls"
-      ? tls.connect({ port, host: viaHost, servername: viaHost.split(":")[0], rejectUnauthorized: false }, onConn)
-      : net.connect(port, viaHost, onConn);
-    sock.setTimeout(12000);
+      ? tls.connect({ port, host: proxy, servername: proxy.split(":")[0], rejectUnauthorized: false }, onConn)
+      : net.connect(port, proxy, onConn);
+    const hardGate = setTimeout(() => done(false, "no response (network or firewall)"), 11000);
+    sock.setTimeout(8000);
     let buf = "";
     sock.on("data", (d) => {
       buf += d.toString("ascii");
@@ -528,14 +573,17 @@ function sipRegisterOnce(o) {
       const txt = buf; buf = "";
       const line = txt.split("\r\n")[0].trim();
       steps.push(line);
-      const m = txt.match(/[Rr]eal[mM]="([^"]+)"/);
+      const m = txt.match(/[Rr]eal[mM]\s*=\s*"?([^"\s,]+)"?/);
       if (m) realm = m[1];
       if (/401|407/.test(line) && !authed) {
         authed = true;
-        nonce = (txt.match(/[Nn]once="([^"]+)"/) || [])[1] || null;
-        qop = (txt.match(/[Qq]op="([^"]*)"/) || [])[1] || null;
-        setTimeout(() => sock.write(buildMsg(2)), 200);
+        nonce = (txt.match(/[Nn]once\s*=\s*"?([^"\s,]+)"?/) || [])[1] || null;
+        qop = (txt.match(/[Qq]op\s*=\s*"?([^"\s,]+)"?/) || [])[1] || null;
+        challenge = String(txt.match(/WWW-Authenticate[^\r\n]*/i) || txt.match(/Proxy-Authenticate[^\r\n]*/i) || [""])[0];
+        if (nonce) { setTimeout(() => sock.write(buildMsg(2)), 200); }
+        else done(false, line + " (no nonce in challenge)", { challenge });
       } else if (/200 OK/.test(line)) done(true, line);
+      else if (/401|407/.test(line) && authed) done(false, line + " (auth rejected)");
       else if (/^(403|404|484)/.test(line)) done(false, line);
     });
     sock.on("timeout", () => done(false, "no response (network or firewall)"));
