@@ -1,4 +1,7 @@
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 /**
  * "Hearing" for the agent. Uses Windows' built-in English (US) recognizer.
@@ -137,9 +140,18 @@ const PHRASES_BY_LOCALE = {
   hi: ["theek hai", "mujhe nahin chahiye", "ek minute"],
 };
 
-function listenScript({ sec, waveFile, locale = "en" }) {
-  // Inject words as a single ';'-joined ASCII blob; PowerShell splits on ';'.
-  // No word contains ';', so this is unambiguous and immune to quoting bugs.
+/**
+ * Return a PS script that enumerates waveIn devices by name, picks the first
+ * whose name matches /internal|built-in/i (or first "microphone" / any),
+ * captures `sec` seconds to a temp WAV, and transcribes it with SAPI's
+ * Grammar engine (no device-enum dependency).
+ *
+ * Output lines:
+ *   CAPTURED:<path>
+ *   RMS:<value>
+ *   HEARD:<text>   (or HEARD: for silence, ERR: on failure)
+ */
+function captureTranscribeScript({ sec, locale = "en" }) {
   const wordsRaw = (WORDS_BY_LOCALE[locale] || WORDS).join(";");
   const phrasesRaw = (PHRASES_BY_LOCALE[locale] || PHRASES).join(";");
   const cultureLine =
@@ -151,31 +163,123 @@ function listenScript({ sec, waveFile, locale = "en" }) {
   const engineLine = locale === "en"
     ? `      $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine`
     : `      if ($info) { $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine($info) } else { $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine }`;
-  const input =
-    waveFile
-      ? `$r.SetInputToWaveFile('${waveFile}')`
-      : `$r.SetInputToDefaultAudioDevice()`;
+
   return `
-    Add-Type -AssemblyName System.Speech
-    try {
-      ${cultureLine}
-      ${engineLine}
-      ${input}
-      $r.InitialSilenceTimeout = New-Object System.TimeSpan(0,0,${sec})
-      $r.EndSilenceTimeout = New-Object System.TimeSpan(0,0,2)
-      $c = New-Object System.Speech.Recognition.Choices
-      $wordsRaw = "${wordsRaw}"
-      foreach ($w in ($wordsRaw -split ';')) { if ($w -and $w -ne '') { [void]$c.Add([string]$w) } }
-      $phrasesRaw = "${phrasesRaw}"
-      foreach ($p in ($phrasesRaw -split ';')) { if ($p -and $p -ne '') { [void]$c.Add([string]$p) } }
-      $g = New-Object System.Speech.Recognition.Grammar($c)
-      $r.LoadGrammar($g)
-      try { $r.UpdateRecognizerSetting('CFGConfidenceThreshold', 0.3) } catch { }
-      $res = $r.Recognize()
-      if ($res) { Write-Output ('HEARD:' + $res.Text) } else { Write-Output 'HEARD:' }
-    } catch {
-      Write-Output ('ERR:' + $_.Exception.Message)
+Add-Type -AssemblyName System.Speech
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Hm {
+  [DllImport("winmm.dll")] public static extern uint waveInGetNumDevs();
+  [DllImport("winmm.dll", CharSet=CharSet.Ansi, EntryPoint="waveInGetDevCaps")]
+    public static extern uint waveInGetDevCaps(uint uDeviceID, IntPtr lpCaps, uint cbCaps);
+  [DllImport("winmm.dll")] public static extern uint waveInOpen(out IntPtr h, uint devId, ref HmFmt fmt, IntPtr cb, IntPtr ctx, uint flags);
+  [DllImport("winmm.dll")] public static extern uint waveInPrepareHeader(IntPtr h, IntPtr hdr, uint size);
+  [DllImport("winmm.dll")] public static extern uint waveInAddBuffer(IntPtr h, IntPtr hdr, uint size);
+  [DllImport("winmm.dll")] public static extern uint waveInStart(IntPtr h);
+  [DllImport("winmm.dll")] public static extern uint waveInStop(IntPtr h);
+  [DllImport("winmm.dll")] public static extern uint waveInClose(IntPtr h);
+}
+[StructLayout(LayoutKind.Sequential)] public struct HmFmt {
+  public ushort wFormatTag; public ushort nChannels; public uint nSamplesPerSec;
+  public uint nAvgBytesPerSec; public ushort nBlockAlign; public ushort wBitsPerSample; public ushort cbSize;
+}
+[StructLayout(LayoutKind.Sequential)] public struct HmHdr {
+  public IntPtr lpData; public uint dwBufferLength; public uint dwBytesRecorded;
+  public IntPtr dwUser; public uint dwFlags; public uint dwLoops; public IntPtr lpNext; public IntPtr reserved;
+}
+[StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)] public struct HmCaps {
+  public ushort wMid; public ushort wPid; public uint vDriverVersion;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst=128)] public string szPname;
+  public uint dwFormats; public ushort wChannels; public ushort wReserved1;
+}
+"@
+
+$SR = 16000; $CH = 1; $BPS = 16; $SEC = ${sec}
+$nbuf = $SR * $CH * ($BPS/8) * $SEC
+$fmt = New-Object HmFmt
+$fmt.wFormatTag=1; $fmt.nChannels=$CH; $fmt.nSamplesPerSec=$SR; $fmt.wBitsPerSample=$BPS
+$fmt.nBlockAlign=($CH*$BPS/8); $fmt.nAvgBytesPerSec=($SR*$fmt.nBlockAlign); $fmt.cbSize=0
+
+# --- pick the best physical mic (internal preferred) ---
+$n = [Hm]::waveInGetNumDevs()
+$nameMap = @()
+for ($i = 0; $i -lt $n; $i++) {
+  $sz = [Runtime.InteropServices.Marshal]::SizeOf([type][HmCaps])
+  $p  = [Runtime.InteropServices.Marshal]::AllocHGlobal($sz)
+  [void][Hm]::waveInGetDevCaps($i, $p, [uint32]$sz)
+  $caps = [Runtime.InteropServices.Marshal]::PtrToStructure($p, [type][HmCaps])
+  [Runtime.InteropServices.Marshal]::FreeHGlobal($p)
+  $nameMap += @{ idx = $i; name = $caps.szPname }
+  Write-Output ("DEV$($i): $($caps.szPname)")
+}
+$pick = -1
+foreach ($m in $nameMap) {
+  if ($m.name -match '(?i)(internal|built.?in|array)') { $pick = $m.idx; break }
+}
+if ($pick -lt 0) { foreach ($m in $nameMap) { if ($m.name -match '(?i)mic') { $pick = $m.idx; break } } }
+if ($pick -lt 0 -and $n -gt 0) { $pick = $n - 1 }
+Write-Output ("PICK: device $pick")
+
+# --- capture audio from chosen device ---
+function Capture([uint32]$devIdx) {
+  $h = [IntPtr]::Zero
+  $rOpen = [Hm]::waveInOpen([ref]$h, [uint32]$devIdx, [ref]$fmt, [IntPtr]::Zero, [IntPtr]::Zero, 0)
+  if ($rOpen -ne 0) { Write-Output ("CAPTURE_ERR:$rOpen"); return @{ rms=0; peak=0; path=""; dev=$devIdx } }
+  $data = New-Object byte[] $nbuf
+  $dataPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal($nbuf)
+  $hdr = New-Object HmHdr; $hdr.lpData=$dataPtr; $hdr.dwBufferLength=$nbuf; $hdr.dwBytesRecorded=0
+  $hdrSz = [Runtime.InteropServices.Marshal]::SizeOf([type][HmHdr])
+  $hdrPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal($hdrSz)
+  [Runtime.InteropServices.Marshal]::StructureToPtr($hdr,$hdrPtr,$false)
+  $p = [Hm]::waveInPrepareHeader($h,$hdrPtr,$hdrSz)
+  $a = [Hm]::waveInAddBuffer($h,$hdrPtr,$hdrSz)
+  $s = [Hm]::waveInStart($h)
+  Start-Sleep -Milliseconds (($SEC*1000)+600)
+  [Hm]::waveInStop($h)
+  $got = [Runtime.InteropServices.Marshal]::PtrToStructure($hdrPtr,[type][HmHdr])
+  $bytes = [int]$got.dwBytesRecorded
+  $sum=[long]0; $peak=0; $wav=$null
+  if ($bytes -gt 16) {
+    $cap = New-Object byte[] $bytes
+    [Runtime.InteropServices.Marshal]::Copy($got.lpData,$cap,0,$bytes)
+    for ($i=0;$i -lt $bytes;$i+=2){
+      $v=[BitConverter]::ToInt16($cap,$i); $ab=[Math]::Abs($v); if($ab -gt $peak){$peak=$ab}; $sum+=[long]$v*$v
     }
+    $wav = Join-Path $env:TEMP ("md-hear-" + $PID + ".wav")
+    $fs=New-Object System.IO.FileStream($wav,[System.IO.FileMode]::Create)
+    $bw=New-Object System.IO.BinaryWriter($fs)
+    $bw.Write([Text.Encoding]::ASCII.GetBytes("RIFF"))
+    $bw.Write([int](36+$bytes)); $bw.Write([Text.Encoding]::ASCII.GetBytes("WAVEfmt "))
+    $bw.Write([int]16); $bw.Write([int16]1); $bw.Write([int16]$CH); $bw.Write([int]$SR)
+    $bw.Write([int]($SR*$CH*($BPS/8))); $bw.Write([int16]($CH*$BPS/8)); $bw.Write([int16]$BPS)
+    $bw.Write([Text.Encoding]::ASCII.GetBytes("data")); $bw.Write([int]$bytes); $bw.Write($cap)
+    $bw.Close(); $fs.Close()
+  }
+  [Hm]::waveInClose($h)
+  [Runtime.InteropServices.Marshal]::FreeHGlobal($dataPtr)
+  [Runtime.InteropServices.Marshal]::FreeHGlobal($hdrPtr)
+  $rms = if($bytes -gt 16){ [Math]::Sqrt($sum/($bytes/2)) } else { 0 }
+  return @{ rms=$rms; peak=$peak; path=$wav; dev=$devIdx }
+}
+
+$r1 = Capture $pick
+Write-Output ("RMS:" + [Math]::Round($r1.rms,1) + " peak:" + $r1.peak + " bytes:" + $nbuf)
+
+# --- transcribe the WAV via SAPI (SetInputToWaveFile avoids device routing) ---
+try {
+  ${cultureLine}
+  ${engineLine}
+  $r.SetInputToWaveFile($r1.path)
+  $r.InitialSilenceTimeout = New-Object System.TimeSpan(0,0,10)
+  $r.EndSilenceTimeout     = New-Object System.TimeSpan(0,0,2)
+  $dg = New-Object System.Speech.Recognition.DictationGrammar
+  $r.LoadGrammar($dg)
+  $res = $r.Recognize()
+  if ($res -and $res.Confidence -ge 0.1) { Write-Output ("HEARD:" + $res.Text) } else { Write-Output "HEARD:" }
+} catch {
+  Write-Output ("ERR:" + $_.Exception.Message)
+}
   `;
 }
 
@@ -185,26 +289,88 @@ const CULTURE = { es: "es-ES", fr: "fr-FR", de: "de-DE", pt: "pt-BR", hi: "hi-IN
  * Listen for speech for up to `timeoutMs`. Returns recognized text (trimmed)
  * or null if nothing matched / recognition unavailable.
  *
- * For tests: pass `waveFile` (a .wav path) to transcribe a recording instead
- * of listening to the microphone.
+ * For tests: pass `waveFile` (a .wav path) to transcribe a file directly.
  */
 function hear({ timeoutMs = 6000, waveFile = null, locale = "en" } = {}) {
   const sec = Math.max(1, Math.round(timeoutMs / 1000));
-  const script = listenScript({ sec, waveFile, locale });
+
+  if (waveFile) {
+    // Transcribe a pre-recorded WAV through SAPI's grammar (no mic needed).
+    const wordsRaw = (WORDS_BY_LOCALE[locale] || WORDS).join(";");
+    const phrasesRaw = (PHRASES_BY_LOCALE[locale] || PHRASES).join(";");
+    const cultureLine =
+      locale === "en"
+        ? ""
+        : `      $cult = '${CULTURE[locale] || "en-US"}'
+      $info = [System.Speech.Recognition.SpeechRecognitionEngine]::InstalledRecognizers() | Where-Object { $_.Culture.Name -eq $cult } | Select-Object -First 1
+`;
+    const engineLine = locale === "en"
+      ? `      $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine`
+      : `      if ($info) { $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine($info) } else { $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine }`;
+    const script = `
+    Add-Type -AssemblyName System.Speech
+    try {
+      ${cultureLine}
+      ${engineLine}
+      $r.SetInputToWaveFile('${waveFile}')
+      $r.InitialSilenceTimeout = New-Object System.TimeSpan(0,0,${sec})
+      $r.EndSilenceTimeout     = New-Object System.TimeSpan(0,0,2)
+      $dg = New-Object System.Speech.Recognition.DictationGrammar
+      $r.LoadGrammar($dg)
+      $res = $r.Recognize()
+      if ($res -and $res.Confidence -ge 0.1) { Write-Output ('HEARD:' + $res.Text) } else { Write-Output 'HEARD:' }
+    } catch {
+      Write-Output ('ERR:' + $_.Exception.Message)
+    }
+    `;
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs + 20000,
+    });
+    const out = (r.stdout || "").toString().trim();
+    const line = out.split(/\r?\n/).find((l) => /^(HEARD|ERR):/.test(l));
+    if (!line) return null;
+    if (line.startsWith("ERR:")) return null;
+    const text = line.slice("HEARD:".length).trim();
+    return text === "" ? null : text;
+  }
+
+  // Live mic: capture → wav → SAPI.  Signals RMS in output for diagnostics.
+  const script = captureTranscribeScript({ sec, locale });
   const r = spawnSync(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-Command", script],
     { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs + 20000 },
   );
   const out = (r.stdout || "").toString().trim();
-  const line = out.split(/\r?\n/).find((l) => /^(HEARD|ERR):/.test(l));
+  const line = out.split(/\r?\n/).find((l) => /^(HEARD|ERR|RMS):/.test(l));
   if (!line) return null;
-  if (line.startsWith("ERR:")) {
-    // Recognition threw (e.g. no audio device). Same null contract as silence.
-    return null;
+  if (line.startsWith("ERR:")) return null;
+  if (line.startsWith("RMS:")) {
+    // RMS line means capture ran; look for HEARD after it.
+    const heard = out.split(/\r?\n/).find((l) => l.startsWith("HEARD:"));
+    if (!heard) return null;
+    if (heard.startsWith("ERR:")) return null;
+    const text = heard.slice("HEARD:".length).trim();
+    return text === "" ? null : text;
   }
   const text = line.slice("HEARD:".length).trim();
   return text === "" ? null : text;
 }
 
-module.exports = { hear, WORDS, PHRASES, WORDS_BY_LOCALE, PHRASES_BY_LOCALE };
+/** Diagnostic helper: capture `sec` seconds, report signal strength + what
+ *  SAPI transcribed. Returns { rms, peak, text, raw }. */
+function probeMic({ sec = 8, locale = "en" } = {}) {
+  const script = captureTranscribeScript({ sec, locale });
+  const r = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { stdio: ["ignore", "pipe", "pipe"], timeout: sec * 1000 + 25000 },
+  );
+  const out = (r.stdout || "").toString();
+  const rms = Number((out.match(/^RMS:([0-9.]+)/m) || [])[1]) || 0;
+  const peak = Number((out.match(/peak:([0-9.]+)/m) || [])[1]) || 0;
+  const heard = (out.match(/^HEARD:(.*)$/m) || [])[1];
+  return { rms, peak, text: heard && heard.trim() ? heard.trim() : null, raw: out };
+}
+
+module.exports = { hear, probeMic, WORDS, PHRASES, WORDS_BY_LOCALE, PHRASES_BY_LOCALE };
