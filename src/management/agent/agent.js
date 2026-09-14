@@ -3,33 +3,28 @@ const fs = require("node:fs");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn, execSync } = require("node:child_process");
-const { HEARTBEAT_INTERVAL_MS } = require("../shared/protocol");
+const { HEARTBEAT_INTERVAL_MS, HOSTED_VOIP_SERVERS } = require("../shared/protocol");
 const { setUi } = require("./ui");
 const { topStrategy } = require("./brain");
-
-// Hosted VOIP providers whose SIP registration domain is implied. Kept in
-// sync with the portal's trunk.js so the agent and the cloud agree on what a
-// "complete line" looks like for each vendor.
-const HOSTED_VOIP_SERVERS = {
-  ringcentral: "sip.ringcentral.com",
-  twilio: "sip-1042-sip.twilio.com",
-  vonage: "sip.nexmo.com",
-  plivo: "sip.plivo.com",
-  thinq: "sip.thinq.com",
-  flowroute: "sip.flowroute.com",
-  myexotel: "voip.myexotel.com",
-};
+const { startWebUi, writeDashboardUrl, dashboardUrlPath } = require("./webui");
+const localDb = require("./local-db");
+const sync = require("./sync");
+const { emailQualifiedLead } = require("./email");
 
 /**
  * Customer PC agent.
  *
  * Runs on a customer's machine. It:
  *   - holds a local config (machine identity + its portal + its token)
- *   - runs a one-time setup form (what they sell, lead info needed, email)
+ *   - runs a one-time, browser-based setup (what they sell, leads, email)
+ *   - serves a live dashboard (http://127.0.0.1:<port>) with status + stats
  *   - sends a heartbeat to the portal every few seconds
  *   - if the admin disables it, the agent detects the order and stops working
  *
- * This is the program that Inno Setup will wrap into the customer's .exe.
+ * The pkg engine is `agent.exe` (hidden, no console). The user-visible app is
+ * the compiled C# launcher `MagicDialer.exe` (a real Windows GUI exe) which
+ * spawns the engine silently and opens the dashboard in the default browser.
+ * No PowerShell is involved in the customer-facing experience.
  */
 
 function defaultConfigPath() {
@@ -48,12 +43,38 @@ function loadConfig(cfgPath = defaultConfigPath()) {
 }
 
 function saveConfig(config, cfgPath = defaultConfigPath()) {
-  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2), "utf8");
+  try {
+    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+    fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2), "utf8");
+  } catch (err) {
+    log("saveConfig failed: " + (err && err.message || err));
+  }
 }
 
 function log(msg) {
   console.log(`[agent] ${new Date().toISOString()} ${msg}`);
+}
+
+/** True when running from the packaged binaries (agent.exe / MagicDialer.exe). */
+function isPacked() {
+  const base = path.basename(process.execPath || "").toLowerCase();
+  return base === "agent.exe" || base === "magicdialer.exe";
+}
+
+function openBrowser(url) {
+  try {
+    spawn("cmd.exe", ["/c", "start", "", String(url)], { windowsHide: true, stdio: "ignore" }).unref();
+  } catch {}
+}
+
+/** Re-open the dashboard with the port recorded by the last running agent. */
+function openDashboardExternal() {
+  try {
+    const txt = fs.readFileSync(dashboardUrlPath(), "utf8");
+    const m = txt.match(/^URL=(.+)$/m);
+    if (m && m[1].trim()) { openBrowser(m[1].trim()); return true; }
+  } catch {}
+  return false;
 }
 
 /**
@@ -63,7 +84,7 @@ function log(msg) {
  * watchdog sees that marker and stops (no zombie restart loop). Crash-loops
  * get a growing backoff so a broken build doesn't spin a CPU/disk storm.
  *
- * Launched by the installer/this exe as `MagicDialer.exe --watchdog`.
+ * Launched by the launcher as `agent.exe --watchdog`.
  */
 const WATCHDOG_LOCK = path.join(os.homedir(), "AppData", "Local", "Magic Dialer", "watchdog.lock");
 const CRASH_WINDOW_MS = 45000;
@@ -91,6 +112,7 @@ function takeWatchdogLock() {
 async function runWatchdog(args) {
   if (!takeWatchdogLock()) return;
   const childArgs = args.filter((a) => a !== "--watchdog");
+  childArgs.push("--no-browser");
   const childCmd = process.env.MD_WATCHDOG_CHILD ? { cmd: "cmd.exe", args: ["/d", "/c", process.env.MD_WATCHDOG_CHILD] } : { cmd: process.execPath, args: childArgs };
   let crashes = 0;
   let lastExit = 0;
@@ -108,7 +130,7 @@ async function runWatchdog(args) {
     let disabled = false;
     try {
       const st = JSON.parse(fs.readFileSync(path.join(cfgDir, "status.json"), "utf8"));
-      disabled = st && (st.status === "DISABLED" || st.mode === "off");
+      disabled = st && st.status === "DISABLED";
     } catch {}
 
     if (disabled) {
@@ -136,12 +158,12 @@ async function runWatchdog(args) {
   }
 }
 
-/** Agent version surfaced in cockpit + status. */
-const VERSION = "1.1.2";
+/** Agent version surfaced in dashboard + status. */
+const VERSION = "1.2.0";
 
 /**
  * Roll a call result into the customer's lifetime + daily stats, persisted in
- * the config so the cockpit and portal can show "today / all time".
+ * the config so the dashboard and portal can show "today / all time".
  */
 /**
  * Apply the sales form + settings the admin edited on the portal. The portal
@@ -241,13 +263,11 @@ function post(url, body) {
   }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
 }
 
-/** Open the animated cockpit (bonus UI layer). The agent console window is
- *  NEVER hidden, so a double-click on the app always leaves a visible window
- *  that shows live status, no matter what the cockpit does. */
+/** Optional animated cockpit (PowerShell) — opt-in only; the web dashboard is
+ *  the default face. Enable with the env var MAGICDIALER_COCKPIT=1. */
 function tryCockpit(configDir) {
-  const isPacked = path.basename(process.execPath).toLowerCase().includes("magicdialer");
-  if (!isPacked) return;
-  if (process.env.MAGICDIALER_NO_COCKPIT === "1") return;
+  if (!isPacked()) return;
+  if (process.env.MAGICDIALER_COCKPIT !== "1") return;
   const cockpit = path.join(path.dirname(process.execPath), "cockpit.ps1");
   if (fs.existsSync(cockpit)) {
     try {
@@ -267,12 +287,12 @@ function pidIsMagicDialer(pid) {
     const out = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
       encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
     });
-    return /magicdialer\.exe/i.test(out);
+    return /(magicdialer|agent)\.exe/i.test(out);
   } catch { return false; }
 }
 
 function takeAgentLock() {
-  if (!path.basename(process.execPath).toLowerCase().includes("magicdialer")) return true;
+  if (!isPacked()) return true;
   try {
     if (fs.existsSync(AGENT_LOCK)) {
       const old = Number(String(fs.readFileSync(AGENT_LOCK, "utf8")).trim());
@@ -296,61 +316,86 @@ function ask(question) {
 
 /**
  * Agent main loop. `opts.configPath` lets the demo point at different
- * machines on one computer. If `opts.setup` is true, run the setup form.
+ * machines on one computer. `opts.setup` opens the web setup/dashboard.
  */
 async function runAgent(opts = {}) {
-  /** Bring the already-open dashboard window to the front (no second copy). */
-function bringDashboardFront() {
-  const ps = [
-    "Add-Type -AssemblyName Microsoft.VisualBasic;",
-    "$w = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -like '*Magic Dialer*' } | Select-Object -First 1;",
-    "if ($w) { [Microsoft.VisualBasic.Interaction]::AppActivate($w.Id) } else { $null }",
-  ].join(" ");
-  try {
-    execSync(`powershell -NoProfile -Command "& { ${ps} }"`, {
-      windowsHide: true, stdio: "ignore",
-    });
-    return true;
-  } catch { return false; }
-}
-
-if (!takeAgentLock()) {
-    log("Magic Dialer is already running - focusing its dashboard...");
-    const focused = bringDashboardFront();
-    if (!focused) { tryCockpit(path.dirname(defaultConfigPath())); }
-    setTimeout(() => process.exit(0), 1500);
-    return;
-  }
   const cfgPath = opts.configPath || defaultConfigPath();
+  const configDir = path.dirname(cfgPath);
   let config = loadConfig(cfgPath);
 
-  // If there's no config, the customer just registered; we need a token.
-  // The demo passes token+portalUrl in. A real install would prompt for them.
-  if (!config || !config.token) {
-    log("No config yet — starting setup.");
+  if (!takeAgentLock()) {
+    log("Magic Dialer is already running - opening its dashboard...");
+    if (!openDashboardExternal()) openBrowser("http://127.0.0.1:48771/");
+    setTimeout(() => process.exit(0), 800);
+    return;
+  }
+
+  // Initialize local database for offline resilience
+  try { localDb.open(configDir); log("Local database ready."); } catch (e) { log("Local DB init failed: " + e.message); }
+
+  const useWebUi = opts.webui === true || isPacked() || opts.setup === true || opts.open === true;
+  let uiServer = null;
+  let setupDoneResolve = null;
+  const setupDone = new Promise((r) => { setupDoneResolve = r; });
+
+  const ensureWebUi = async () => {
+    if (uiServer) return uiServer;
+    uiServer = await startWebUi({
+      readConfig: () => loadConfig(cfgPath),
+      writeConfig: (c) => saveConfig(c, cfgPath),
+      statusPath: path.join(configDir, "status.json"),
+      onSetup: (cfg) => { try { setupDoneResolve(cfg); } catch {} },
+      onMode: (mode) => { try { log(`dashboard mode -> ${mode}`); } catch {} },
+      serviceName: "Magic Dialer",
+    });
+    try { writeDashboardUrl(uiServer.url); } catch {}
+    log(`dashboard: ${uiServer.url}`);
+    return uiServer;
+  };
+
+  let opened = false;
+  const maybeOpen = (url) => {
+    if (!opened) { opened = true; openBrowser(url); }
+  };
+
+  if (!config || !config.token || !config.portalUrl) {
     config = config || {};
     config.machineId = config.machineId || crypto.randomUUID();
     config.lang = config.lang || "en";
     config.voiceStyle = config.voiceStyle || "human";
-    config.portalUrl = opts.portalUrl || (await ask("Magic Dialer portal URL (from your admin):"));
-    config.token = opts.token || (await ask("Your Magic Dialer access token (from your admin):"));
-    saveConfig(config, cfgPath);
-    log("Config saved.");
+
+    if (opts.portalUrl && opts.token) {
+      config.portalUrl = opts.portalUrl;
+      config.token = opts.token;
+      saveConfig(config, cfgPath);
+    }
+
+    if (!config.token || !config.portalUrl) {
+      log("No config yet - setting up.");
+      if (useWebUi) {
+        const srv = await ensureWebUi();
+        log("Opening setup in the browser...");
+        maybeOpen(srv.url);
+        log("Waiting for the onboarding form to be saved...");
+        config = await setupDone;
+        log("Onboarding saved. Starting the agent.");
+      } else {
+        config.portalUrl = opts.portalUrl || (await ask("Magic Dialer portal URL (from your admin):"));
+        config.token = opts.token || (await ask("Your Magic Dialer access token (from your admin):"));
+        saveConfig(config, cfgPath);
+        log("Config saved.");
+      }
+    }
   }
 
-  if (opts.setup === true) {
+  // Dev/console onboarding (only when not using the web app).
+  if (opts.setup === true && !useWebUi) {
     log("");
-    log("============================================================");
-    log("                 MAGIC DIALER — 1-minute setup");
-    log("============================================================");
-    log("");
+    log("MAGIC DIALER - one-time console setup");
     config.product = await ask("What do you sell / what services do you provide?");
     config.leadFieldsRaw = await ask("What do you need from a qualified lead (comma-separated)?");
     config.contactEmail = await ask("Where should qualified leads be emailed?");
     config.leadFields = config.leadFieldsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-
-    // Optional per-customer VOIP/call line. Every customer's line differs, so
-    // we capture it here (at install) instead of baking it into the installer.
     log("Optional: your phone/VOIP line (press Enter on each to skip and configure later)");
     config.voip = config.voip || {};
     config.voip.provider = (await ask("VOIP/SIP provider (e.g. Twilio, Asterisk)? (Enter = none yet):")).trim() || config.voip.provider || "";
@@ -358,22 +403,25 @@ if (!takeAgentLock()) {
     config.voip.username = (await ask("SIP username/account? (Enter = none yet):")).trim() || config.voip.username || "";
     config.voip.server = (await ask("SIP domain/server (e.g. sip.example.com)? (Enter = none yet):")).trim() || config.voip.server || "";
     if (!config.voip.provider && !config.voip.number && !config.voip.username && !config.voip.server) {
-      config.voip.ready = false; // no line yet — outbound/inbound calls deferred
+      config.voip.ready = false;
     } else {
       config.voip.ready = true;
     }
-
     saveConfig(config, cfgPath);
-    log("Setup complete. Your Magic Dialer agent is now running.");
-    log("The portal will show this PC as ONLINE. Right now the agent makes voice");
-    log("calls through this PC's microphone + speakers (a full phone line needs a provider).");
+    log("Setup complete.");
   }
 
-  const configDir = path.dirname(cfgPath);
+  if (useWebUi) {
+    const srv = await ensureWebUi();
+    if (!opts.noBrowser && (opts.setup === true || opts.open === true || isPacked())) {
+      maybeOpen(srv.url);
+    }
+  }
+
   tryCockpit(configDir);
   const productLabel = config.product || "Magic Dialer customer";
 
-  // One status writer for the cockpit: always carries brand + stats + feed.
+  // One status writer for the dashboard + portal: always carries brand + stats + feed.
   const ui = (patch) => setUi(configDir, {
     version: VERSION,
     agent: (config.persona || "autumn").toLowerCase().includes("female") ? "Autumn" : "Atlas",
@@ -387,24 +435,23 @@ if (!takeAgentLock()) {
     ...patch,
   });
 
-  ui({ status: "STARTING", mode: "idle", line: "Starting Magic Dialer agent..." });
+  ui({ status: "STARTING", mode: config.mode || "on", line: "Starting Magic Dialer agent..." });
 
-  const portal = config.portalUrl.replace(/\/+$/, "");
+  const portal = (config.portalUrl || "").replace(/\/+$/, "");
   log("");
-  log("============================================================");
-  log("            MAGIC DIALER  v" + VERSION + "  -  RUNNING");
+  log("Magic Dialer v" + VERSION + " - running");
   log("  Customer : " + (config.companyName || config.product || productLabel));
   log("  Portal   : " + portal);
-  log("  Status   : waiting for heartbeat  (leave this window open)");
-  log("============================================================");
+  if (uiServer) log("  Dashboard: " + uiServer.url);
   log("");
 
   // Optional: run one live voice call before entering the heartbeat loop.
   // `--call` makes the agent speak through the speakers and listen through
   // the mic (free). A real phone line plugs in as a different speak/listen.
   if (opts.call === true) {
-    const { voiceCall } = require("./call");
-    try {
+    let voiceCall;
+    try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + err.message); }
+    if (voiceCall) try {
       const result = await voiceCall({
         product: config.product,
         leadFields: config.leadFields || [],
@@ -427,11 +474,12 @@ if (!takeAgentLock()) {
       saveConfig(config, cfgPath);
       const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;
       log(finalLine);
-      ui({ mode: "idle", line: finalLine });
+      ui({ mode: config.mode || "on", line: finalLine });
     } catch (e) {
       log("Voice call failed: " + e.message);
-      ui({ mode: "idle", line: "Voice call failed - retrying later." });
+      ui({ mode: config.mode || "on", line: "Voice call failed - retrying later." });
     }
+    } // end if (voiceCall)
     if (opts.callOnce === true) {
       log("Test call finished. Exiting (heartbeat stays with the main agent).");
       return;
@@ -441,7 +489,12 @@ if (!takeAgentLock()) {
   // Heartbeat + obey disable loop.
   while (true) {
     try {
-      const res = await post(`${portal}/api/heartbeat`, { token: config.token, voipReady: !!(config.voip && config.voip.ready) });
+      const syncPayload = sync.buildSyncPayload();
+      const res = await post(`${portal}/api/heartbeat`, {
+        token: config.token,
+        voipReady: !!(config.voip && config.voip.ready),
+        sync: syncPayload,
+      });
       if (res.status === 200 && res.body) {
         if (res.body.disabled) {
           log("DISABLED by admin - stopping work. This PC will not run again until re-enabled.");
@@ -449,16 +502,19 @@ if (!takeAgentLock()) {
           process.exit(0);
         }
         applyPortalConfig(config, res.body.config, cfgPath);
-        const hl = `heartbeat OK (${res.body.config ? res.body.config.product || "customer" : "customer"})`;
+        // Process sync acknowledgements from portal
+        if (res.body.sync) sync.processSyncResponse(res.body.sync);
+        const stats = localDb.stats();
+        const hl = `heartbeat OK | ${stats.leads} leads, ${stats.calls} calls, ${stats.leadsUnsynced} unsynced`;
         log(hl);
-        ui({ status: "ONLINE", line: hl });
+        ui({ status: "ONLINE", mode: config.mode || "on", line: hl });
       } else {
         log(`heartbeat rejected (status ${res.status}) - not a registered customer.`);
-        ui({ status: "OFFLINE", line: "Heartbeat rejected - check your access key." });
+        ui({ status: "OFFLINE", mode: config.mode || "on", line: "Heartbeat rejected - check your access key." });
       }
     } catch (err) {
-      log(`heartbeat failed (${err.code || err.message}) - retrying.`);
-      ui({ status: "OFFLINE", line: "Reconnecting to portal..." });
+      log(`heartbeat failed (${err.code || err.message}) - retrying. Agent continues offline.`);
+      ui({ status: "OFFLINE", mode: config.mode || "on", line: "Reconnecting to portal..." });
     }
     await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
   }
@@ -466,17 +522,19 @@ if (!takeAgentLock()) {
 
 module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity };
 
-// Allow running directly: node agent.js [token] [portalUrl] [--setup] [--call]
+// Allow running directly: agent.exe [token] [portalUrl] [--setup] [--open] [--watchdog] [--no-browser] [--call]
 if (require.main === module) {
   const argv = process.argv.slice(2);
   const setup = argv.includes("--setup");
+  const open = argv.includes("--open") || argv.includes("--launch") || argv.includes("--show");
   const call = argv.includes("--call") || argv.includes("--call-once");
   const callOnce = argv.includes("--call-once");
-  const rest = argv.filter((a) => a !== "--setup" && a !== "--call" && a !== "--call-once");
+  const noBrowser = argv.includes("--no-browser") || argv.includes("--silent") || argv.includes("--startup");
+  const rest = argv.filter((a) => !a.startsWith("--"));
   if (argv.includes("--watchdog")) {
     runWatchdog(rest).catch((e) => { console.error(e); process.exit(1); });
   } else {
-    runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce }).catch((e) => {
+    runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce, open, noBrowser }).catch((e) => {
       console.error(e);
       process.exit(1);
     });

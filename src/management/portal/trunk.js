@@ -13,33 +13,13 @@
  *                     registration bridge lands.
  */
 const crypto = require("node:crypto");
-const { sipCallOnce } = require("./softphone");
+const tls = require("node:tls");
+const net = require("node:net");
+const { sipCallOnce, sipCallBridge } = require("./softphone");
 const audio = require("./audio");
 const learning = require("./learning");
 const { updateCustomer } = require("./db");
-
-// Hosted provider -> default SIP registration domain (used by the cloud to
-// register the trunk later, and by driver selection today).
-const HOSTED_VOIP_SERVERS = {
-  ringcentral: "sip.ringcentral.com",
-  twilio: "sip-1042-sip.twilio.com",
-  vonage: "sip.nexmo.com",
-  plivo: "sip.plivo.com",
-  thinq: "sip.thinq.com",
-  flowroute: "sip.flowroute.com",
-  myexotel: "voip.myexotel.com",
-  asterisk: "",
-  freepbx: "",
-  generic: "",
-  sim: "sim.local",
-};
-
-function voipComplete(v) {
-  if (!v || typeof v !== "object") return false;
-  if (!v.provider) return false;
-  if (HOSTED_VOIP_SERVERS[v.provider]) return !!(v.username && v.sipPassword);
-  return !!(v.server && v.username && v.sipPassword);
-}
+const { HOSTED_VOIP_SERVERS, voipComplete } = require("../shared/protocol");
 
 // In-process call session store. Keyed by portal + session id so several
 // portal instances in one process stay isolated in tests.
@@ -208,18 +188,12 @@ async function rcToken(ctx, settings) {
 }
 
 async function dialViaRingCentral(ctx, session, settings) {
-  // Preferred path: direct SIP soft-phone trunk (TLS + SRTP-SDES), which is
-  // fully unattended (no human ever answers the origin leg). Used when the
-  // customer's VOIP settings carry the SIP device credentials (username +
-  // sipPassword, plus optional authId / host / port). Falls back to RingOut
-  // REST for accounts that only have Developer-app credentials.
   const user = String(settings.username || "").trim();
   const sipPass = String(settings.sipPassword || "").trim();
   if (user && sipPass) {
     session.status = "dialing";
     session.providerLabel = "RingCentral SIP (TLS+SRTP)";
     session.provider = "ringcentral-sip";
-    const talkMs = Math.max(2000, 1000 * Number(settings.speakSeconds || 20));
     const opts = {
       user,
       pass: sipPass,
@@ -228,42 +202,83 @@ async function dialViaRingCentral(ctx, session, settings) {
       proxy: String(settings.host || settings.server || "sip40.ringcentral.com"),
       port: Number(settings.port || 5096),
       number: session.destination,
-      durationMs: talkMs,
+      callerId: normalizeNumber(settings.number) || normalizeNumber(user),
       codec: settings.codec === "opus" ? "opus" : "pcmu",
-      payloads: Array.isArray(session.audioFrames) && session.audioFrames.length ? session.audioFrames : undefined,
     };
-    // SBCs silently drop REGISTERs when the same device registers too
-    // quickly from a fresh port - retry with backoff before giving up.
+
     (async () => {
       for (let attempt = 1; attempt <= 6; attempt++) {
         if (session.status === "error") return;
-        const r = await sipCallOnce(opts);
+        const r = await sipCallBridge(opts);
         if (r.ok) {
           session.status = "connected";
-          session.answeredAt = session.answeredAt || Date.now();
-          session.endedAt = Date.now();
-          session.outcome = r.outcome || "answered";
-          session.sip = {
-            steps: r.steps,
-            remoteIp: (r.media || {}).remoteIp,
-            remotePort: (r.media || {}).remotePort,
-            srtp: !!(r.media || {}).remoteKey,
-            inboundAudio: !!(r.media || {}).inboundUnlocked,
-            byes: r.extra || r.last || null,
+          session.answeredAt = Date.now();
+          session.sip = { steps: r.steps, remoteIp: (r.media || {}).remoteIp, remotePort: (r.media || {}).remotePort, srtp: !!(r.media || {}).remoteKey };
+          session._sipCallSession = r.callSession;
+          session._sipCleanup = r.cleanup;
+
+          const cs = r.callSession;
+          const codecStr = cs.softphone ? cs.softphone.codec : "";
+          const codec = getCodecProps(codecStr);
+          const werift_rtp = require("werift-rtp");
+
+          cs.on("audioPacket", (rtpPacket) => {
+            if (session.media && !session.media.ended) {
+              session.media.send(rtpPacket.payload, true);
+            }
+            session.mediaBytesIn = (session.mediaBytesIn || 0) + rtpPacket.payload.length;
+          });
+
+          session.agentAudioHandler = (mulawBuffer) => {
+            if (cs.disposed) return;
+            // speakToBuffer already produces mulaw 8kHz — send directly as RTP payload
+            // Each mulaw sample is 1 byte, packetSize is 160 bytes = 20ms at 8kHz
+            const { packetSize, id } = codec;
+            for (let offset = 0; offset < mulawBuffer.length; offset += packetSize) {
+              const chunk = mulawBuffer.subarray(offset, Math.min(offset + packetSize, mulawBuffer.length));
+              const pkt = new werift_rtp.RtpPacket(new werift_rtp.RtpHeader({
+                version: 2, padding: false, paddingSize: 0, extension: false, marker: false,
+                payloadOffset: 12, payloadType: id,
+                sequenceNumber: cs.sequenceNumber, timestamp: cs.timestamp, ssrc: cs.ssrc,
+                csrcLength: 0, csrc: [], extensionProfile: 48862, extensionLength: void 0, extensions: []
+              }), chunk);
+              cs.send(cs.srtpSession.encrypt(pkt.payload, pkt.header));
+              cs.sequenceNumber = (cs.sequenceNumber + 1) % 65536;
+              cs.timestamp += codec.timestampInterval;
+            }
+            session.mediaBytesOut = (session.mediaBytesOut || 0) + mulawBuffer.length;
           };
+
+          cs.once("disposed", () => {
+            session.status = "completed";
+            session.endedAt = Date.now();
+          });
+
           return;
         }
         session.sip = session.sip || { attempts: 0, errors: [] };
-        const s = session.sip;
-        s.outcome = r.outcome || "failed";
-        s.attempts++;
-        (s.errors || (s.errors = [])).push(r.last || "unknown");
+        session.sip.outcome = r.last || "failed";
+        session.sip.attempts++;
+        (session.sip.errors || (session.sip.errors = [])).push(r.last || "unknown");
         if (attempt < 6) await delay(3000);
       }
-      session.sip = session.sip || { attempts: 0, errors: [] };
-      failSession(session, "RingCentral SIP call failed after " + session.sip.attempts + " attempt(s): " + (session.sip.errors || []).join(" -> ") + (r && r.steps && r.steps.length ? " [" + r.steps.join(" -> ") + "]" : ""));
+      failSession(session, "RingCentral SIP call failed after " + (session.sip || {}).attempts + " attempt(s)");
     })();
     return session;
+  }
+
+  // Resolve codec properties from the softphone SDK's codec setting.
+  // The SDK stores codec as "PCMU/8000" string; extract known values.
+  function getCodecProps(codecStr) {
+    if (!codecStr) return { packetSize: 160, id: 0, timestampInterval: 160 };
+    const m = String(codecStr).match(/^(\w+)\/(\d+)$/);
+    if (m) {
+      const rate = parseInt(m[2], 10);
+      const framesPerSec = rate;
+      const packetSize = Math.round(framesPerSec * 0.02); // 20ms frames
+      return { packetSize, id: 0, timestampInterval: packetSize };
+    }
+    return { packetSize: 160, id: 0, timestampInterval: 160 };
   }
 
   const fet = ctx.fetch || fetch;
@@ -289,11 +304,17 @@ async function dialViaRingCentral(ctx, session, settings) {
       }),
     });
     if (!ringout.ok) return failSession(session, "RingOut rejected (HTTP " + ringout.status + ") - check the number or account rights.");
-    const j = (await ringout.json()).session || {};
+    const j = await ringout.json();
+    const ringoutId = j.id || (j.session && j.session.id) || "";
     session.status = "ringing";
-    session.providerRef = j.id ? String(j.id) : "";
+    session.providerRef = ringoutId ? String(ringoutId) : "";
     session.providerLabel = "RingCentral (RingOut/443)";
-    if (session.providerRef && !ctx.fetch) pollRingOut(ctx, session, token, session.providerRef);
+    if (session.providerRef) pollRingOut(ctx, session, token, session.providerRef);
+
+    // Start polling for call answer, then attach a WebSocket Media Stream
+    // so the agent can hear/speak through the media channel.
+    attachMediaStream(ctx, session, token).catch(() => {});
+
     return session;
   } catch (e) {
     return failSession(session, "RingOut request failed: " + e.message);
@@ -308,35 +329,200 @@ function normalizeNumber(n) {
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * After a RingOut is answered, create a WebSocket Media Stream to capture
+ * the call audio and bridge it to the agent's media channel.
+ *
+ * RingCentral API: POST /restapi/v1.0/account/{accountId}/telephony/sessions
+ *   → lists active calls → get telephony session ID
+ *   → PUT .../media-bridge → returns WebSocket URL for audio
+ *
+ * Audio format: mulaw 8kHz mono, 160 bytes per 20ms frame.
+ */
+async function attachMediaStream(ctx, session, token) {
+  const fet = ctx.fetch || fetch;
+  const WS = require("ws");
+  const log = (msg) => console.log("[media-bridge] " + msg);
+
+  // Start trying to attach immediately - don't wait for status update.
+  // The RingOut call may already be active when we try.
+  log("Starting immediate media bridge attachment for destination=" + session.destination);
+
+  for (let attempt = 1; attempt <= 20; attempt++) {
+    await delay(2000);
+    log("Attempt " + attempt + "/20 - session.status=" + session.status);
+
+    if (session.status === "error" || session.status === "completed") {
+      log("Call ended, aborting");
+      return;
+    }
+
+    try {
+      // List active calls to find the telephony session ID
+      const activeResp = await fet(
+        "https://platform.ringcentral.com/restapi/v1.0/account/~/extension/~/active-calls",
+        { headers: { Authorization: "Bearer " + token } }
+      );
+      if (!activeResp.ok) { log("Active calls API failed: " + activeResp.status); continue; }
+      const activeData = await activeResp.json();
+      const calls = activeData.records || [];
+      log("Found " + calls.length + " active calls");
+
+      if (calls.length === 0) { log("No active calls yet, waiting..."); continue; }
+
+      // Find the call that matches our destination
+      let telephonySessionId = null;
+      for (const call of calls) {
+        const to = String((call.to || {}).phoneNumber || "").replace(/\D/g, "");
+        const dest = String(session.destination || "").replace(/\D/g, "");
+        log("  " + call.direction + " " + (call.to || {}).phoneNumber + " tsid=" + call.telephonySessionId);
+        if (to.endsWith(dest.slice(-10)) || dest.endsWith(to.slice(-10))) {
+          telephonySessionId = call.telephonySessionId;
+          log("MATCHED! telephonySessionId=" + telephonySessionId);
+          break;
+        }
+      }
+      if (!telephonySessionId && calls.length > 0) {
+        for (const call of calls) {
+          if (call.direction === "Outbound") {
+            telephonySessionId = call.telephonySessionId;
+            log("Fallback: using outbound call tsid=" + telephonySessionId);
+            break;
+          }
+        }
+      }
+      if (!telephonySessionId) { log("No matching telephony session"); continue; }
+
+      session.telephonySessionId = telephonySessionId;
+
+      // Try media-bridge PUT
+      log("Trying media-bridge PUT...");
+      const streamResp = await fet(
+        `https://platform.ringcentral.com/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/media-bridge`,
+        {
+          method: "PUT",
+          headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "Listen",
+            codec: "PCMU",
+            "Incoming": { target: "udp", protocol: "RTP", keepAlive: true },
+            "Outgoing": { target: "websocket", protocol: "WS" },
+          }),
+        }
+      );
+      if (streamResp.ok) {
+        const streamData = await streamResp.json();
+        log("Media bridge OK: " + JSON.stringify(streamData).substring(0, 200));
+        connectMediaWebSocket(session, streamData.wsUrl || streamData.url, token);
+        return;
+      }
+      const errBody = await streamResp.text().catch(() => "");
+      log("Media bridge PUT failed: " + streamResp.status + " " + errBody.substring(0, 200));
+
+      // Try media-streams POST
+      log("Trying media-streams POST...");
+      const ws2 = await fet(
+        `https://platform.ringcentral.com/restapi/v1.0/account/~/telephony/sessions/${telephonySessionId}/media-streams`,
+        {
+          method: "POST",
+          headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+          body: JSON.stringify({ codec: "PCMU" }),
+        }
+      );
+      if (ws2.ok) {
+        const wsData = await ws2.json();
+        log("Media streams OK: " + JSON.stringify(wsData).substring(0, 200));
+        connectMediaWebSocket(session, wsData.wsUrl || wsData.url, token);
+        return;
+      }
+      const err2 = await ws2.text().catch(() => "");
+      log("Media streams POST failed: " + ws2.status + " " + err2.substring(0, 200));
+      // Keep retrying - call may still be active
+    } catch (e) {
+      log("Error: " + e.message);
+    }
+  }
+  log("Media bridge attachment exhausted after 20 attempts");
+}
+
+/**
+ * Connect to a RingCentral Media Stream WebSocket and bridge the audio
+ * to/from the agent's media channel.
+ */
+function connectMediaWebSocket(session, wsUrl, token) {
+  if (!wsUrl) return;
+  const WS = require("ws");
+
+  try {
+    const ws = new WS(wsUrl, {
+      headers: { Authorization: "Bearer " + token },
+    });
+
+    session._carrierWs = ws;
+
+    ws.on("open", () => {
+      session._carrierConnected = true;
+    });
+
+    ws.on("message", (data, isBinary) => {
+      if (isBinary && session.media && !session.media.ended) {
+        // Incoming audio from RingCentral → forward to agent
+        session.media.send(Buffer.from(data), true);
+      }
+    });
+
+    ws.on("close", () => {
+      session._carrierConnected = false;
+    });
+
+    ws.on("error", () => {
+      session._carrierConnected = false;
+    });
+
+    // Wire up: agent audio → carrier WebSocket
+    session.agentAudioHandler = (audioBuffer) => {
+      if (ws.readyState === WS.OPEN) {
+        ws.send(audioBuffer, { binary: true });
+      }
+    };
+  } catch {}
+}
+
 /* Best-effort follow-up of a launched RingOut so the dashboard reports the
  * REAL outcome (connected / no answer / invalid) instead of just "ringing".
  * Only runs when the portal is using the live network (no injected fetch),
  * so offline test suites never wait on it. */
 async function pollRingOut(ctx, session, token, ringoutId) {
-  try { await delay(12000); } catch {}
+  const log = (msg) => console.log("[poll-ringout] " + msg);
+  log("Starting poll for ringoutId=" + ringoutId);
+  try { await delay(3000); } catch {}
   const fet = ctx.fetch || fetch;
   try {
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 15; i++) {
       try {
         const r = await fet(`https://platform.ringcentral.com/restapi/v1.0/account/~/extension/~/ring-out/${ringoutId}`, {
           headers: { Authorization: "Bearer " + token },
         });
-        if (!r.ok) { await delay(10000); continue; }
+        if (!r.ok) { log("Attempt " + (i+1) + ": HTTP " + r.status); await delay(5000); continue; }
         const s = await r.json();
-        const text = String((s && (s.status || s.reason || "")) || "");
-        const low = text.toLowerCase();
+        const statusObj = s && s.status || {};
+        const text = String(statusObj.callStatus || statusObj.callerStatus || s.reason || "").toLowerCase();
+        const low = text;
+        log("Attempt " + (i+1) + ": callStatus=" + statusObj.callStatus + " callerStatus=" + statusObj.callerStatus + " calleeStatus=" + statusObj.calleeStatus);
         let outcome = null;
         if (/call connected|connected|completed|answered|success/.test(low)) outcome = { status: "connected", note: text, error: session.error || null };
         else if (/invalid|error|fail|denied|unavailable|no ?answer|not answered/.test(low)) outcome = { status: "error", note: text, error: "RingOut did not connect: " + text };
-        else if (/in progress|progressing|ringing|first leg|called number|callee|originated/.test(low)) outcome = { status: "ringing", note: text, error: null };
+        else if (/in ?progress|progressing|ringing|first leg|called number|callee|originated/.test(low)) outcome = { status: "ringing", note: text, error: null };
         if (outcome) {
+          log("Updating session status to: " + outcome.status);
           try { Object.assign(session, { status: outcome.status, ringOutNote: outcome.note || null, error: outcome.error }); } catch {}
           if (outcome.status === "connected" || outcome.status === "error") return;
         }
-      } catch {}
-      await delay(12000);
+      } catch (e) { log("Attempt " + (i+1) + " error: " + e.message); }
+      await delay(5000);
     }
-  } catch {}
+    log("Polling exhausted after 15 attempts");
+  } catch (e) { log("Fatal: " + e.message); }
 }
 
 function encode(obj) {
@@ -345,7 +531,20 @@ function encode(obj) {
 
 /* Public: place a call for a customer through their configured dialer. */
 async function placeCall(ctx, { customer, destination }) {
-  const settings = (customer.settings || {}).voip || {};
+  let settings = { ...((customer.settings || {}).voip || {}) };
+
+  // Merge portal-level SIP credentials when customer doesn't have their own
+  const e = ctx.env || process.env;
+  if (settings.provider === "ringcentral" && !settings.username && e.RC_SIP_USERNAME) {
+    settings.username = e.RC_SIP_USERNAME;
+    settings.sipPassword = e.RC_SIP_PASSWORD || "";
+    settings.authId = e.RC_SIP_AUTH_ID || "";
+    settings.domain = e.RC_SIP_DOMAIN || "sip.ringcentral.com";
+    settings.host = e.RC_SIP_PROXY || "sip40.ringcentral.com";
+    settings.port = Number(e.RC_SIP_PORT || 5096);
+    settings.number = e.RC_CALLER_ID || e.RC_PHONE || settings.number || "";
+  }
+
   const d = normalizeNumber(destination);
   if (!/^\+?[0-9]{7,15}$/.test(String(d || "").replace(/\s/g, ""))) {
     throw Object.assign(new Error("Invalid destination number: " + destination), { code: "BAD_NUMBER" });

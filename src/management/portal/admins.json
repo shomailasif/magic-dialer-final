@@ -1,0 +1,16 @@
+[
+  {
+    "id": "admin1",
+    "email": "admin1@example.com",
+    "name": "Admin 1",
+    "salt": "394413a3dc53c0263517c15d2c7da45b",
+    "hash": "ccadc63cfe2675ec6646d8fd8e99541b34136b3cc807c0f2c3c3aa27ca7080e6"
+  },
+  {
+    "id": "admin2",
+    "email": "admin2@example.com",
+    "name": "Admin 2",
+    "salt": "655def090489eecc9524ed26217032c5",
+    "hash": "477d13ea86356ccd38977f1c1595eb58780eadb10a539e71949bf6975c994650"
+  }
+]

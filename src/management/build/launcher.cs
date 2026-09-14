@@ -1,0 +1,77 @@
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+
+[assembly: AssemblyTitle("Magic Dialer")]
+[assembly: AssemblyProduct("Magic Dialer")]
+[assembly: AssemblyCompany("Magic Dialer")]
+[assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyInformationalVersion("1.2.0")]
+[assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
+
+static class MagicDialerLauncher
+{
+    [STAThread]
+    private static int Main(string[] args)
+    {
+        string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? ".";
+        string agent = Path.Combine(dir, "agent.exe");
+
+        if (!File.Exists(agent))
+        {
+            MessageBox.Show(
+                "The Magic Dialer agent engine (agent.exe) is missing from this folder.\n\n" +
+                "Reinstall Magic Dialer to fix this.",
+                "Magic Dialer",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return 2;
+        }
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = agent,
+                Arguments = EscapeArgs(args),
+                WorkingDirectory = dir,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            // The launcher is windowless: it hands off to the hidden agent
+            // process, which serves the setup/dashboard in the browser and
+            // exits. No console, no PowerShell window, no flash.
+            Process.Start(psi);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                MessageBox.Show(
+                    "Magic Dialer could not start its agent.\n\n" + ex.Message,
+                    "Magic Dialer",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            catch { }
+            return 1;
+        }
+        return 0;
+    }
+
+    private static string EscapeArgs(string[] args)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            string a = args[i];
+            if (string.IsNullOrEmpty(a)) { args[i] = "\"\""; continue; }
+            args[i] = "\"" + a.Replace("\"", "\\\"") + "\"";
+        }
+        return string.Join(" ", args);
+    }
+}

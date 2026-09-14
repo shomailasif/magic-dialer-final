@@ -2,9 +2,9 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { openDb, registerCustomer, processHeartbeat, setDisabled, markStaleOffline, allCustomers, getCustomerByToken, logCall, allCalls, getCallById, updateCustomer, setCallList, saveLeads } = require("./db");
-const { HEARTBEAT_INTERVAL_MS, STALE_AFTER_MS, heartbeatResponse } = require("../shared/protocol");
+const { HEARTBEAT_INTERVAL_MS, STALE_AFTER_MS, HOSTED_VOIP_SERVERS, voipComplete, heartbeatResponse } = require("../shared/protocol");
 const { sendEmail, listOutbox } = require("./mailer");
-const { issueSession, verifySession, sessionFromCookieHeader, checkPassword, adminPassword, authenticate, issueCustomerSession, verifyCustomerSession, customerSessionFromCookieHeader } = require("./auth");
+const { issueSession, verifySession, sessionIdentity, sessionFromCookieHeader, checkPassword, adminPassword, authenticate, issueCustomerSession, verifyCustomerSession, customerSessionFromCookieHeader } = require("./auth");
 const { searchLeads } = require("./find-leads");
 const learning = require("./learning");
 const audio = require("./audio");
@@ -16,6 +16,48 @@ const media = require("./media");
 // only changes the visible name. Never contains customer data.
 const tenantName = (process.env.PORTAL_NAME || "").trim();
 
+// Load RingCentral credentials from file if present (admin's personal test line)
+let RC_JWT = process.env.RC_JWT || "";
+let RC_CLIENT_ID = process.env.RC_CLIENT_ID || "";
+let RC_CLIENT_SECRET = process.env.RC_CLIENT_SECRET || "";
+let RC_PHONE = process.env.RC_PHONE || "";
+let RC_SIP_USERNAME = process.env.RC_SIP_USERNAME || "";
+let RC_SIP_PASSWORD = process.env.RC_SIP_PASSWORD || "";
+let RC_SIP_AUTH_ID = process.env.RC_SIP_AUTH_ID || "";
+let RC_SIP_DOMAIN = process.env.RC_SIP_DOMAIN || "";
+let RC_SIP_PROXY = process.env.RC_SIP_PROXY || "";
+let RC_SIP_PORT = process.env.RC_SIP_PORT || "";
+let RC_CALLER_ID = process.env.RC_CALLER_ID || "";
+try {
+  const rcFile = path.join(__dirname, "rc-credentials.json");
+  if (fs.existsSync(rcFile)) {
+    const rc = JSON.parse(fs.readFileSync(rcFile, "utf8"));
+    if (rc.jwt) RC_JWT = rc.jwt;
+    if (rc.clientId) RC_CLIENT_ID = rc.clientId;
+    if (rc.clientSecret) RC_CLIENT_SECRET = rc.clientSecret;
+    if (rc.phoneNumber) RC_PHONE = rc.phoneNumber;
+    if (rc.sipUsername) RC_SIP_USERNAME = rc.sipUsername;
+    if (rc.sipPassword) RC_SIP_PASSWORD = rc.sipPassword;
+    if (rc.sipAuthId) RC_SIP_AUTH_ID = rc.sipAuthId;
+    if (rc.sipDomain) RC_SIP_DOMAIN = rc.sipDomain;
+    if (rc.sipProxy) RC_SIP_PROXY = rc.sipProxy;
+    if (rc.sipPort) RC_SIP_PORT = String(rc.sipPort);
+    if (rc.callerId) RC_CALLER_ID = rc.callerId;
+  }
+} catch {}
+// Expose loaded RC credentials to the trunk driver via process.env
+if (RC_JWT) process.env.RC_JWT = RC_JWT;
+if (RC_CLIENT_ID) process.env.RC_CLIENT_ID = RC_CLIENT_ID;
+if (RC_CLIENT_SECRET) process.env.RC_CLIENT_SECRET = RC_CLIENT_SECRET;
+if (RC_PHONE) process.env.RC_PHONE = RC_PHONE;
+if (RC_SIP_USERNAME) process.env.RC_SIP_USERNAME = RC_SIP_USERNAME;
+if (RC_SIP_PASSWORD) process.env.RC_SIP_PASSWORD = RC_SIP_PASSWORD;
+if (RC_SIP_AUTH_ID) process.env.RC_SIP_AUTH_ID = RC_SIP_AUTH_ID;
+if (RC_SIP_DOMAIN) process.env.RC_SIP_DOMAIN = RC_SIP_DOMAIN;
+if (RC_SIP_PROXY) process.env.RC_SIP_PROXY = RC_SIP_PROXY;
+if (RC_SIP_PORT) process.env.RC_SIP_PORT = RC_SIP_PORT;
+if (RC_CALLER_ID) process.env.RC_CALLER_ID = RC_CALLER_ID;
+
 /**
  * Magic Dialer - admin cloud platform.
  *
@@ -26,11 +68,18 @@ const tenantName = (process.env.PORTAL_NAME || "").trim();
  * business-platform dashboard on "/".
  */
 
-async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, adminPassword } = {}) {
+async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, adminPassword: pw } = {}) {
+  const adminPassword = pw || process.env.ADM_PASSWORD || "MagicDialer2026!";
   const db = await openDb(dbPath);
+
+  // Diagnose unhandled crashes (e.g. the softphone SDK's TLS socket) without
+  // letting any single one take the whole portal instance down.
+  let lastCrash = null;
+  process.on("uncaughtException", (e) => { lastCrash = String((e && e.stack) || (e && e.message) || e); });
+  process.on("unhandledRejection", (e) => { lastCrash = "REJECTION: " + String((e && e.stack) || (e && e.message) || e); });
   const gatewayCtx = { portalId: db.portalId, env: process.env, db };
 
-  setInterval(() => { markStaleOffline(db, STALE_AFTER_MS + 2000); }, HEARTBEAT_INTERVAL_MS);
+  setInterval(() => { markStaleOffline(db, STALE_AFTER_MS + 2000).catch(() => {}); }, HEARTBEAT_INTERVAL_MS);
 
   // Find leads for customers on its own, on a schedule. On by default so the
   // platform works out of the box; operators can opt out with LEAD_AUTO=0.
@@ -52,7 +101,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
 
   async function readBody(req) {
     let data = "";
-    for await (const chunk of req) data += chunk;
+    try { for await (const chunk of req) data += chunk; } catch { return {}; }
     try { return JSON.parse(data || "{}"); } catch { return {}; }
   }
 
@@ -62,6 +111,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
   };
 
   const server = http.createServer(async (req, res) => {
+  try {
     const url = new URL(req.url, "http://localhost");
     const method = req.method;
     const send = (code, obj, extraHeaders = {}) => {
@@ -74,7 +124,9 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       res.end(body);
     };
 
-    const isAdmin = verifySession(sessionFromCookieHeader(req.headers.cookie));
+    const sessionCookie = sessionFromCookieHeader(req.headers.cookie);
+    const isAdmin = verifySession(sessionCookie);
+    const adminId = isAdmin ? (sessionIdentity(sessionCookie) || "owner") : null;
     const myToken = verifyCustomerSession(customerSessionFromCookieHeader(req.headers.cookie));
     const canTouch = (token) => isAdmin || (!!myToken && myToken === token);
 
@@ -118,8 +170,8 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     // --- Heartbeat from a customer's PC (no login - the agent must work) ---
     if (url.pathname === "/api/heartbeat" && method === "POST") {
       const body = await readBody(req);
-      const out = await processHeartbeat(db, { token: body.token });
-      return send(200, heartbeatResponse({ ok: out.ok, disabled: out.disabled, config: out.config, reason: out.reason }));
+      const out = await processHeartbeat(db, { token: body.token, voipReady: body.voipReady, sync: body.sync });
+      return send(200, heartbeatResponse({ ok: out.ok, disabled: out.disabled, config: out.config, reason: out.reason, sync: out.sync }));
     }
 
     // --- Customer admin actions (ADMIN ONLY) ---
@@ -260,13 +312,20 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       const pt = Number(body.port || 5096);
       const dm = String(body.domain || "sip.ringcentral.com");
       if (!u || !p) return send(400, { error: "username and password required" });
-      const r1 = await trunk.sipRegisterOnce({ user: u, pass: p, ext: e, authId: a, host: h, port: pt, domain: dm, proto: "tls" });
-      const out = { host: h, port: pt, domain: dm, tls: r1 };
-      if (!r1.ok) {
-        const r2 = await trunk.sipRegisterOnce({ user: a || u, pass: p, ext: e, authId: u, host: h, port: pt, domain: dm, proto: "tls" });
-        out.tls2 = r2;
-        if (!r2.ok) out.tcp = await trunk.sipRegisterOnce({ user: u, pass: p, ext: e, authId: a || u, host: h, port: 5096, domain: dm, proto: "tcp" });
-      }
+      let out = { host: h, port: pt, domain: dm };
+      const sdkPromise = (async () => {
+        try {
+          const sdk = require("./softphone");
+          return await Promise.race([
+            sdk.registerSession({ user: u, pass: p, authId: a || u, proxy: h, port: pt, domain: dm }),
+            new Promise((res) => setTimeout(() => res({ ok: false, last: "sdk register timed out" }), 15000)),
+          ]);
+        } catch { return { ok: false, last: "sdk register threw" }; }
+      })();
+      const legacyPromise = trunk.sipRegisterOnce({ user: u, pass: p, ext: e, authId: a, host: h, port: pt, domain: dm, proto: "tls" });
+      const [sdkResult, r1] = await Promise.all([sdkPromise, legacyPromise]);
+      out.sdk = sdkResult;
+      out.legacy = r1;
       return send(200, out);
     }
     if (url.pathname === "/api/dev/sipcall" && method === "POST") {
@@ -312,6 +371,8 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       const frames = text ? await audio.framesFor(text, { ttsKey: b.ttsKey, ttsVoice: b.ttsVoice }) : [];
       return send(200, {
         ok: true,
+        build: "sdk-v1",
+        ...(lastCrash ? { crash: lastCrash.slice(0, 600) } : {}),
         text,
         frames: frames.length,
         durationMs: frames.length * 20,
@@ -331,6 +392,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     }
 
     if (mTwSt && (method === "POST" || method === "GET")) {
+      const body = await readBody(req);
       const sid = String(body.CallSid || body.CallSid || "");
       const st = String(body.CallStatus || body.Status || "");
       if (sid) trunk.twilioWebhook(gatewayCtx.portalId, sid, st);
@@ -357,7 +419,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       if (!s) return send(404, { error: "No such call" });
       if (!isAdmin && s.token !== myToken) return send(403, { error: "Not your call" });
       const done = trunk.hangUp(gatewayCtx.portalId, mDialHang.token);
-      return send(200, { ok: true, status: done.status });
+      return send(200, { ok: true, status: done ? done.status : "unknown" });
     }
 
     // --- Register a customer (ADMIN ONLY) ---
@@ -369,6 +431,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
         leadFields: Array.isArray(body.leadFields) ? body.leadFields : [body.leadFields].filter(Boolean),
         contactEmail: body.contactEmail,
         persona: body.persona,
+        adminId: adminId,
       });
       if (body.settings && typeof body.settings === "object") await updateCustomer(db, c.token, { settings: body.settings });
       if (Array.isArray(body.callList)) await setCallList(db, c.token, body.callList);
@@ -459,7 +522,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     if (url.pathname === "/") {
       if (!isAdmin) return send(200, loginHtml());
       await markStaleOffline(db, STALE_AFTER_MS + 2000);
-      const rows = await allCustomers(db);
+      const rows = await allCustomers(db, adminId);
       const calls = await allCalls(db, 20);
       return send(200, dashboardHtml(rows, calls, listOutbox()));
     }
@@ -485,6 +548,10 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     }
 
     return send(404, { error: "Not found" });
+  } catch (err) {
+    console.error("[magic-dialer] request error:", err);
+    try { if (!res.headersSent) { res.writeHead(500); res.end("Internal error"); } } catch {}
+  }
   });
 
   // Cloud call gateway: the 443 media channel rides the same HTTP server.
@@ -627,22 +694,6 @@ function loginHtml() {
       if (r.ok) location.href='/my'; else document.getElementById('cerr').style.display='block';
     });
   </script>`);
-}
-
-const HOSTED_VOIP_SERVERS = {
-  ringcentral: "sip.ringcentral.com",
-  twilio: "edge.sip.twilio.com",
-  vonage: "sip.contact.vonage.com",
-  plivo: "sip.plivo.com",
-  thinq: "sip.thinq.com",
-  flowroute: "sip.flowroute.com",
-  myexotel: "sip.exotel.com",
-};
-
-function voipComplete(v) {
-  if (!v || !v.username || !v.sipPassword) return false;
-  if (v.server) return true;
-  return !!HOSTED_VOIP_SERVERS[v.provider];
 }
 
 function voipProviderLabel(p) {

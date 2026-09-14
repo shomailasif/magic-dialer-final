@@ -4,15 +4,12 @@ const os = require("node:os");
 const path = require("node:path");
 
 /**
- * "Hearing" for the agent. Uses Windows' built-in English (US) recognizer.
+ * "Hearing" for the agent.
  *
- * IMPORTANT (Windows 11): SAPI's DictationGrammar was removed on modern
- * Windows — it returns null no matter what. We therefore use a command
- * grammar (Grammar + Choices) with a broad word list instead.
- *
- * Honest limits: it only hears words in the list below (plus digit strings).
- * Anything else comes back as null and the caller re-asks. Numbers (MC,
- * phone) work because users naturally say digits one at a time.
+ * Windows 11 fix: SAPI's DictationGrammar was removed on modern Windows and
+ * returns null. We now capture audio to WAV via winmm (proven to work), then
+ * transcribe offline using Vosk (small neural model, ~50MB, no API key).
+ * Falls back to SAPI grammar if vosk is unavailable.
  */
 
 // Words the agent listens for. One word per array entry (ASCII only —
@@ -215,8 +212,9 @@ for ($i = 0; $i -lt $n; $i++) {
 }
 $pick = -1
 foreach ($m in $nameMap) {
-  if ($m.name -match '(?i)(internal|built.?in|array)') { $pick = $m.idx; break }
+  if ($m.name -match '(?i)(external|headset|headphone)') { $pick = $m.idx; break }
 }
+if ($pick -lt 0) { foreach ($m in $nameMap) { if ($m.name -match '(?i)(usb|aux|headset|headphone)') { $pick = $m.idx; break } } }
 if ($pick -lt 0) { foreach ($m in $nameMap) { if ($m.name -match '(?i)mic') { $pick = $m.idx; break } } }
 if ($pick -lt 0 -and $n -gt 0) { $pick = $n - 1 }
 Write-Output ("PICK: device $pick")
@@ -263,8 +261,9 @@ function Capture([uint32]$devIdx) {
   return @{ rms=$rms; peak=$peak; path=$wav; dev=$devIdx }
 }
 
-$r1 = Capture $pick
+  $r1 = Capture $pick
 Write-Output ("RMS:" + [Math]::Round($r1.rms,1) + " peak:" + $r1.peak + " bytes:" + $nbuf)
+if ($r1.path) { Write-Output ("WAVPATH:" + $r1.path) }
 
 # --- transcribe the WAV via SAPI (SetInputToWaveFile avoids device routing) ---
 try {
@@ -273,10 +272,22 @@ try {
   $r.SetInputToWaveFile($r1.path)
   $r.InitialSilenceTimeout = New-Object System.TimeSpan(0,0,10)
   $r.EndSilenceTimeout     = New-Object System.TimeSpan(0,0,2)
+  $rawWords = "${wordsRaw}"
+  $rawPhrases = "${phrasesRaw}"
+  $wordList = $rawWords -split ";"
+  $phraseList = $rawPhrases -split ";"
+  $allItems = $wordList + $phraseList
+  if ($allItems.Count -gt 0) {
+    $choices = New-Object System.Speech.Recognition.Choices($allItems)
+    $gb = New-Object System.Speech.Recognition.GrammarBuilder
+    $gb.Append($choices)
+    $gr = New-Object System.Speech.Recognition.Grammar($gb)
+    $r.LoadGrammar($gr)
+  }
   $dg = New-Object System.Speech.Recognition.DictationGrammar
   $r.LoadGrammar($dg)
   $res = $r.Recognize()
-  if ($res -and $res.Confidence -ge 0.1) { Write-Output ("HEARD:" + $res.Text) } else { Write-Output "HEARD:" }
+  if ($res -and $res.Confidence -ge 0.05) { Write-Output ("HEARD:" + $res.Text) } else { Write-Output "HEARD:" }
 } catch {
   Write-Output ("ERR:" + $_.Exception.Message)
 }
@@ -284,6 +295,60 @@ try {
 }
 
 const CULTURE = { es: "es-ES", fr: "fr-FR", de: "de-DE", pt: "pt-BR", hi: "hi-IN" };
+
+// --- Vosk offline speech recognition (replaces broken SAPI DictationGrammar) ---
+
+let PYTHON = null;
+function resolvePython() {
+  if (PYTHON) return PYTHON;
+  const home = os.homedir();
+  const candidates = [
+    process.env.AUTODIAL_PYTHON,
+    process.env.PYTHON,
+    path.join(home, "AppData", "Local", "Programs", "Python", "Python312", "python.exe"),
+    path.join(home, "AppData", "Local", "Programs", "Python", "Python313", "python.exe"),
+    path.join(home, "AppData", "Local", "Programs", "Python", "Python311", "python.exe"),
+    "C:\\Python312\\python.exe",
+    "C:\\Python311\\python.exe",
+    "python",
+    "py",
+  ].filter(Boolean);
+  for (const c of candidates) {
+    try {
+      const t = spawnSync(c, ["--version"], { stdio: "ignore", timeout: 10000 });
+      if (t.status === 0) { PYTHON = c; return c; }
+    } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+const VOSK_SCRIPT = path.join(__dirname, "vosk-transcribe.py");
+const HEAR_PY_SCRIPT = path.join(__dirname, "hear-py.py");
+let voskAvailable = null;
+function isVoskAvailable() {
+  if (voskAvailable !== null) return voskAvailable;
+  const py = resolvePython();
+  if (!py) { voskAvailable = false; return false; }
+  const r = spawnSync(py, ["-c", "import vosk; print('ok')"], { stdio: "ignore", timeout: 10000 });
+  voskAvailable = r.status === 0;
+  return voskAvailable;
+}
+
+/** Transcribe a WAV file using Vosk. Returns recognized text or null. */
+function transcribeWithVosk(wavPath) {
+  const py = resolvePython();
+  if (!py || !fs.existsSync(VOSK_SCRIPT)) return null;
+  try {
+    const r = spawnSync(py, [VOSK_SCRIPT, wavPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 15000,
+    });
+    const out = (r.stdout || "").toString().trim();
+    const m = out.match(/"text"\s*:\s*"([^"]*)"/);
+    if (m) return m[1].trim() || null;
+    return null;
+  } catch { return null; }
+}
 
 /**
  * Listen for speech for up to `timeoutMs`. Returns recognized text (trimmed)
@@ -334,7 +399,24 @@ function hear({ timeoutMs = 6000, waveFile = null, locale = "en" } = {}) {
     return text === "" ? null : text;
   }
 
-  // Live mic: capture → wav → SAPI.  Signals RMS in output for diagnostics.
+  // Live mic: capture + vosk transcription in one Python call.
+  try {
+    const py = resolvePython();
+    if (py && fs.existsSync(HEAR_PY_SCRIPT)) {
+      const r = spawnSync(py, [HEAR_PY_SCRIPT, String(sec), "10"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: timeoutMs + 15000,
+      });
+      const out = (r.stdout || "").toString().trim();
+      const m = out.match(/"text"\s*:\s*"([^"]*)"/);
+      const rmsM = out.match(/"raw_rms"\s*:\s*([0-9.]+)/);
+      const rawRms = rmsM ? parseFloat(rmsM[1]) : 0;
+      if (rawRms > 0) console.error("[hear] raw_rms=" + rawRms);
+      if (m && m[1].trim()) return m[1].trim();
+    }
+  } catch (e) { console.error("[hear] exception:", e.message); }
+
+  // Fallback: PowerShell capture + SAPI grammar
   const script = captureTranscribeScript({ sec, locale });
   const r = spawnSync(
     "powershell.exe",
@@ -342,19 +424,12 @@ function hear({ timeoutMs = 6000, waveFile = null, locale = "en" } = {}) {
     { stdio: ["ignore", "pipe", "pipe"], timeout: timeoutMs + 20000 },
   );
   const out = (r.stdout || "").toString().trim();
-  const line = out.split(/\r?\n/).find((l) => /^(HEARD|ERR|RMS):/.test(l));
-  if (!line) return null;
-  if (line.startsWith("ERR:")) return null;
-  if (line.startsWith("RMS:")) {
-    // RMS line means capture ran; look for HEARD after it.
-    const heard = out.split(/\r?\n/).find((l) => l.startsWith("HEARD:"));
-    if (!heard) return null;
-    if (heard.startsWith("ERR:")) return null;
+  const heard = out.split(/\r?\n/).find((l) => l.startsWith("HEARD:"));
+  if (heard) {
     const text = heard.slice("HEARD:".length).trim();
-    return text === "" ? null : text;
+    if (text) return text;
   }
-  const text = line.slice("HEARD:".length).trim();
-  return text === "" ? null : text;
+  return null;
 }
 
 /** Diagnostic helper: capture `sec` seconds, report signal strength + what
@@ -373,4 +448,85 @@ function probeMic({ sec = 8, locale = "en" } = {}) {
   return { rms, peak, text: heard && heard.trim() ? heard.trim() : null, raw: out };
 }
 
-module.exports = { hear, probeMic, WORDS, PHRASES, WORDS_BY_LOCALE, PHRASES_BY_LOCALE };
+/**
+ * Decode mu-law byte to 16-bit PCM sample.
+ */
+function mulawDecode(mulaw) {
+  mulaw = ~mulaw & 0xff;
+  const sign = (mulaw & 0x80) ? -1 : 1;
+  const exponent = (mulaw >> 4) & 0x07;
+  const mantissa = mulaw & 0x0f;
+  const sample = ((mantissa << 1) + 33) << (exponent + 2);
+  return sign * (sample - 132);
+}
+
+/**
+ * Transcribe a raw audio buffer (mulaw 8kHz mono) from the media channel.
+ * Decodes mulaw → PCM, upsamples to 16kHz, saves WAV, transcribes with vosk.
+ * Returns recognized text or null.
+ */
+function hearFromBuffer(audioBuffer, { sampleRate = 8000 } = {}) {
+  if (!audioBuffer || audioBuffer.length < 100) return null;
+
+  // Decode mulaw → linear PCM
+  const pcm = new Int16Array(audioBuffer.length);
+  for (let i = 0; i < audioBuffer.length; i++) {
+    pcm[i] = mulawDecode(audioBuffer[i]);
+  }
+
+  // Upsample 8kHz → 16kHz (simple linear interpolation)
+  const upsampled = new Int16Array(pcm.length * 2);
+  for (let i = 0; i < pcm.length; i++) {
+    upsampled[i * 2] = pcm[i];
+    if (i + 1 < pcm.length) {
+      upsampled[i * 2 + 1] = (pcm[i] + pcm[i + 1]) >> 1;
+    } else {
+      upsampled[i * 2 + 1] = pcm[i];
+    }
+  }
+
+  const outRate = 16000;
+  const bytes = Buffer.from(upsampled.buffer);
+
+  // Write WAV header (PCM format, 16kHz mono 16-bit)
+  const header = Buffer.alloc(44);
+  const dataSize = bytes.length;
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);           // PCM format
+  header.writeUInt16LE(1, 22);           // mono
+  header.writeUInt32LE(outRate, 24);     // 16kHz
+  header.writeUInt32LE(outRate * 2, 28); // byte rate
+  header.writeUInt16LE(2, 32);           // block align
+  header.writeUInt16LE(16, 34);          // bits per sample
+  header.write("data", 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  const tmpWav = path.join(os.tmpdir(), `media-hear-${Date.now()}.wav`);
+  try {
+    fs.writeFileSync(tmpWav, Buffer.concat([header, bytes]));
+  } catch { return null; }
+
+  // Transcribe via Python vosk
+  try {
+    const py = resolvePython();
+    if (py && fs.existsSync(VOSK_SCRIPT)) {
+      const r = spawnSync(py, [VOSK_SCRIPT, tmpWav], {
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 15000,
+      });
+      const out = (r.stdout || "").toString().trim();
+      const m = out.match(/"text"\s*:\s*"([^"]*)"/);
+      if (m && m[1].trim()) return m[1].trim();
+    }
+  } catch {}
+  finally {
+    try { fs.unlinkSync(tmpWav); } catch {}
+  }
+  return null;
+}
+
+module.exports = { hear, probeMic, hearFromBuffer, WORDS, PHRASES, WORDS_BY_LOCALE, PHRASES_BY_LOCALE };

@@ -177,6 +177,15 @@ function install(server, { getSession }) {
           // agent heard its own audio through the cloud 443 channel.
           const p = payload;
           setTimeout(() => { media.send(p); }, 250);
+        } else if (session.provider === "ringcentral" || session.provider === "ringcentral-sip" || session.provider === "twilio") {
+          // Carrier bridge: forward agent audio to the carrier's RTP stream.
+          // The carrier driver (softphone / Twilio) must listen on session.agentAudioHandler.
+          if (session.agentAudioHandler) {
+            try { session.agentAudioHandler(payload); } catch {}
+          }
+          // Store latest agent audio for polling carriers
+          session._agentAudio = payload;
+          session._agentAudioAt = Date.now();
         }
         return;
       }
@@ -216,4 +225,17 @@ function sendFrames(socket, frames) {
   for (const f of frames) socket.write(f);
 }
 
-module.exports = { install, encodeFrame };
+/**
+ * Send carrier audio to the connected agent through the media channel.
+ * Called by the carrier driver (softphone, Twilio, etc.) when it receives
+ * incoming RTP audio from the lead.
+ *
+ * session: the call session from getSession()
+ * audioBuffer: raw mulaw 8kHz PCM bytes from the carrier
+ */
+function sendCarrierAudio(session, audioBuffer) {
+  if (!session || !session.media || session.media.ended) return;
+  session.media.send(audioBuffer, true);
+}
+
+module.exports = { install, encodeFrame, sendCarrierAudio };

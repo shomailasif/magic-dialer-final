@@ -1,29 +1,22 @@
-const { speak } = require("./voice");
-const { hear } = require("./hear");
+const { speak, speakToBuffer } = require("./voice");
+const { hear, hearFromBuffer } = require("./hear");
 const { runCall } = require("./call-runner");
+const { mediaConnect } = require("./media-client");
 
 /**
  * Live voice call driver.
  *
- * Runs a real spoken AI sales call on the customer's PC using the local
- * microphone + speakers (free, works with no provider). The neural voice
- * speaks through the speakers; Windows speech recognition hears the lead
- * through the microphone. The brain scores the lead and emails the summary.
- *
- * A real phone provider (SIP trunk to actual phone numbers) costs money —
- * see the README. When a provider is added, only the `speak`/`listen`
- * functions need to be swapped to stream audio into the call (RTP); the
- * conversation logic in runCall stays identical.
+ * Two modes:
+ *   1. MEDIA CHANNEL (when portal + token provided): audio flows through the
+ *      cloud portal's WSS media channel. No PC mic or speakers needed — works
+ *      for any customer hardware setup. TTS goes down the channel to the
+ *      carrier; lead audio comes back up the channel for transcription.
+ *   2. LOCAL MIC (fallback): PC speakers play TTS, PC mic listens. Traditional
+ *      speakerphone mode for testing without a carrier.
  */
 
-/**
- * Run one live voice call. Returns the call result (same shape the portal
- * expects for /api/call-result) plus the transcript already posted to the
- * portal.
- *
- * `speakFn`/`listenFn` are the pluggable audio transport. Defaults to the
- * PC speaker + microphone.
- */
+const AUDIO_SAMPLE_RATE = 8000;  // mulaw telephony standard
+
 async function voiceCall({
   product,
   leadFields,
@@ -42,17 +35,136 @@ async function voiceCall({
   speakFn,
   listenFn,
 }) {
-  const say = speakFn || (async (text) => { onMode("speaking"); onLog("AGENT: " + text); return speak(text, { locale, style: voiceStyle }); });
-  const listen = listenFn || (async () => { onMode("listening"); onLog("(listening...)"); const t = await hear({ timeoutMs: 6000, locale }); if (t) onLog("LEAD:  " + t); else onLog("(nothing heard)"); return t; });
+  // --- Try to connect to the media channel ---
+  let channel = null;
+  if (portal && token) {
+    try {
+      onLog("Connecting to media channel…");
+      // We need the session ID — it's passed as `sessionId` or derived
+      const sessionId = arguments[0].sessionId || null;
+      if (sessionId) {
+        channel = await mediaConnect({ portal, sessionId, token, onLog });
+        onLog("Media channel connected ✓");
+      }
+    } catch (e) {
+      onLog("Media channel unavailable (" + e.message + "), using local mic.");
+    }
+  }
+
+  let say, listen;
+
+  if (channel && channel.open) {
+    // === MEDIA CHANNEL MODE ===
+    // Accumulator for incoming audio from the lead
+    let audioChunks = [];
+    let audioResolve = null;
+    let listenActive = false;
+
+    channel.onAudio((buffer) => {
+      if (listenActive) {
+        audioChunks.push(buffer);
+        if (audioResolve) {
+          const resolve = audioResolve;
+          audioResolve = null;
+          resolve();
+        }
+      }
+    });
+
+    say = async (text) => {
+      onMode("speaking");
+      onLog("AGENT: " + text);
+      const result = await speakToBuffer(text, { locale, style: voiceStyle });
+      if (result && result.buffer) {
+        // Send in 160-byte chunks (20ms at 8kHz mulaw)
+        const CHUNK = 160;
+        for (let i = 0; i < result.buffer.length; i += CHUNK) {
+          const chunk = result.buffer.subarray(i, Math.min(i + CHUNK, result.buffer.length));
+          channel.sendAudio(chunk);
+          // Pace: 20ms per chunk (real-time streaming)
+          await new Promise(r => setTimeout(r, 20));
+        }
+        onLog(`[media] sent ${result.buffer.length} bytes TTS`);
+      } else {
+        onLog("[media] TTS buffer generation failed");
+      }
+    };
+
+    listen = async () => {
+      onMode("listening");
+      onLog("(listening via media channel…)");
+      listenActive = true;
+      audioChunks = [];
+
+      // Wait for audio or timeout
+      const timeoutMs = 6000;
+      const start = Date.now();
+      while (Date.now() - start < timeoutMs) {
+        if (audioChunks.length > 0) {
+          // Got some audio — wait a bit more for speech to finish
+          const silenceWait = 1200;
+          const silenceStart = Date.now();
+          const preLen = audioChunks.length;
+          while (Date.now() - silenceStart < silenceWait) {
+            await new Promise(r => setTimeout(r, 200));
+            if (audioChunks.length > preLen) break; // more audio arrived
+          }
+          break;
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      listenActive = false;
+
+      if (audioChunks.length === 0) {
+        onLog("(nothing heard via media)");
+        return null;
+      }
+
+      // Concatenate all audio chunks into one buffer
+      const fullAudio = Buffer.concat(audioChunks);
+      onLog(`[media] received ${fullAudio.length} bytes audio`);
+
+      // Transcribe with vosk
+      const text = hearFromBuffer(fullAudio, { locale, sampleRate: AUDIO_SAMPLE_RATE });
+      if (text) {
+        onLog("LEAD:  " + text);
+        return text;
+      }
+      onLog("(nothing transcribed)");
+      return null;
+    };
+
+  } else {
+    // === LOCAL MIC MODE (fallback) ===
+    say = speakFn || (async (text) => {
+      onMode("speaking");
+      onLog("AGENT: " + text);
+      return speak(text, { locale, style: voiceStyle });
+    });
+    listen = listenFn || (async () => {
+      onMode("listening");
+      onLog("(listening…)");
+      const t = await hear({ timeoutMs: 4500, locale });
+      if (t) onLog("LEAD:  " + t);
+      else onLog("(nothing heard)");
+      return t;
+    });
+  }
 
   onLog("Starting live call…");
-  const result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale });
+  let result;
+  try {
+    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale });
+  } catch (e) {
+    onLog("Call failed: " + e.message);
+    if (channel) channel.close();
+    return { transcript: [], score: 0, goodLead: false, strategies: [], summary: "Call failed: " + e.message, learning: learning || {}, posted: null };
+  }
   onLog("Call finished.");
+  if (channel) channel.close();
 
-  // Persist the improved technique scores back into config.
   const updatedLearning = result.learning || learning || {};
 
-  // Report to the portal (lead scoring, summaries, qualified-lead email).
   let posted = null;
   if (portal && token) {
     try {

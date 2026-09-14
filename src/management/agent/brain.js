@@ -162,23 +162,24 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
     opening(seed) {
       const s = pickStrategy("opening", scoreMap, pools, seed);
       if (s) used.push(s.key);
-      // Non-English openers already introduce themselves inside the line.
-      const body = fill(pick(s.pool, seed + 7));
-      return loc === "en" ? `${intro} ${body}` : body;
+      const body = fill(pick((s && s.pool) || ["Let me tell you about what we offer."], seed + 7));
+      return body;
     },
 
     rapport(seed) {
       const s = pickStrategy("rapport", scoreMap, pools, seed);
       if (s) used.push(s.key);
-      return fill(pick(s.pool, seed));
+      return fill(pick((s && s.pool) || ["That's great to hear."], seed));
     },
 
     question(field, asked) {
-      return I18N.questionsFor(loc, field, asked);
+      const key = typeof field === "string" ? field : (field && field.key) || String(field || "");
+      return I18N.questionsFor(loc, key, asked);
     },
 
     retryQuestion(field) {
-      return I18N.retryFor(loc, field);
+      const key = typeof field === "string" ? field : (field && field.key) || String(field || "");
+      return I18N.retryFor(loc, key);
     },
 
     reopenOut() {
@@ -219,19 +220,19 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
     pivotSoft(seed, objectionText) {
       const text = String(objectionText || "").toLowerCase();
       let s;
-      if (/\b(driving|drive|on the road|busy|rolling|shutting down|parked now)\b/.test(text)) s = pickByKey(pools.pivot, "obj_busy_callback_slot", scoreMap, seed);
-      else if (/info|email|send|one.pager|look at it/.test(text)) s = pickByKey(pools.pivot, "obj_send_info_qualify", scoreMap, seed);
-      else if (/dispatcher|broker|have someone|got a guy|leased to/.test(text)) s = pickByKey(pools.pivot, "obj_have_dispatcher_one_load", scoreMap, seed);
-      else if (/\b(market is bad|market's bad|slow market)\b|\brate\b|rates|slow|bad market|no freight|no loads|board is dead/.test(text)) s = pickByKey(pools.pivot, "obj_rates_loss_aversion", scoreMap, seed);
+      if (/\b(driving|drive|on the road|busy|rolling|shutting down|parked now)\b/.test(text)) s = pickByKey(pools.pivot || [], "obj_busy_callback_slot", scoreMap, seed);
+      else if (/info|email|send|one.pager|look at it/.test(text)) s = pickByKey(pools.pivot || [], "obj_send_info_qualify", scoreMap, seed);
+      else if (/dispatcher|broker|have someone|got a guy|leased to/.test(text)) s = pickByKey(pools.pivot || [], "obj_have_dispatcher_one_load", scoreMap, seed);
+      else if (/\b(market is bad|market's bad|slow market)\b|\brate\b|rates|slow|bad market|no freight|no loads|board is dead/.test(text)) s = pickByKey(pools.pivot || [], "obj_rates_loss_aversion", scoreMap, seed);
       else s = pickStrategy("pivot", scoreMap, pools, seed);
-      used.push(s.key);
-      return fill(pick(s.pool, seed + 3));
+      if (s) used.push(s.key);
+      return fill(pick((s && s.pool) || ["I understand. Let me ask you something else."], seed + 3));
     },
 
     pivotGraceful() {
       const seed = 5;
       const s = pickStrategy("pivot", scoreMap, pools, seed);
-      used.push(s.key + "_exit");
+      if (s) used.push(s.key + "_exit");
       return I18N.pick(I18N.GRACEFUL_BY_LOCALE[loc] || I18N.GRACEFUL_BY_LOCALE.en, seed);
     },
 
@@ -243,10 +244,11 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
         return I18N.callbackCloseFor(loc, who, inTime, callbackNumber);
       }
       if (goodLead) {
-        const s = pickByKey(pools.closeGood, "close_assumptive", scoreMap, 11);
-        const w = pickByKey(pools.closeWarm, "close_backup_two_weeks", scoreMap, 3);
-        used.push(s.key, w.key);
-        const line = `${loc === "en" ? "Perfect" + who + ". " : (who ? "Perfecto" + who + ". " : "Perfecto. ")}${fill(pick(s.pool, 11))} ${fill(pick(w.pool, 3))}`;
+        const s = pickByKey(pools.closeGood || [], "close_assumptive", scoreMap, 11);
+        const w = pickByKey(pools.closeWarm || [], "close_backup_two_weeks", scoreMap, 3);
+        if (s) used.push(s.key);
+        if (w) used.push(w.key);
+        const line = `${loc === "en" ? "Perfect" + who + ". " : (who ? "Perfecto" + who + ". " : "Perfecto. ")}${fill(pick((s && s.pool) || ["Let me tell you more."], 11))} ${fill(pick((w && w.pool) || ["We can compare whenever you're ready."], 3))}`;
         return line;
       }
       const bye = loc === "en"
@@ -264,6 +266,7 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
 function seedNow() { return Date.now(); }
 
 function pickByKey(group, key, scoreMap, seed) {
+  if (!group || !group.length) return null;
   const s = group.find((p) => p.key === key) || group[0];
   return s;
 }
@@ -371,7 +374,7 @@ function learn(learning, { goodLead, strategies, missed, goodConversation, frien
     if (seen >= 1) {
       // Recurring across calls -> promote to a learned intent with a warm answer.
       const ci = next.customIntent[m.sig] || { answer: I18N.pick(I18N.FRIENDLY_BY_LOCALE.en, m.sig.length + 3), good: 0, used: 0 };
-      ci.used += 0;
+      ci.used += 1;
       ci.good += goodConversation ? 1 : 0;
       next.customIntent[m.sig] = ci;
     } else if (next.customIntent[m.sig]) {

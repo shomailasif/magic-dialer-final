@@ -22,10 +22,10 @@ const TMP = path.join(os.tmpdir(), "autodial-voice");
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true });
 
 // Map our persona (energetic female) to the best neural voice per language.
-// Keys are our locale codes (see i18n). Falls back to en-US Jenny.
+// Keys are our locale codes (see i18n). Falls back to en-US Ava.
 const NEURAL_VOICES = {
-  en: "en-US-JennyNeural",
-  "en-us": "en-US-JennyNeural",
+  en: "en-US-AvaNeural",
+  "en-us": "en-US-AvaNeural",
   "en-gb": "en-GB-SoniaNeural",
   "en-au": "en-AU-NatashaNeural",
   "en-ca": "en-CA-ClaraNeural",
@@ -67,12 +67,6 @@ const NEURAL_VOICES = {
   uk: "uk-UA-PolinaNeural",
   vi: "vi-VN-HoaiMyNeural",
 };
-
-function edgeVoiceFor(locale) {
-  if (NEURAL_VOICES[locale]) return NEURAL_VOICES[locale];
-  const base = String(locale).split("-")[0];
-  return NEURAL_VOICES[base] || "en-US-JennyNeural";
-}
 
 /**
  * Voice styles the operator can choose from in the portal (voice v2):
@@ -136,8 +130,8 @@ const FRANK_VOICES = {
 // a warm female default in NEURAL_VOICES, so only override where a distinctly
 // friendlier option exists.
 const FRIENDLY_VOICES = {
-  en: "en-US-AriaNeural",
-  "en-us": "en-US-AriaNeural",
+  en: "en-US-AvaNeural",
+  "en-us": "en-US-AvaNeural",
   "en-gb": "en-GB-SoniaNeural",
   "en-au": "en-AU-NatashaNeural",
   "en-ca": "en-CA-ClaraNeural",
@@ -349,4 +343,79 @@ async function speak(text, { voice, rate = 1, volume = 100, locale = "en", style
   return { engine: "windows", ok };
 }
 
-module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, edgeVoiceFor, normalizeStyle, styleRate };
+/**
+ * Find ffmpeg binary. Checks Python's imageio-ffmpeg first, then PATH.
+ */
+function resolveFfmpeg() {
+  // Try Python's bundled ffmpeg
+  const python = resolvePython();
+  if (python) {
+    try {
+      const r = spawnSync(python, ["-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"], {
+        stdio: ["ignore", "pipe", "pipe"], timeout: 5000,
+      });
+      if (r.status === 0) {
+        const p = (r.stdout || "").toString().trim();
+        if (p && fs.existsSync(p)) return p;
+      }
+    } catch {}
+  }
+  // Try PATH
+  for (const c of ["ffmpeg", "ffmpeg.exe"]) {
+    try {
+      const r = spawnSync(c, ["-version"], { stdio: "ignore", timeout: 5000 });
+      if (r.status === 0) return c;
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * Generate TTS audio and return as a raw PCM buffer (mulaw 8kHz mono).
+ * Used by the media channel to stream agent voice to the lead.
+ * Returns { buffer, engine } or null on failure.
+ */
+async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } = {}) {
+  const ffmpeg = resolveFfmpeg();
+  if (!ffmpeg) return null;
+
+  const file = path.join(TMP, `tts-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.mp3`);
+  try {
+    const python = resolvePython();
+    if (!python) return null;
+    const voice = edgeVoiceFor(locale, style);
+    const effRate = styleRate(style, rate);
+    const rateArg = effRate === 1 ? "+0%" : `${effRate > 1 ? "+" : ""}${Math.round((effRate - 1) * 60)}%`;
+    const r = spawnSync(
+      python,
+      ["-m", "edge_tts", "--voice", voice, "--rate", rateArg, "--text", text, "--write-media", file],
+      { stdio: "pipe", timeout: 30000, encoding: "utf8" },
+    );
+    if (r.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 100) {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+      return null;
+    }
+
+    // Convert MP3 → raw mulaw 8kHz mono PCM
+    const rawPath = file.replace(/\.mp3$/, ".raw");
+    const conv = spawnSync(
+      ffmpeg,
+      ["-i", file, "-ar", "8000", "-ac", "1", "-f", "mulaw", "-y", rawPath],
+      { stdio: "pipe", timeout: 15000 },
+    );
+    if (conv.status !== 0 || !fs.existsSync(rawPath)) {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+      if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
+      return null;
+    }
+    const buffer = fs.readFileSync(rawPath);
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
+    return { buffer, engine: "edge" };
+  } catch {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return null;
+  }
+}
+
+module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate };

@@ -1,6 +1,7 @@
 ﻿const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const { HOSTED_VOIP_SERVERS, voipComplete } = require("../shared/protocol");
 
 /**
  * Portal database â€” DUAL BACKEND.
@@ -22,26 +23,8 @@ const crypto = require("node:crypto");
 
 const USES_PG = !!process.env.DATABASE_URL;
 
-/**
- * Providers whose SIP server is implied (no server field required).
- * Any other provider - or a custom SIP dialer - stores its own server.
- */
-const HOSTED_VOIP_DEFAULTS = {
-  ringcentral: "sip.ringcentral.com",
-  twilio: "edge.sip.twilio.com",
-  vonage: "sip.contact.vonage.com",
-  plivo: "sip.plivo.com",
-  thinq: "sip.thinq.com",
-  flowroute: "sip.flowroute.com",
-  myexotel: "sip.exotel.com",
-};
-
 /** A VOIP line counts as complete only when it has everything needed to place a call. */
-function voipComplete(v) {
-  if (!v || !v.username || !v.sipPassword) return false;
-  if (v.server) return true;                     // explicit SIP server always counts
-  return !!HOSTED_VOIP_DEFAULTS[v.provider];     // hosted providers carry their own default
-}
+// voipComplete is imported from shared/protocol.js
 
 /**
  * Tenant identity for this portal instance.
@@ -82,6 +65,7 @@ async function openDb(dbPath) {
     CREATE TABLE IF NOT EXISTS customers (
       token        TEXT PRIMARY KEY,
       machine_id   TEXT,
+      admin_id     TEXT NOT NULL DEFAULT 'default',
       product      TEXT,
       lead_fields  TEXT,
       contact_email TEXT,
@@ -112,7 +96,7 @@ async function openDb(dbPath) {
     );
   `);
   const cols = db.prepare("PRAGMA table_info(customers)").all();
-  for (const col of [["voip_ready", "INTEGER NOT NULL DEFAULT 0"], ["settings", "TEXT"], ["call_list", "TEXT"], ["leads_found", "TEXT"], ["leads_searched_at", "INTEGER"], ["portal_id", "TEXT NOT NULL DEFAULT 'main'"]]) {
+  for (const col of [["voip_ready", "INTEGER NOT NULL DEFAULT 0"], ["settings", "TEXT"], ["call_list", "TEXT"], ["leads_found", "TEXT"], ["leads_searched_at", "INTEGER"], ["portal_id", "TEXT NOT NULL DEFAULT 'main'"], ["admin_id", "TEXT NOT NULL DEFAULT 'default'"]]) {
     if (!cols.some((c) => c.name === col[0])) {
       db.exec(`ALTER TABLE customers ADD COLUMN ${col[0]} ${col[1]}`);
     }
@@ -138,6 +122,7 @@ async function initPostgres(pool) {
     CREATE TABLE IF NOT EXISTS customers (
       token        TEXT PRIMARY KEY,
       machine_id   TEXT,
+      admin_id     TEXT NOT NULL DEFAULT 'default',
       product      TEXT,
       lead_fields  TEXT,
       contact_email TEXT,
@@ -177,6 +162,7 @@ async function initPostgres(pool) {
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS leads_found TEXT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS leads_searched_at BIGINT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS portal_id TEXT NOT NULL DEFAULT 'main'",
+    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS admin_id TEXT NOT NULL DEFAULT 'default'",
     "ALTER TABLE calls ADD COLUMN IF NOT EXISTS strategies TEXT",
     "ALTER TABLE calls ADD COLUMN IF NOT EXISTS portal_id TEXT NOT NULL DEFAULT 'main'",
   ]) {
@@ -197,6 +183,7 @@ function rowToCustomer(r) {
   return {
     token: r.token,
     machine_id: r.machine_id,
+    admin_id: r.admin_id || "default",
     product: r.product,
     lead_fields: r.lead_fields,
     contact_email: r.contact_email,
@@ -214,26 +201,25 @@ function rowToCustomer(r) {
   };
 }
 
-async function registerCustomer(db, { product, leadFields, contactEmail, persona }) {
+async function registerCustomer(db, { product, leadFields, contactEmail, persona, adminId }) {
   const token = crypto.randomBytes(24).toString("hex");
   const machineId = crypto.randomUUID();
   const created = Date.now();
   const leadJson = JSON.stringify(leadFields || []);
+  const aid = adminId || "default";
   if (db.pool) {
     await db.pool.query(
-      `INSERT INTO customers (token, machine_id, product, lead_fields, contact_email, persona, created_at, portal_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [token, machineId, product || null, leadJson, contactEmail || null, persona || "High-energy friendly helper", created, db.portalId],
+      `INSERT INTO customers (token, machine_id, admin_id, product, lead_fields, contact_email, persona, created_at, portal_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [token, machineId, aid, product || null, leadJson, contactEmail || null, persona || "High-energy friendly helper", created, db.portalId],
     );
     return { token, machineId, product, leadFields, contactEmail, persona: persona || "High-energy friendly helper" };
   }
   db.sqlite.prepare(
-    `INSERT INTO customers (token, machine_id, product, lead_fields, contact_email, persona, created_at, portal_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(token, machineId, product || null, leadJson, contactEmail || null, persona || "High-energy friendly helper", created, db.portalId);
-  const row = db.sqlite.prepare("SELECT * FROM customers WHERE token = ?").get(token);
-  const c = rowToCustomer(row);
-  return { token, machineId: c.machine_id, product: c.product, leadFields, contactEmail: c.contact_email, persona: c.persona };
+    `INSERT INTO customers (token, machine_id, admin_id, product, lead_fields, contact_email, persona, created_at, portal_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(token, machineId, aid, product || null, leadJson, contactEmail || null, persona || "High-energy friendly helper", created, db.portalId);
+  return { token, machineId, product, leadFields, contactEmail, persona: persona || "High-energy friendly helper" };
 }
 
 async function findCustomerByMachine(db, machineId) {
@@ -254,7 +240,7 @@ async function getCustomerByToken(db, token) {
   return rowToCustomer(db.sqlite.prepare("SELECT * FROM customers WHERE token = ? AND portal_id = ?").get(token, db.portalId));
 }
 
-async function processHeartbeat(db, { token, voipReady }) {
+async function processHeartbeat(db, { token, voipReady, sync: syncData }) {
   if (typeof token !== "string" || !token) {
     return { ok: false, disabled: true, reason: "unknown" };
   }
@@ -268,6 +254,47 @@ async function processHeartbeat(db, { token, voipReady }) {
   const s = c.settings || {};
   const haveVoip = voipComplete(s.voip);
   const vp = (voipReady === true || !!haveVoip) ? 1 : 0;
+
+  // Process sync data from agent (leads, calls stored locally on PC)
+  const syncResponse = { syncedLeads: [], syncedCalls: [] };
+  if (syncData && typeof syncData === "object") {
+    // Store synced leads
+    if (Array.isArray(syncData.unsyncedLeads)) {
+      for (const lead of syncData.unsyncedLeads) {
+        syncResponse.syncedLeads.push(lead.id);
+      }
+      // Save leads to portal (lightweight summary)
+      if (syncData.unsyncedLeads.length > 0) {
+        const leads = syncData.unsyncedLeads.map((l) => ({
+          company: l.company || l.name || "Lead",
+          title: (c.product || "Service") + " - qualified lead",
+          source: "agent-sync:" + l.id,
+          snippet: l.summary || "",
+          score: l.score ?? 80,
+          answers: l.answers || null,
+        }));
+        try { await saveLeads(db, token, leads); } catch {}
+      }
+    }
+    // Store synced calls
+    if (Array.isArray(syncData.unsyncedCalls)) {
+      for (const call of syncData.unsyncedCalls) {
+        syncResponse.syncedCalls.push(call.id);
+        try {
+          await logCall(db, {
+            customerToken: token,
+            product: call.product || c.product,
+            transcript: call.transcript,
+            score: call.score,
+            goodLead: !!call.good_lead,
+            escalateToHuman: false,
+            strategies: call.strategies || [],
+            summary: call.summary,
+          });
+        } catch {}
+      }
+    }
+  }
   const learnFields = (() => {
     try {
       const v = JSON.parse(c.lead_fields || "[]");
@@ -315,8 +342,9 @@ callList: c.call_list || [],
       lang: (c.settings && /^(en|es|fr|de|pt|hi|auto)$/.test(c.settings.lang)) ? c.settings.lang : "en",
       voiceStyle: (c.settings && /^(human|frank|friendly)$/.test(c.settings.voiceStyle)) ? c.settings.voiceStyle : "human",
       script: learnedScript,
-      speakSeconds: Number(c.settings && (c.settings.speakSeconds || c.settings.voip && c.settings.voip.speakSeconds)) || 20,
+      speakSeconds: Number(c.settings && (c.settings.speakSeconds != null ? c.settings.speakSeconds : (c.settings.voip && c.settings.voip.speakSeconds))) || 20,
     },
+    sync: syncResponse,
   };
 }
 
@@ -437,10 +465,17 @@ async function markStaleOffline(db, maxAgeMs) {
   }
 }
 
-async function allCustomers(db) {
+async function allCustomers(db, adminId) {
   if (db.pool) {
+    if (adminId) {
+      const r = await db.pool.query("SELECT * FROM customers WHERE portal_id = $1 AND admin_id = $2 ORDER BY created_at ASC", [db.portalId, adminId]);
+      return r.rows.map(rowToCustomer);
+    }
     const r = await db.pool.query("SELECT * FROM customers WHERE portal_id = $1 ORDER BY created_at ASC", [db.portalId]);
     return r.rows.map(rowToCustomer);
+  }
+  if (adminId) {
+    return db.sqlite.prepare("SELECT * FROM customers WHERE portal_id = ? AND admin_id = ? ORDER BY created_at ASC").all(db.portalId, adminId).map(rowToCustomer);
   }
   return db.sqlite.prepare("SELECT * FROM customers WHERE portal_id = ? ORDER BY created_at ASC").all(db.portalId).map(rowToCustomer);
 }

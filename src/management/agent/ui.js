@@ -10,6 +10,7 @@ function statusFile(configDir) {
 }
 
 function setUi(configDir, patch) {
+  if (!configDir) return;
   try {
     let cur = {};
     try { cur = JSON.parse(fs.readFileSync(statusFile(configDir), "utf8")); } catch {}
