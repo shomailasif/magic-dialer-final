@@ -1,5 +1,8 @@
 import type { DialerConfig, DialerProvider } from "@prisma/client";
 
+// eslint-disable-next-line @typescript-eslint/no-implied-eval
+const runtimeRequire = new Function("m", "return require(m)") as NodeRequire;
+
 export interface DialResult {
   connected: boolean;
   outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED";
@@ -88,13 +91,8 @@ export async function placeCall(
 
   if (rcUser && rcPass && input.provider === "RINGCENTRAL") {
     try {
-      // Lazy require to avoid Turbopack bundling native CJS modules
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const softphone = require("../management/portal/softphone");
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const audio = require("../management/portal/audio");
-      const sipCallBridge = softphone.sipCallBridge;
-      const textToFrames = audio.textToFrames;
+      const sipCallBridge = runtimeRequire("../management/portal/softphone").sipCallBridge;
+      const textToFrames = runtimeRequire("../management/portal/audio").textToFrames;
 
       const callResult = await sipCallBridge({
         user: rcUser,

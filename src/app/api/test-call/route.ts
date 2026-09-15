@@ -3,10 +3,9 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { sendNotification } from "@/lib/mailer";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const getSoftphone = () => require("../../../management/portal/softphone");
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const getAudio = () => require("../../../management/portal/audio");
+// Hide from Turbopack static analysis - native CJS modules only run at runtime.
+// eslint-disable-next-line @typescript-eslint/no-implied-eval
+const runtimeRequire = new Function("m", "return require(m)") as NodeRequire;
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
@@ -31,8 +30,8 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { sipCallBridge } = getSoftphone();
-    const { textToFrames } = getAudio();
+    const sipCallBridge = runtimeRequire("../../../management/portal/softphone").sipCallBridge;
+    const textToFrames = runtimeRequire("../../../management/portal/audio").textToFrames;
 
     // Build the actual sales script from the AI agent config
     const agentConfig = await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } });
