@@ -53,3 +53,7 @@ build/dist/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+portal.zip  
+portal.log  
+proton-recovery-phrase.pdf  
+src/management/portal/rc-credentials.json  
