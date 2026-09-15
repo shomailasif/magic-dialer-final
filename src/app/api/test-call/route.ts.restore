@@ -4,8 +4,6 @@ import { prisma } from "@/lib/db";
 import { sendNotification } from "@/lib/mailer";
 import { createRequire } from "module";
 import path from "path";
-import { transcribeAudio } from "@/lib/free-stt";
-import { createConversation, processProspectInput, getInitialGreeting, getCollectedData } from "@/lib/free-ai";
 
 const runtimeRequire = createRequire(path.join(process.cwd(), "src", "app", "api", "test-call", "route.ts"));
 
@@ -220,55 +218,6 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   return [];
 }
 
-function collectProspectAudio(cs: any, startTime: number, heardRef: { current: boolean }, maxMs: number): Promise<{ spoke: boolean; bufs: Buffer[] }> {
-  return new Promise((resolve) => {
-    let gotAudio = false;
-    let lastAudio = 0;
-    const start = Date.now();
-    const bufs: Buffer[] = [];
-    const onAudio = (data: any) => {
-      heardRef.current = true;
-      gotAudio = true;
-      lastAudio = Date.now();
-      if (data && Buffer.isBuffer(data)) bufs.push(Buffer.from(data));
-    };
-    cs.on("audioPacket", onAudio);
-    const check = setInterval(() => {
-      if (Date.now() - startTime > 120000) { clearInterval(check); cs.removeListener("audioPacket", onAudio); resolve({ spoke: gotAudio, bufs }); return; }
-      if (gotAudio && Date.now() - lastAudio > 1200) {
-        clearInterval(check);
-        cs.removeListener("audioPacket", onAudio);
-        resolve({ spoke: true, bufs });
-      }
-      if (!gotAudio && Date.now() - start > maxMs) {
-        clearInterval(check);
-        cs.removeListener("audioPacket", onAudio);
-        resolve({ spoke: false, bufs });
-      }
-    }, 100);
-  });
-}
-
-async function bufsToTranscript(bufs: Buffer[]): Promise<string> {
-  if (bufs.length === 0) return "";
-  const chunks: Int16Array[] = [];
-  for (const buf of bufs) {
-    if (buf.length >= 2) {
-      const samples = Math.floor(buf.length / 2);
-      const pcm = new Int16Array(samples);
-      for (let i = 0; i < samples; i++) pcm[i] = buf.readInt16LE(i * 2);
-      chunks.push(pcm);
-    }
-  }
-  if (chunks.length === 0) return "";
-  const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
-  const combined = new Int16Array(totalLen);
-  let offset = 0;
-  for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.length; }
-  const result = await transcribeAudio(combined, RATE);
-  return result.text;
-}
-
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -297,6 +246,31 @@ export async function POST(request: Request) {
 
     const agentConfig = await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } });
 
+    let script: string;
+    if (agentConfig) {
+      const toneIntro = agentConfig.tone === "FRIENDLY"
+        ? "Hi there, thanks for answering."
+        : agentConfig.tone === "DIRECT"
+          ? "Good day, thank you for taking my call."
+          : "Hello, thanks for picking up.";
+
+      const pitch = agentConfig.pitch?.trim() || `I'm reaching out because we provide ${agentConfig.productName || "our service"}.`;
+
+      script = [
+        `${toneIntro} This is Sophie from Zaz Logistics.`,
+        pitch,
+        agentConfig.pricing ? `Our pricing starts at ${agentConfig.pricing}.` : "",
+        "I just need a couple of details so I can help you quickly.",
+        "Could you share your name?",
+        "And what company are you with?",
+        "And the best email to reach you at?",
+        "Perfect, that is everything I need. Thank you so much.",
+        "One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991 to discuss your needs further. Have a great day!",
+      ].filter(Boolean).join(" ");
+    } else {
+      script = "Hello, this is Sophie from Zaz Logistics. I'm calling to follow up on your onboarding. We noticed you started the process but haven't completed it yet. Is there anything I can help you with? Could you share your name? And what company are you with? And the best email to reach you at? Perfect, that is everything I need. Thank you so much. One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991 to discuss your needs further. Have a great day!";
+    }
+
     const callResult = await sipCallBridge({
       user: rcUser,
       pass: rcPass,
@@ -322,7 +296,6 @@ export async function POST(request: Request) {
     const startTime = Date.now();
     let heardAnyAudio = false;
     let currentStreamer: any = null;
-    const heardRef = { current: false };
 
     async function speak(text: string): Promise<void> {
       const frames = await textToFramesLocal(text);
@@ -357,65 +330,72 @@ export async function POST(request: Request) {
       });
     }
 
-    await collectProspectAudio(cs, startTime, heardRef, 15000);
-    heardAnyAudio = heardRef.current;
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
-
-    const aiState = createConversation({
-      tone: agentConfig?.tone || "PROFESSIONAL",
-      productName: agentConfig?.productName || "dispatch and logistics solutions",
-      pitch: agentConfig?.pitch || "",
-      pricing: agentConfig?.pricing || undefined,
-    });
-    const greeting = getInitialGreeting(aiState);
-    await speak(greeting);
-    const transcriptLines: string[] = [`Agent: ${greeting}`];
-
-    let conversationWorked = false;
-
-    for (let turn = 0; turn < 15; turn++) {
-      if (Date.now() - startTime > 120000) break;
-
-      const { spoke, bufs } = await collectProspectAudio(cs, startTime, heardRef, 8000);
-
-      if (!spoke || bufs.length === 0) {
-        await speak("Are you still there?");
-        const retry = await collectProspectAudio(cs, startTime, heardRef, 5000);
-        if (!retry.spoke || retry.bufs.length === 0) break;
-        const transcript = await bufsToTranscript(retry.bufs);
-        if (!transcript) break;
-        transcriptLines.push(`Prospect: ${transcript}`);
-        const response = processProspectInput(aiState, transcript);
-        if (response.text) {
-          transcriptLines.push(`Agent: ${response.text}`);
-          await speak(response.text);
-        }
-        conversationWorked = true;
-        if (response.shouldEnd) break;
-        continue;
-      }
-
-      const transcript = await bufsToTranscript(bufs);
-      if (!transcript) {
-        await speak("Sorry, I didn't catch that. Could you repeat?");
-        continue;
-      }
-
-      transcriptLines.push(`Prospect: ${transcript}`);
-      const response = processProspectInput(aiState, transcript);
-      if (response.text) {
-        transcriptLines.push(`Agent: ${response.text}`);
-        await speak(response.text);
-      }
-      conversationWorked = true;
-      if (response.shouldEnd) break;
+    function waitForSilence(maxMs: number): Promise<boolean> {
+      return new Promise((resolve) => {
+        let gotAudio = false;
+        let lastAudio = 0;
+        const start = Date.now();
+        const onAudio = () => {
+          heardAnyAudio = true;
+          gotAudio = true;
+          lastAudio = Date.now();
+        };
+        cs.on("audioPacket", onAudio);
+        const check = setInterval(() => {
+          if (Date.now() - startTime > 120000) { clearInterval(check); cs.removeListener("audioPacket", onAudio); resolve(gotAudio); return; }
+          if (gotAudio && Date.now() - lastAudio > 800) {
+            clearInterval(check);
+            cs.removeListener("audioPacket", onAudio);
+            resolve(true);
+          }
+          if (!gotAudio && Date.now() - start > maxMs) {
+            clearInterval(check);
+            cs.removeListener("audioPacket", onAudio);
+            resolve(false);
+          }
+        }, 100);
+      });
     }
+
+    await waitForSilence(15000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("Hello, this is Sophie from Zaz Logistics.");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(3000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("I'm reaching out because we provide dispatch and logistics solutions.");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(3000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("I just need a couple of details so I can help you quickly. Could you share your name?");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(10000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("Great, thank you! And what company are you with?");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(10000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("Perfect. And the best email to reach you at?");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(10000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("That is everything I need. Thank you so much. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!");
     const durationSecs = Math.round((Date.now() - startTime) / 1000);
     try { cs.hangup(); } catch {}
     setTimeout(() => { cleanup(); }, 500);
 
     const connected = durationSecs > 5;
-    const collected = getCollectedData(aiState);
     const interested = connected && heardAnyAudio;
     const disposition = interested ? "INTERESTED" : connected ? "NO_RESPONSE" : "NO_ANSWER";
 
@@ -429,15 +409,11 @@ export async function POST(request: Request) {
           `TEST CALL LEAD NOTIFICATION`,
           ``,
           `Lead Phone: ${number}`,
-          `Lead Name: ${collected.name || "Unknown"}`,
-          `Lead Company: ${collected.company || "Unknown"}`,
-          `Lead Email: ${collected.email || "Unknown"}`,
+          `Lead Name: Test Prospect`,
           `Status: Interested`,
           `Call Duration: ${durationSecs}s`,
           `Call Time: ${now.toISOString()}`,
           `Agent: Sophie (Zaz Logistics)`,
-          ``,
-          transcriptLines.join("\n"),
           ``,
           `A dispatch manager should call back within 30 minutes at 623-400-1991.`,
         ].join("\n");
@@ -446,13 +422,12 @@ export async function POST(request: Request) {
           `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">`,
           `<h2 style="color:#0f172a">Test Call Lead Notification</h2>`,
           `<table style="border-collapse:collapse;width:100%">`,
-          `<tr><td style="padding:6px 0"><strong>Phone</strong></td><td>${number}</td></tr>`,
-          `<tr><td style="padding:6px 0"><strong>Name</strong></td><td>${collected.name || "Unknown"}</td></tr>`,
-          `<tr><td style="padding:6px 0"><strong>Company</strong></td><td>${collected.company || "Unknown"}</td></tr>`,
-          `<tr><td style="padding:6px 0"><strong>Email</strong></td><td>${collected.email || "Unknown"}</td></tr>`,
+          `<tr><td style="padding:6px 0"><strong>Lead Phone</strong></td><td>${number}</td></tr>`,
+          `<tr><td style="padding:6px 0"><strong>Status</strong></td><td>Interested</td></tr>`,
           `<tr><td style="padding:6px 0"><strong>Duration</strong></td><td>${durationSecs}s</td></tr>`,
+          `<tr><td style="padding:6px 0"><strong>Agent</strong></td><td>Sophie (Zaz Logistics)</td></tr>`,
           `</table>`,
-          `<pre style="background:#f1f5f9;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;margin-top:12px">${transcriptLines.join("\n")}</pre>`,
+          `<p style="margin-top:16px;color:#64748b">Call back within 30 minutes at 623-400-1991.</p>`,
           `</div>`,
         ].join("\n");
 
@@ -465,9 +440,9 @@ export async function POST(request: Request) {
             toEmail: "onboarding@zazlogistics.com",
             subject,
             body: emailText,
-            leadName: collected.name || "Test Prospect",
+            leadName: "Test Prospect",
             phone: number,
-            leadEmail: collected.email || "test@example.com",
+            leadEmail: "test@example.com",
             seats: null,
             otherData: JSON.stringify({ testCall: true, disposition }),
           },
@@ -480,17 +455,13 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       status: disposition,
-      message: `Test call completed. Duration: ${durationSecs}s. ${interested ? "Prospect answered." : "No response."}`,
+      message: `Test call completed. Duration: ${durationSecs}s. ${interested ? "Prospect answered — email sent to onboarding." : "No response."}`,
+      script: script.substring(0, 200) + "...",
       durationSecs,
       connected,
       interested,
       emailSent,
       emailError,
-      conversationWorked,
-      transcript: transcriptLines.join("\n"),
-      collectedName: collected.name,
-      collectedCompany: collected.company,
-      collectedEmail: collected.email,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";
