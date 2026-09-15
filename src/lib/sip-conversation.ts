@@ -156,32 +156,33 @@ function edgeClean(text: string): string {
 function edgeTts(text: string, voice: string): Promise<Buffer | null> {
   return new Promise((resolve) => {
     let done = false;
-    const timer = setTimeout(() => finish(null), 20000);
+    const timer = setTimeout(() => { console.error("[sip-conv] edgeTts TIMEOUT for:", text.slice(0, 40)); finish(null); }, 20000);
     function finish(buf: Buffer | null) { if (!done) { done = true; clearTimeout(timer); resolve(buf); } }
     let ws: any;
     try {
       const WS = runtimeRequire("ws");
-      ws = new WS(
-        `${EDGE_HOST}?TrustedClientToken=${EDGE_TOKEN}&ConnectionId=${edgeMakeId()}&Sec-MS-GEC=${edgeSecMsGec()}&Sec-MS-GEC-Version=${EDGE_GEC_VERSION}`,
-        { headers: { ...EDGE_WS_HEADERS, Cookie: `muid=${require("node:crypto").randomBytes(16).toString("hex").toUpperCase()};` }, perMessageDeflate: true }
-      );
+      const url = `${EDGE_HOST}?TrustedClientToken=${EDGE_TOKEN}&ConnectionId=${edgeMakeId()}&Sec-MS-GEC=${edgeSecMsGec()}&Sec-MS-GEC-Version=${EDGE_GEC_VERSION}`;
+      console.log("[sip-conv] edgeTts connecting WS...");
+      ws = new WS(url, { headers: { ...EDGE_WS_HEADERS, Cookie: `muid=${require("node:crypto").randomBytes(16).toString("hex").toUpperCase()};` }, perMessageDeflate: true });
     } catch (e: any) { console.error("[sip-conv] WS create failed:", e?.message); finish(null); return; }
     const chunks: Buffer[] = [];
     const stamp = edgeDateString();
     ws.on("open", () => {
+      console.log("[sip-conv] edgeTts WS open, sending config...");
       ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-8khz-16kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
         if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
           `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
           `<voice name='${voice}'><prosody pitch='+0Hz' rate='+0%' volume='+0%'>${edgeClean(text)}</prosody></voice></speak>`,
-          (e2: any) => { if (e2) finish(null); }
+          (e2: any) => { if (e2) { console.error("[sip-conv] SSML send error:", e2); finish(null); } }
         );
       });
     });
     ws.on("message", (raw: any, isBinary: boolean) => {
       if (!isBinary) {
-        if (String(raw).includes("turn.end")) { try { ws.close(); } catch {} finish(Buffer.concat(chunks)); }
+        const msg = String(raw);
+        if (msg.includes("turn.end")) { console.log("[sip-conv] edgeTts turn.end, got", chunks.length, "audio chunks"); try { ws.close(); } catch {} finish(Buffer.concat(chunks)); }
         return;
       }
       const buf = Buffer.from(raw);
@@ -193,7 +194,8 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
         chunks.push(buf.subarray(2 + hl + 2));
       } catch { finish(null); }
     });
-    ws.on("error", (e: any) => { console.error("[sip-conv] TTS WS error:", e?.message); finish(null); });
+    ws.on("error", (e: any) => { console.error("[sip-conv] TTS WS error:", e?.code, e?.message); finish(null); });
+    ws.on("close", (code: any, reason: any) => { console.log("[sip-conv] edgeTts WS closed:", code, reason?.toString()?.slice(0, 100)); });
   });
 }
 
@@ -211,20 +213,31 @@ function splitForTts(text: string): string[] {
 
 async function textToFramesLocal(text: string): Promise<Buffer[]> {
   const chunks = splitForTts(text);
+  console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
   const parts: Buffer[] = [];
   for (const chunk of chunks) {
     const m = await edgeTts(chunk, EDGE_VOICE);
-    if (m) parts.push(m);
+    if (m) {
+      parts.push(m);
+      console.log("[sip-conv] TTS got mp3 chunk:", m.length, "bytes");
+    } else {
+      console.error("[sip-conv] TTS returned null for chunk:", chunk.slice(0, 40));
+    }
   }
-  if (!parts.length) return [];
+  if (!parts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
   const combined = Buffer.concat(parts);
+  console.log("[sip-conv] TTS combined mp3:", combined.length, "bytes");
   const wav = wavToPcm16(combined);
-  if (wav && wav.length > 0) return toUlawFrames(wav);
+  if (wav && wav.length > 0) { console.log("[sip-conv] TTS decoded as WAV:", wav.length, "samples"); return toUlawFrames(wav); }
+  console.log("[sip-conv] TTS not WAV, trying mpg123...");
   try {
     const mod = runtimeRequire("mpg123-decoder");
+    console.log("[sip-conv] mpg123 loaded:", typeof mod.MPEGDecoder);
     const dec = new mod.MPEGDecoder();
     if (dec.ready) await dec.ready;
+    console.log("[sip-conv] mpg123 decoder ready");
     const r = dec.decode(new Uint8Array(combined));
+    console.log("[sip-conv] mpg123 decoded:", r?.samplesDecoded, "samples,", r?.channelData?.length, "channels");
     if (r && r.channelData && r.channelData.length) {
       const channels = r.channelData.length;
       const rate = Number(r.sampleRate) || 8000;
@@ -248,9 +261,11 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
         }
         pcm = out;
       }
+      console.log("[sip-conv] TTS final pcm:", pcm.length, "samples");
       return toUlawFrames(pcm);
     }
-  } catch (e: any) { console.error("[sip-conv] mpg123 decode error:", e?.message); }
+    console.error("[sip-conv] mpg123 decode returned no channel data");
+  } catch (e: any) { console.error("[sip-conv] mpg123 decode error:", e?.message, e?.stack?.split("\n").slice(0, 3).join(" ")); }
   return [];
 }
 
