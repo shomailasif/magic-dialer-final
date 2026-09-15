@@ -1,8 +1,5 @@
 import type { DialerConfig, DialerProvider } from "@prisma/client";
 
-// eslint-disable-next-line @typescript-eslint/no-implied-eval
-const runtimeRequire = new Function("m", "return require(m)") as NodeRequire;
-
 export interface DialResult {
   connected: boolean;
   outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED";
@@ -22,142 +19,113 @@ export async function validateProvider(config: DialerConfig) {
   const hasApiKey = !!config.apiKey;
   const hasAccountSid = !!config.accountSid;
   const hasSipUser = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
+  const hasRcApi = !!(process.env.RC_CLIENT_ID && process.env.RC_CLIENT_SECRET);
 
-  if (!hasApiKey && !hasAccountSid && !hasSipUser) {
-    return {
-      ok: false,
-      error: "API key and account SID are required.",
-    };
+  if (!hasApiKey && !hasAccountSid && !hasSipUser && !hasRcApi) {
+    return { ok: false, error: "No dialer credentials configured." };
   }
 
   switch (config.provider) {
     case "TWILIO": {
-      if (!config.accountSid) {
-        return { ok: false, error: "Twilio requires an Account SID." };
-      }
-      if (!/^AC[0-9a-fA-F]{32}$/.test(config.accountSid) && !/^AC/.test(config.accountSid)) {
-        return { ok: false, error: "Twilio Account SID must start with 'AC'." };
-      }
-      if (!config.outboundNumber) {
-        return { ok: false, error: "An outbound caller ID number is required." };
-      }
-      break;
-    }
-    case "VONAGE": {
-      if (!config.apiKey) {
-        return { ok: false, error: "Vonage requires an API key." };
-      }
+      if (!config.accountSid) return { ok: false, error: "Twilio requires an Account SID." };
+      if (!config.outboundNumber) return { ok: false, error: "An outbound caller ID number is required." };
       break;
     }
     case "RINGCENTRAL": {
-      if (!config.apiKey && !process.env.RC_SIP_USERNAME) {
-        return { ok: false, error: "RingCentral requires an API token/credential." };
-      }
+      if (!hasRcApi && !hasSipUser) return { ok: false, error: "RingCentral requires API or SIP credentials." };
       break;
     }
   }
-
   return { ok: true };
 }
 
-/**
- * Place an outbound call through the configured provider.
- *
- * When RingCentral SIP credentials are available, places a real SIP call
- * and plays the AI sales script via TTS. All 3 users share the same RC line.
- */
-export async function placeCall(
-  input: PlaceCallInput,
-): Promise<DialResult> {
-  const providerConfig = {
-    provider: input.provider,
-    apiKey: input.apiKey,
-    accountSid: input.accountSid,
-    outboundNumber: input.from,
-  } as DialerConfig;
+async function rcGetToken(): Promise<string> {
+  const clientId = process.env.RC_CLIENT_ID || "";
+  const clientSecret = process.env.RC_CLIENT_SECRET || "";
+  const jwt = process.env.RC_JWT || "";
 
-  const check = await validateProvider(providerConfig);
-  if (!check.ok) {
-    throw new Error(check.error as string);
+  if (jwt && clientId && clientSecret) {
+    const basic = "Basic " + Buffer.from(clientId + ":" + clientSecret).toString("base64");
+    const r = await fetch("https://platform.ringcentral.com/restapi/oauth/token", {
+      method: "POST",
+      headers: { Authorization: basic, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }).toString(),
+    });
+    if (!r.ok) throw new Error("RC JWT rejected: " + r.status);
+    return (await r.json()).access_token;
   }
 
-  const rcUser = process.env.RC_SIP_USERNAME;
-  const rcPass = process.env.RC_SIP_PASSWORD;
-  const rcAuthId = process.env.RC_SIP_AUTH_ID || rcUser;
-  const rcCallerId = process.env.RC_CALLER_ID || process.env.RC_PHONE || input.from;
-  const rcDomain = process.env.RC_SIP_DOMAIN || "sip.ringcentral.com";
-  const rcProxy = process.env.RC_SIP_PROXY || "sip40.ringcentral.com";
-  const rcPort = process.env.RC_SIP_PORT || "5096";
+  const sipUser = process.env.RC_SIP_USERNAME || "";
+  const sipPass = process.env.RC_SIP_PASSWORD || "";
+  if (sipUser && sipPass && clientId && clientSecret) {
+    const basic = "Basic " + Buffer.from(clientId + ":" + clientSecret).toString("base64");
+    const r = await fetch("https://platform.ringcentral.com/restapi/v1.0/oauth/token", {
+      method: "POST",
+      headers: { Authorization: basic, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "password", username: sipUser, password: sipPass, extension: "101" }).toString(),
+    });
+    if (!r.ok) throw new Error("RC password token rejected: " + r.status);
+    return (await r.json()).access_token;
+  }
 
-  if (rcUser && rcPass && input.provider === "RINGCENTRAL") {
+  throw new Error("No RingCentral credentials configured");
+}
+
+export async function placeCall(input: PlaceCallInput): Promise<DialResult> {
+  const check = await validateProvider({ provider: input.provider } as DialerConfig);
+  if (!check.ok) throw new Error(check.error as string);
+
+  if (input.provider === "RINGCENTRAL") {
     try {
-      const sipCallBridge = runtimeRequire("../management/portal/softphone").sipCallBridge;
-      const textToFrames = runtimeRequire("../management/portal/audio").textToFrames;
+      const token = await rcGetToken();
+      const from = input.from || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "";
 
-      const callResult = await sipCallBridge({
-        user: rcUser,
-        pass: rcPass,
-        authId: rcAuthId,
-        domain: rcDomain,
-        proxy: rcProxy,
-        port: Number(rcPort),
-        number: input.to,
-        callerId: rcCallerId,
+      const r = await fetch("https://platform.ringcentral.com/restapi/v1.0/account/~/extension/~/ring-out", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          to: { phoneNumber: input.to },
+          from: { phoneNumber: from },
+          callerId: { phoneNumber: from },
+          playPrompt: false,
+        }),
       });
+      if (!r.ok) return { connected: false, outcome: "FAILED", durationSecs: 0 };
+      const d = await r.json();
+      const ringoutId = d.id || "";
 
-      if (!callResult.ok) {
-        const last = String(callResult.last || "").toLowerCase();
-        const outcome = last.includes("busy") ? "BUSY"
-          : last.includes("disposed") || last.includes("no-answer") ? "NO_ANSWER"
-          : "FAILED";
-        return { connected: false, outcome: outcome as DialResult["outcome"], durationSecs: 0 };
+      const start = Date.now();
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const poll = await fetch("https://platform.ringcentral.com/restapi/v1.0/account/~/extension/~/ring-out/" + ringoutId, {
+            headers: { Authorization: "Bearer " + token },
+          });
+          if (!poll.ok) continue;
+          const pd = await poll.json();
+          const cs = String((pd.status || {}).callStatus || "").toLowerCase();
+          if (/connected|completed|success/.test(cs)) {
+            await new Promise((r) => setTimeout(r, 5000));
+            return { connected: true, outcome: "CONNECTED", durationSecs: Math.round((Date.now() - start) / 1000) };
+          }
+          if (/invalid|error|fail|denied|unavailable|no.?answer/.test(cs)) {
+            return { connected: false, outcome: cs.includes("busy") ? "BUSY" : "NO_ANSWER", durationSecs: 0 };
+          }
+        } catch {}
       }
-
-      const cs = callResult.callSession;
-      const cleanup = callResult.cleanup;
-      const startTime = Date.now();
-
-      // Play the AI script via TTS if provided
-      if (input.script) {
-        const frames = await textToFrames(input.script);
-        if (frames.length > 0) {
-          cs.streamAudio(Buffer.concat(frames));
-        }
-      }
-
-      // Wait for call to end (prospect hangs up or silence)
-      await new Promise<void>((resolve) => {
-        const maxDuration = 60000;
-        cs.once("disposed", () => resolve());
-        cs.once("ended", () => resolve());
-        setTimeout(() => { try { cs.hangup(); } catch {} resolve(); }, maxDuration);
-      });
-
-      const durationSecs = Math.round((Date.now() - startTime) / 1000);
-      setTimeout(() => { cleanup(); }, 500);
-
-      return { connected: true, outcome: "CONNECTED", durationSecs };
+      return { connected: false, outcome: "NO_ANSWER", durationSecs: 0 };
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : "SIP call failed";
-      console.error("[dialer] SIP call error:", msg);
+      console.error("[dialer] RingCentral error:", e instanceof Error ? e.message : e);
       return { connected: false, outcome: "FAILED", durationSecs: 0 };
     }
   }
 
-  // Simulation fallback
+  // Simulation fallback for non-RC providers
   const seed = [...input.to].reduce((acc, c) => acc + c.charCodeAt(0), 0);
   const r = seed % 100;
-
-  if (r < 55) {
-    const duration = 15 + (seed % 90);
-    return { connected: true, outcome: "CONNECTED", durationSecs: duration };
-  } else if (r < 70) {
-    return { connected: false, outcome: "NO_ANSWER", durationSecs: 0 };
-  } else if (r < 80) {
-    return { connected: false, outcome: "BUSY", durationSecs: 0 };
-  } else if (r < 90) {
-    return { connected: false, outcome: "UNREACHABLE", durationSecs: 0 };
-  } else {
-    return { connected: false, outcome: "FAILED", durationSecs: 0 };
-  }
+  if (r < 55) return { connected: true, outcome: "CONNECTED", durationSecs: 15 + (seed % 90) };
+  if (r < 70) return { connected: false, outcome: "NO_ANSWER", durationSecs: 0 };
+  if (r < 80) return { connected: false, outcome: "BUSY", durationSecs: 0 };
+  if (r < 90) return { connected: false, outcome: "UNREACHABLE", durationSecs: 0 };
+  return { connected: false, outcome: "FAILED", durationSecs: 0 };
 }
