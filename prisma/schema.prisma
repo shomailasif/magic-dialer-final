@@ -295,3 +295,27 @@ model Notification {
   @@index([status])
   @@index([userId])
 }
+
+model PlatformSetting {
+  id        String   @id @default("platform")
+  smtpHost  String?
+  smtpPort  String?
+  smtpSecure String?
+  smtpUser  String?
+  smtpPass  String?
+  smtpFrom  String?
+  rcSipUsername String?
+  rcSipPassword String?
+  rcSipAuthId String?
+  rcSipDomain String?
+  rcSipProxy String?
+  rcSipPort String?
+  rcCallerId String?
+  rcJwt     String?
+  rcClientId String?
+  rcClientSecret String?
+  onboardingEmail String?
+  recoveryPhrase   String?
+  notes     String?
+  updatedAt DateTime @updatedAt
+}
