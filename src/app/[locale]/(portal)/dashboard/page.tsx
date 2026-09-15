@@ -5,6 +5,7 @@ import { CallOutcome, LeadStatus } from "@prisma/client";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
+import { TestCallCard } from "./test-call-card";
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
@@ -131,6 +132,8 @@ export default async function DashboardPage({
         </div>
 
         <div className="space-y-6">
+          <TestCallCard />
+
           <Card className="p-5">
             <h3 className="text-base font-semibold text-slate-900">{t("quickActions")}</h3>
             <div className="mt-4 space-y-2">
