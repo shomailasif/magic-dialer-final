@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  serverExternalPackages: ["ringcentral-softphone", "werift-rtp", "ws"],
 };
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
