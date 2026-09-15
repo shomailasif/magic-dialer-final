@@ -23,7 +23,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { sipCallOnce } = require("../../management/portal/softphone");
+    const { sipCallOnce } = require("../../../management/portal/softphone");
     const result = await sipCallOnce({
       user: rcUser,
       pass: rcPass,
