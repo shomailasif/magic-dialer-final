@@ -9,20 +9,19 @@ export function TestCallCard() {
   const [loading, setLoading] = useState(false);
 
   async function dialTest() {
-    if (!number.trim()) return;
     setLoading(true);
-    setStatus("Placing test call...");
+    setStatus("Testing VOIP connection...");
     try {
-      const res = await fetch("/api/test-call", {
+      const res = await fetch("/api/dialer/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ number: number.trim() }),
+        body: JSON.stringify({ provider: "RINGCENTRAL", outboundNumber: number.trim() }),
       });
       const data = await res.json();
       if (!res.ok) {
-        setStatus(`Failed: ${data.error || "Unknown error"}`);
+        setStatus(`Connection failed: ${data.error || "Check your VOIP settings"}`);
       } else {
-        setStatus(`Call placed! Status: ${data.status || "ringing"}`);
+        setStatus(`Connection successful! Your VOIP line is active and ready.`);
       }
     } catch (e: unknown) {
       setStatus(`Error: ${e instanceof Error ? e.message : "Network error"}`);
@@ -39,13 +38,13 @@ export function TestCallCard() {
       </p>
       <div className="mt-4 flex gap-2">
         <Input
-          placeholder="+16234001991"
+          placeholder="Optional: outbound number"
           value={number}
           onChange={(e) => setNumber(e.target.value)}
           className="flex-1"
         />
-        <Button onClick={dialTest} loading={loading} disabled={!number.trim()}>
-          Dial test
+        <Button onClick={dialTest} loading={loading}>
+          Test connection
         </Button>
       </div>
       {status && (
