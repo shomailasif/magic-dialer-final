@@ -2,8 +2,11 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { sendNotification } from "@/lib/mailer";
-import { sipCallBridge } from "../../../management/portal/softphone";
-import { textToFrames } from "../../../management/portal/audio";
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const getSoftphone = () => require("../../../management/portal/softphone");
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const getAudio = () => require("../../../management/portal/audio");
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
@@ -28,6 +31,9 @@ export async function POST(request: Request) {
   }
 
   try {
+    const { sipCallBridge } = getSoftphone();
+    const { textToFrames } = getAudio();
+
     // Build the actual sales script from the AI agent config
     const agentConfig = await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } });
 
