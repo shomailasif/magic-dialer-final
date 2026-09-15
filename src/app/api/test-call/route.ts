@@ -3,7 +3,188 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { sendNotification } from "@/lib/mailer";
 import { createRequire } from "module";
+
 const runtimeRequire = createRequire(import.meta.url);
+
+const RATE = 8000;
+const FRAME = 160;
+const ULAW_SEG_END = [0x0ff, 0x1ff, 0x3ff, 0x7ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff];
+
+function ulawEncode(sample: number): number {
+  let s = sample | 0;
+  const sign = (s >> 8) & 0x80;
+  if (sign) s = -s;
+  if (s > 32767) s = 32767;
+  s += 0x84;
+  let e = 0;
+  while (e < 8 && s > ULAW_SEG_END[e]) e++;
+  let b: number;
+  if (e === 8) b = 0x7f;
+  else { const mant = (s >> (e + 3)) & 0x0f; b = (e << 4) | mant; }
+  b |= sign;
+  return b ^ 0xff;
+}
+
+function toUlawFrames(pcm16: Int16Array): Buffer[] {
+  const frames: Buffer[] = [];
+  const n = pcm16.length;
+  for (let off = 0; off < n; off += FRAME) {
+    const end = Math.min(off + FRAME, n);
+    const b = Buffer.alloc(FRAME);
+    for (let i = off; i < end; i++) b[i - off] = ulawEncode(pcm16[i]);
+    frames.push(b);
+  }
+  return frames;
+}
+
+function wavToPcm16(buf: Buffer): Int16Array | null {
+  if (buf.length < 44 || buf.toString("ascii", 0, 4) !== "RIFF") return null;
+  let offset = 12;
+  let fmt: { sampleRate: number; channels: number; bitsPerSample: number } | null = null;
+  let dataOffset = 0;
+  let dataSize = 0;
+  while (offset < buf.length - 8) {
+    const id = buf.toString("ascii", offset, offset + 4);
+    const sz = buf.readUInt32LE(offset + 4);
+    if (id === "fmt ") { fmt = { sampleRate: buf.readUInt32LE(offset + 12), channels: buf.readUInt16LE(offset + 10), bitsPerSample: buf.readUInt16LE(offset + 22) }; }
+    else if (id === "data") { dataOffset = offset + 8; dataSize = sz; break; }
+    offset += 8 + sz;
+  }
+  if (!fmt || !dataOffset) return null;
+  const raw = buf.subarray(dataOffset, dataOffset + dataSize);
+  let pcm: Int16Array;
+  if (fmt.bitsPerSample === 16) {
+    pcm = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.length / 2));
+  } else if (fmt.bitsPerSample === 8) {
+    pcm = Int16Array.from(raw, (v) => (v - 128) << 8);
+  } else return null;
+  if (fmt.channels === 2) {
+    const mono = new Int16Array(Math.floor(pcm.length / 2));
+    for (let i = 0; i < mono.length; i++) mono[i] = Math.round((pcm[i * 2] + pcm[i * 2 + 1]) / 2);
+    pcm = mono;
+  }
+  if (fmt.sampleRate !== RATE) {
+    const out = new Int16Array(Math.ceil((pcm.length * RATE) / fmt.sampleRate));
+    const step = fmt.sampleRate / RATE;
+    for (let i = 0; i < out.length; i++) {
+      const start = Math.floor(i * step);
+      const end = Math.min(pcm.length, Math.max(start + 1, Math.ceil((i + 1) * step)));
+      let acc = 0;
+      for (let j = start; j < end; j++) acc += pcm[j];
+      out[i] = Math.max(-32768, Math.min(32767, Math.round(acc / (end - start))));
+    }
+    pcm = out;
+  }
+  return pcm;
+}
+
+const EDGE_VOICE = "en-US-AvaNeural";
+const EDGE_HOST = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
+const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
+const EDGE_GEC_VERSION = "1-143.0.3650.75";
+const EDGE_WS_HEADERS: Record<string, string> = {
+  "Pragma": "no-cache",
+  "Cache-Control": "no-cache",
+  "Origin": "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+};
+const EDGE_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const EDGE_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function edgeDateString() {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${EDGE_WEEKDAYS[d.getUTCDay()]} ${EDGE_MONTHS[d.getUTCMonth()]} ${p(d.getUTCDate())} ${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} GMT+0000 (Coordinated Universal Time)`;
+}
+
+function edgeSecMsGec(nowS = Date.now() / 1000) {
+  let ticks = nowS + 11644473600;
+  ticks -= ticks % 300;
+  ticks *= 1e9 / 100;
+  const { createHash } = require("node:crypto") as typeof import("node:crypto");
+  return createHash("sha256").update(`${Math.floor(ticks)}${EDGE_TOKEN}`, "ascii").digest("hex").toUpperCase();
+}
+
+function edgeMakeId() {
+  const { randomUUID } = require("node:crypto") as typeof import("node:crypto");
+  return randomUUID().replace(/-/g, "");
+}
+
+function edgeClean(text: string): string {
+  return String(text || "")
+    .split("").map((c) => { const code = c.charCodeAt(0); return (code <= 0x08 || (code >= 0x0B && code <= 0x0C) || (code >= 0x0E && code <= 0x1F)) ? " " : c; }).join("")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function edgeTts(text: string, voice: string): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => finish(null), 20000);
+    function finish(buf: Buffer | null) { if (!done) { done = true; clearTimeout(timer); resolve(buf); } }
+    let ws: any;
+    try {
+      const WS = runtimeRequire("ws");
+      ws = new WS(
+        `${EDGE_HOST}?TrustedClientToken=${EDGE_TOKEN}&ConnectionId=${edgeMakeId()}&Sec-MS-GEC=${edgeSecMsGec()}&Sec-MS-GEC-Version=${EDGE_GEC_VERSION}`,
+        { headers: { ...EDGE_WS_HEADERS, Cookie: `muid=${require("node:crypto").randomBytes(16).toString("hex").toUpperCase()};` }, perMessageDeflate: true }
+      );
+    } catch { finish(null); return; }
+    const chunks: Buffer[] = [];
+    const stamp = edgeDateString();
+    ws.on("open", () => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
+        if (err) { finish(null); return; }
+        ws.send(
+          `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
+          `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
+          `<voice name='${voice}'><prosody pitch='+0Hz' rate='+0%' volume='+0%'>${edgeClean(text)}</prosody></voice></speak>`,
+          (e2: any) => { if (e2) finish(null); }
+        );
+      });
+    });
+    ws.on("message", (raw: any, isBinary: boolean) => {
+      if (!isBinary) {
+        if (String(raw).includes("turn.end")) { try { ws.close(); } catch {} finish(Buffer.concat(chunks)); }
+        return;
+      }
+      const buf = Buffer.from(raw);
+      try {
+        if (buf.length < 2) return;
+        const hl = buf.readUInt16BE(0);
+        const head = buf.toString("ascii", 2, 2 + hl);
+        if (!head.includes("Path:audio")) return;
+        chunks.push(buf.subarray(2 + hl + 2));
+      } catch { finish(null); }
+    });
+    ws.on("error", () => finish(null));
+  });
+}
+
+function splitForTts(text: string): string[] {
+  const sentences = String(text || "").split(/(?<=[.!?])\s+/);
+  const chunks: string[] = [];
+  let cur = "";
+  for (const s of sentences) {
+    if ((cur + " " + s).trim().length > 180) { if (cur.trim()) chunks.push(cur.trim()); cur = s; }
+    else cur = (cur + " " + s).trim();
+  }
+  if (cur.trim()) chunks.push(cur.trim());
+  return chunks.length ? chunks : [String(text || "Hello").slice(0, 180)];
+}
+
+async function textToFramesLocal(text: string): Promise<Buffer[]> {
+  const chunks = splitForTts(text);
+  const parts: Buffer[] = [];
+  for (const chunk of chunks) {
+    const m = await edgeTts(chunk, EDGE_VOICE);
+    if (m) parts.push(m);
+  }
+  if (!parts.length) return [];
+  const combined = Buffer.concat(parts);
+  const wav = wavToPcm16(combined);
+  if (wav) return toUlawFrames(wav);
+  return [];
+}
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
@@ -29,8 +210,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const sipCallBridge = runtimeRequire("../../../management/portal/softphone").sipCallBridge;
-    const textToFrames = runtimeRequire("../../../management/portal/audio").textToFrames;
+    const { sipCallBridge } = runtimeRequire("../../../management/portal/softphone");
 
     const agentConfig = await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } });
 
@@ -85,7 +265,7 @@ export async function POST(request: Request) {
 
     cs.on("audioPacket", () => { heardAnyAudio = true; });
 
-    const frames = await textToFrames(script);
+    const frames = await textToFramesLocal(script);
     if (frames.length > 0) {
       cs.streamAudio(Buffer.concat(frames));
     }
@@ -126,10 +306,8 @@ export async function POST(request: Request) {
       try {
         const now = new Date();
         const subject = `[TEST] New Interested Lead — ${number}`;
-        const text = [
+        const emailText = [
           `TEST CALL LEAD NOTIFICATION`,
-          ``,
-          `This is a test call result from the dashboard.`,
           ``,
           `Lead Phone: ${number}`,
           `Lead Name: Test Prospect`,
@@ -137,7 +315,6 @@ export async function POST(request: Request) {
           `Call Duration: ${durationSecs}s`,
           `Call Time: ${now.toISOString()}`,
           `Agent: Sophie (Zaz Logistics)`,
-          `Disposition: ${disposition}`,
           ``,
           `A dispatch manager should call back within 30 minutes at 623-400-1991.`,
         ].join("\n");
@@ -145,25 +322,17 @@ export async function POST(request: Request) {
         const html = [
           `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">`,
           `<h2 style="color:#0f172a">Test Call Lead Notification</h2>`,
-          `<p>This is a test call result from the dashboard.</p>`,
           `<table style="border-collapse:collapse;width:100%">`,
           `<tr><td style="padding:6px 0"><strong>Lead Phone</strong></td><td>${number}</td></tr>`,
-          `<tr><td style="padding:6px 0"><strong>Lead Name</strong></td><td>Test Prospect</td></tr>`,
           `<tr><td style="padding:6px 0"><strong>Status</strong></td><td>Interested</td></tr>`,
-          `<tr><td style="padding:6px 0"><strong>Call Duration</strong></td><td>${durationSecs}s</td></tr>`,
-          `<tr><td style="padding:6px 0"><strong>Call Time</strong></td><td>${now.toISOString()}</td></tr>`,
+          `<tr><td style="padding:6px 0"><strong>Duration</strong></td><td>${durationSecs}s</td></tr>`,
           `<tr><td style="padding:6px 0"><strong>Agent</strong></td><td>Sophie (Zaz Logistics)</td></tr>`,
           `</table>`,
-          `<p style="margin-top:16px;color:#64748b">A dispatch manager should call back within 30 minutes at 623-400-1991.</p>`,
+          `<p style="margin-top:16px;color:#64748b">Call back within 30 minutes at 623-400-1991.</p>`,
           `</div>`,
         ].join("\n");
 
-        await sendNotification({
-          to: "onboarding@zazlogistics.com",
-          subject,
-          text,
-          html,
-        });
+        await sendNotification({ to: "onboarding@zazlogistics.com", subject, text: emailText, html });
         emailSent = true;
 
         await prisma.notification.create({
@@ -171,7 +340,7 @@ export async function POST(request: Request) {
             userId: user.id,
             toEmail: "onboarding@zazlogistics.com",
             subject,
-            body: text,
+            body: emailText,
             leadName: "Test Prospect",
             phone: number,
             leadEmail: "test@example.com",
@@ -187,7 +356,7 @@ export async function POST(request: Request) {
     return NextResponse.json({
       ok: true,
       status: disposition,
-      message: `Test call completed. Duration: ${durationSecs}s. ${interested ? "Prospect answered and spoke — email sent to onboarding." : "No response."}`,
+      message: `Test call completed. Duration: ${durationSecs}s. ${interested ? "Prospect answered — email sent to onboarding." : "No response."}`,
       script: script.substring(0, 200) + "...",
       durationSecs,
       connected,
