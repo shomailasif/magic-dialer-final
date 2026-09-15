@@ -72,7 +72,7 @@ function sipCallOnce(o) {
     if (!Softphone) {
       return resolve({ ok: false, outcome: "error", last: "ringcentral-softphone not installed", steps: [], media: null, extra: null });
     }
-    const number = String(o.number || o.callee || "").replace(/[^\d+]/, "");
+    const number = String(o.number || o.callee || "").replace(/[^0-9]/g, "");
     const durationMs = Math.max(2000, Number(o.durationMs || 20000));
     const frames = toFrames(o.payloads);
     const steps = [];
@@ -227,7 +227,7 @@ function sipCallBridge(o) {
     if (!Softphone) {
       return resolve({ ok: false, callSession: null, softphone: null, steps: ["ringcentral-softphone not installed"], last: "ringcentral-softphone not installed", media: null, cleanup: () => {} });
     }
-    const number = String(o.number || o.callee || "").replace(/[^\d+]/, "");
+    const number = String(o.number || o.callee || "").replace(/[^0-9]/g, "");
     const steps = [];
     let softphone = null;
     let callSession = null;
