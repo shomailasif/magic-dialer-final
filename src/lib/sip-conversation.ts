@@ -150,7 +150,7 @@ function edgeMakeId() {
 function edgeClean(text: string): string {
   return String(text || "")
     .split("").map((c) => { const code = c.charCodeAt(0); return (code <= 0x08 || (code >= 0x0B && code <= 0x0C) || (code >= 0x0E && code <= 0x1F)) ? " " : c; }).join("")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    .replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">");
 }
 
 function edgeTts(text: string, voice: string): Promise<Buffer | null> {
@@ -400,68 +400,53 @@ export async function runConversation(
   const cs = call.callSession;
   const cleanup = call.cleanup;
 
-  const fail = (disc: string): ConversationResult => {
-    try { cs.hangup(); } catch {}
-    setTimeout(() => { cleanup(); }, 500);
-    const dur = Math.round((Date.now() - start) / 1000);
-    return { ok: true, durationSecs: dur, connected: dur > 5, interested: false, disposition: disc, transcript: lines, collectedName: null, collectedCompany: null, collectedEmail: null };
-  };
+  // Speak immediately - no 15s wait since we initiated the call
+  const greeting = getInitialGreeting(state);
+  lines.push(`Agent: ${greeting}`);
+  await speak(cs, greeting, heardRef);
 
-  try {
-    console.log("[sip-conv] Waiting for prospect to answer...");
-    await listenForSpeech(cs, start, heardRef, 15000);
-    if (Date.now() - start > maxDurationMs) return fail("TIMEOUT");
+  for (let turn = 0; turn < 20; turn++) {
+    if (Date.now() - start > maxDurationMs) break;
 
-    const greeting = getInitialGreeting(state);
-    lines.push(`Agent: ${greeting}`);
-    await speak(cs, greeting, heardRef);
-
-    for (let turn = 0; turn < 20; turn++) {
-      if (Date.now() - start > maxDurationMs) break;
-
-      const r = await listenForSpeech(cs, start, heardRef, 8000);
-      if (!r.spoke) {
-        await speak(cs, "Are you still there?", heardRef);
-        const retry = await listenForSpeech(cs, start, heardRef, 5000);
-        if (!retry.spoke) break;
-      }
-      if (Date.now() - start > maxDurationMs) break;
-
-      const txt = inferProspectText(state, r.durationMs, r.peakEnergy);
-      lines.push(`Prospect: ${txt}`);
-      const resp = processProspectInput(state, txt);
-      if (resp.text) {
-        lines.push(`Agent: ${resp.text}`);
-        await speak(cs, resp.text, heardRef);
-      }
-      if (resp.shouldEnd) break;
+    const r = await listenForSpeech(cs, start, heardRef, 8000);
+    if (!r.spoke) {
+      await speak(cs, "Are you still there?", heardRef);
+      const retry = await listenForSpeech(cs, start, heardRef, 5000);
+      if (!retry.spoke) break;
     }
+    if (Date.now() - start > maxDurationMs) break;
 
-    const data = getCollectedData(state);
-    const closing = `Thank${data.name ? " you, " + data.name : " you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!`;
-    lines.push(`Agent: ${closing}`);
-    await speak(cs, closing, heardRef);
-
-    const dur = Math.round((Date.now() - start) / 1000);
-    try { cs.hangup(); } catch {}
-    setTimeout(() => { cleanup(); }, 500);
-
-    const connected = dur > 5;
-    const interested = connected && heardRef.current && !!(data.name || data.email);
-    console.log("[sip-conv] Conversation ended:", { dur, connected, interested });
-    return {
-      ok: true,
-      durationSecs: dur,
-      connected,
-      interested,
-      disposition: interested ? "INTERESTED" : connected ? "NO_RESPONSE" : "NO_ANSWER",
-      transcript: lines,
-      collectedName: data.name,
-      collectedCompany: data.company,
-      collectedEmail: data.email,
-    };
-  } catch (e: any) {
-    console.error("[sip-conv] Conversation error:", e?.message);
-    return fail("ERROR");
+    const txt = inferProspectText(state, r.durationMs, r.peakEnergy);
+    lines.push(`Prospect: ${txt}`);
+    const resp = processProspectInput(state, txt);
+    if (resp.text) {
+      lines.push(`Agent: ${resp.text}`);
+      await speak(cs, resp.text, heardRef);
+    }
+    if (resp.shouldEnd) break;
   }
+
+  const data = getCollectedData(state);
+  const closing = `Thank${data.name ? " you, " + data.name : " you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!`;
+  lines.push(`Agent: ${closing}`);
+  await speak(cs, closing, heardRef);
+
+  const dur = Math.round((Date.now() - start) / 1000);
+  try { cs.hangup(); } catch {}
+  setTimeout(() => { cleanup(); }, 500);
+
+  const connected = dur > 5;
+  const interested = connected && heardRef.current && !!(data.name || data.email);
+  console.log("[sip-conv] Conversation ended:", { dur, connected, interested });
+  return {
+    ok: true,
+    durationSecs: dur,
+    connected,
+    interested,
+    disposition: interested ? "INTERESTED" : connected ? "NO_RESPONSE" : "NO_ANSWER",
+    transcript: lines,
+    collectedName: data.name,
+    collectedCompany: data.company,
+    collectedEmail: data.email,
+  };
 }
