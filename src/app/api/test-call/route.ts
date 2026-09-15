@@ -133,7 +133,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
     const chunks: Buffer[] = [];
     const stamp = edgeDateString();
     ws.on("open", () => {
-      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-8khz-16kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
         if (err) { finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
@@ -191,7 +191,7 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
     const r = dec.decode(new Uint8Array(combined));
     if (r && r.channelData && r.channelData.length) {
       const channels = r.channelData.length;
-      const rate = Number(r.sampleRate) || 24000;
+      const rate = Number(r.sampleRate) || 8000;
       const mono = new Float64Array(r.samplesDecoded);
       for (let i = 0; i < mono.length; i++) {
         let acc = 0;
@@ -199,21 +199,20 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
         mono[i] = (acc / channels) * 32767;
       }
       dec.free();
-      const pcm = Int16Array.from(mono, (v) => Math.max(-32768, Math.min(32767, Math.round(v))));
-      let final = pcm;
+      let pcm = Int16Array.from(mono, (v) => Math.max(-32768, Math.min(32767, Math.round(v))));
       if (rate !== RATE) {
         const out = new Int16Array(Math.ceil((pcm.length * RATE) / rate));
         const step = rate / RATE;
         for (let i = 0; i < out.length; i++) {
-          const start = Math.floor(i * step);
-          const end = Math.min(pcm.length, Math.max(start + 1, Math.ceil((i + 1) * step)));
-          let acc = 0;
-          for (let j = start; j < end; j++) acc += pcm[j];
-          out[i] = Math.max(-32768, Math.min(32767, Math.round(acc / (end - start))));
+          const s = Math.floor(i * step);
+          const e = Math.min(pcm.length, Math.max(s + 1, Math.ceil((i + 1) * step)));
+          let a = 0;
+          for (let j = s; j < e; j++) a += pcm[j];
+          out[i] = Math.max(-32768, Math.min(32767, Math.round(a / (e - s))));
         }
-        final = out;
+        pcm = out;
       }
-      return toUlawFrames(final);
+      return toUlawFrames(pcm);
     }
   } catch {}
   return [];
@@ -296,66 +295,102 @@ export async function POST(request: Request) {
     const cleanup = callResult.cleanup;
     const startTime = Date.now();
     let heardAnyAudio = false;
+    let currentStreamer: any = null;
 
-    const turns: string[] = agentConfig
-      ? [
-          `${agentConfig.tone === "FRIENDLY" ? "Hi there, thanks for answering." : agentConfig.tone === "DIRECT" ? "Good day, thank you for taking my call." : "Hello, thanks for picking up."} This is Sophie from Zaz Logistics.`,
-          agentConfig.pitch?.trim() || `I'm reaching out because we provide ${agentConfig.productName || "our service"}.`,
-          agentConfig.pricing ? `Our pricing starts at ${agentConfig.pricing}.` : "",
-          "I just need a couple of details so I can help you quickly.",
-          "Could you share your name?",
-          "And what company are you with?",
-          "And the best email to reach you at?",
-          "Perfect, that is everything I need. Thank you so much.",
-          "One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991 to discuss your needs further. Have a great day!",
-        ].filter(Boolean)
-      : [
-          "Hello, this is Sophie from Zaz Logistics. I'm calling to follow up on your onboarding.",
-          "Is there anything I can help you with?",
-          "Could you share your name?",
-          "And what company are you with?",
-          "And the best email to reach you at?",
-          "Perfect, that is everything I need. Thank you so much.",
-          "One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991. Have a great day!",
-        ];
-
-    const maxCallDuration = 120000;
-
-    async function playAndWait(text: string, listenMs: number): Promise<boolean> {
+    async function speak(text: string): Promise<void> {
       const frames = await textToFramesLocal(text);
-      if (frames.length > 0) {
-        cs.streamAudio(Buffer.concat(frames));
-      }
-      const silenceThreshold = 2500;
-      let lastAudioTime = Date.now();
-      let gotResponse = false;
-
-      cs.on("audioPacket", () => {
-        heardAnyAudio = true;
-        lastAudioTime = Date.now();
-        gotResponse = true;
-      });
-
-      return new Promise<boolean>((resolve) => {
-        const check = setInterval(() => {
-          if (Date.now() - startTime > maxCallDuration) { clearInterval(check); resolve(gotResponse); return; }
-          if (Date.now() - lastAudioTime > silenceThreshold && Date.now() - (lastAudioTime - listenMs) > listenMs) {
-            clearInterval(check);
-            resolve(gotResponse);
+      if (frames.length === 0) return;
+      return new Promise<void>((resolve) => {
+        let stopped = false;
+        currentStreamer = cs.streamAudio(Buffer.concat(frames));
+        const onAudio = () => {
+          if (!stopped) {
+            stopped = true;
+            try { currentStreamer.stop(); } catch {}
+            cs.removeListener("audioPacket", onAudio);
+            resolve();
           }
-        }, 500);
-        setTimeout(() => { clearInterval(check); resolve(gotResponse); }, listenMs);
+        };
+        cs.on("audioPacket", onAudio);
+        if (currentStreamer && currentStreamer.finished) {
+          currentStreamer.finished.then(() => {
+            cs.removeListener("audioPacket", onAudio);
+            if (!stopped) resolve();
+          }).catch(() => {
+            cs.removeListener("audioPacket", onAudio);
+            if (!stopped) resolve();
+          });
+        } else {
+          const durationMs = Math.max(1000, frames.length * 20);
+          setTimeout(() => {
+            cs.removeListener("audioPacket", onAudio);
+            if (!stopped) resolve();
+          }, durationMs + 500);
+        }
       });
     }
 
-    for (let i = 0; i < turns.length; i++) {
-      if (Date.now() - startTime > maxCallDuration) break;
-      const isQuestion = /\?$/.test(turns[i]);
-      const listenTime = isQuestion ? 8000 : 2000;
-      await playAndWait(turns[i], listenTime);
-      if (Date.now() - startTime > maxCallDuration) break;
+    function waitForSilence(maxMs: number): Promise<boolean> {
+      return new Promise((resolve) => {
+        let gotAudio = false;
+        let lastAudio = 0;
+        const start = Date.now();
+        const onAudio = () => {
+          heardAnyAudio = true;
+          gotAudio = true;
+          lastAudio = Date.now();
+        };
+        cs.on("audioPacket", onAudio);
+        const check = setInterval(() => {
+          if (Date.now() - startTime > 120000) { clearInterval(check); cs.removeListener("audioPacket", onAudio); resolve(gotAudio); return; }
+          if (gotAudio && Date.now() - lastAudio > 800) {
+            clearInterval(check);
+            cs.removeListener("audioPacket", onAudio);
+            resolve(true);
+          }
+          if (!gotAudio && Date.now() - start > maxMs) {
+            clearInterval(check);
+            cs.removeListener("audioPacket", onAudio);
+            resolve(false);
+          }
+        }, 100);
+      });
     }
 
+    await waitForSilence(15000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("Hello, this is Sophie from Zaz Logistics.");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(3000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("I'm reaching out because we provide dispatch and logistics solutions.");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(3000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("I just need a couple of details so I can help you quickly. Could you share your name?");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(10000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("Great, thank you! And what company are you with?");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(10000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("Perfect. And the best email to reach you at?");
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await waitForSilence(10000);
+    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+
+    await speak("That is everything I need. Thank you so much. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!");
     const durationSecs = Math.round((Date.now() - startTime) / 1000);
     try { cs.hangup(); } catch {}
     setTimeout(() => { cleanup(); }, 500);
