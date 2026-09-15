@@ -24,7 +24,11 @@ export interface PlaceCallInput {
  * validation would occur.
  */
 export async function validateProvider(config: DialerConfig) {
-  if (!config.apiKey && !config.accountSid) {
+  const hasApiKey = !!config.apiKey;
+  const hasAccountSid = !!config.accountSid;
+  const hasSipUser = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
+
+  if (!hasApiKey && !hasAccountSid && !hasSipUser) {
     return {
       ok: false,
       error: "API key and account SID are required.",
@@ -52,7 +56,7 @@ export async function validateProvider(config: DialerConfig) {
       break;
     }
     case "RINGCENTRAL": {
-      if (!config.apiKey) {
+      if (!config.apiKey && !process.env.RC_SIP_USERNAME) {
         return { ok: false, error: "RingCentral requires an API token/credential." };
       }
       break;

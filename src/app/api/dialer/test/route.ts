@@ -12,10 +12,13 @@ export async function POST(request: Request) {
     where: { userId: user.id },
   });
 
+  const rcApiKey = process.env.RC_API_KEY || process.env.RC_ACCESS_TOKEN || "";
+  const rcSid = process.env.RC_ACCOUNT_SID || "";
+
   const candidate = {
     provider: (body.provider as string) || current?.provider || "TWILIO",
-    apiKey: body.apiKey && body.apiKey !== "••••••••" ? body.apiKey : current?.apiKey ?? "",
-    accountSid: body.accountSid && body.accountSid !== "••••••••" ? body.accountSid : current?.accountSid ?? "",
+    apiKey: body.apiKey && body.apiKey !== "••••••••" ? body.apiKey : current?.apiKey || rcApiKey,
+    accountSid: body.accountSid && body.accountSid !== "••••••••" ? body.accountSid : current?.accountSid || rcSid,
     outboundNumber: (body.outboundNumber as string) || current?.outboundNumber || "",
   };
 
