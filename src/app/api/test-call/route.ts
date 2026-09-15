@@ -81,8 +81,9 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await request.json().catch(() => ({}));
-  const number = String(body.number || "").replace(/[^0-9+]/g, "");
-  if (!number || number.length < 7) {
+  let number = String(body.number || "").replace(/[^0-9+]/g, "");
+  if (number && !number.startsWith("+")) number = "+" + number;
+  if (!number || number.length < 8) {
     return NextResponse.json({ error: "Enter a valid phone number (e.g. +16234001991)" }, { status: 400 });
   }
 
