@@ -3,8 +3,9 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { sendNotification } from "@/lib/mailer";
 import { createRequire } from "module";
+import path from "path";
 
-const runtimeRequire = createRequire(import.meta.url);
+const runtimeRequire = createRequire(path.join(process.cwd(), "src", "app", "api", "test-call", "route.ts"));
 
 const RATE = 8000;
 const FRAME = 160;
@@ -251,6 +252,7 @@ export async function POST(request: Request) {
     });
 
     if (!callResult.ok) {
+      console.error("[test-call] SIP steps:", JSON.stringify(callResult.steps));
       return NextResponse.json({
         ok: false,
         error: callResult.last || "Call failed to connect",
