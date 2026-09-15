@@ -69,11 +69,9 @@ export async function validateProvider(config: DialerConfig) {
 /**
  * Place an outbound call through the configured provider.
  *
- * NOTE: This is a simulation layer. It validates the provider config is
- * present/valid and then simulates a plausible call outcome so the campaign
- * orchestration can be demonstrated end-to-end without charging a real
- * telephony account. To go live, replace the body with the provider's SDK
- * (e.g. twilio.rest.client.calls.create(...)) and return the real outcome.
+ * When RingCentral SIP credentials are available in env vars, places a real
+ * call via the SIP softphone. All 3 users share the same RC line.
+ * Falls back to simulation when no live credentials are present.
  */
 export async function placeCall(
   input: PlaceCallInput,
@@ -90,18 +88,56 @@ export async function placeCall(
     throw new Error(check.error as string);
   }
 
-  // Deterministic-ish simulation based on the phone number so outcomes vary
-  // across a lead list rather than all being identical.
+  const rcUser = process.env.RC_SIP_USERNAME;
+  const rcPass = process.env.RC_SIP_PASSWORD;
+  const rcCallerId = process.env.RC_CALLER_ID || process.env.RC_PHONE || input.from;
+  const rcDomain = process.env.RC_SIP_DOMAIN || "sip.ringcentral.com";
+  const rcProxy = process.env.RC_SIP_PROXY || "sip40.ringcentral.com";
+  const rcPort = process.env.RC_SIP_PORT || "5096";
+
+  if (rcUser && rcPass && input.provider === "RINGCENTRAL") {
+    try {
+      const { sipCallOnce } = require("../management/portal/softphone");
+      const result = await sipCallOnce({
+        user: rcUser,
+        pass: rcPass,
+        authId: rcUser,
+        domain: rcDomain,
+        proxy: rcProxy,
+        port: Number(rcPort),
+        number: input.to,
+        callerId: rcCallerId,
+        durationMs: 25000,
+      });
+
+      const durationSecs = Math.round((result.durationMs || 0) / 1000);
+      const outcome = result.ok
+        ? "CONNECTED"
+        : result.outcome === "no-answer"
+          ? "NO_ANSWER"
+          : result.outcome === "busy"
+            ? "BUSY"
+            : "FAILED";
+
+      return {
+        connected: result.ok,
+        outcome: outcome as DialResult["outcome"],
+        durationSecs,
+      };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "SIP call failed";
+      console.error("[dialer] SIP call error:", msg);
+      return { connected: false, outcome: "FAILED", durationSecs: 0 };
+    }
+  }
+
+  // Simulation fallback when no live SIP credentials
   const seed = [...input.to].reduce((acc, c) => acc + c.charCodeAt(0), 0);
   const r = seed % 100;
 
   if (r < 55) {
     const duration = 15 + (seed % 90);
-    return {
-      connected: true,
-      outcome: "CONNECTED",
-      durationSecs: duration,
-    };
+    return { connected: true, outcome: "CONNECTED", durationSecs: duration };
   } else if (r < 70) {
     return { connected: false, outcome: "NO_ANSWER", durationSecs: 0 };
   } else if (r < 80) {

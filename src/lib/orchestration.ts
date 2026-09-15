@@ -33,11 +33,17 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   }
 
   if (!user.dialerConfig) {
-    return { ok: false as const, error: "Dialer integration not configured." };
+    if (process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD) {
+      // Shared RC SIP credentials from env — all users can dial
+    } else {
+      return { ok: false as const, error: "Dialer integration not configured." };
+    }
   }
-  const dialValid = await validateProvider(user.dialerConfig);
-  if (!dialValid.ok) {
-    return { ok: false as const, error: dialValid.error as string };
+  if (user.dialerConfig) {
+    const dialValid = await validateProvider(user.dialerConfig);
+    if (!dialValid.ok) {
+      return { ok: false as const, error: dialValid.error as string };
+    }
   }
 
   const dueLeads = await prisma.lead.findMany({
@@ -62,11 +68,11 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
 
   for (const lead of dueLeads) {
     const dialResult = await placeCall({
-      from: user.dialerConfig.outboundNumber || "Unknown Caller",
+      from: user.dialerConfig?.outboundNumber || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "Unknown Caller",
       to: lead.phone || "",
-      provider: user.dialerConfig.provider,
-      apiKey: user.dialerConfig.apiKey,
-      accountSid: user.dialerConfig.accountSid,
+      provider: user.dialerConfig?.provider || "RINGCENTRAL",
+      apiKey: user.dialerConfig?.apiKey || process.env.RC_API_KEY || null,
+      accountSid: user.dialerConfig?.accountSid || process.env.RC_ACCOUNT_SID || null,
     });
 
     let aiResult = null as Awaited<ReturnType<typeof runAIagent>> | null;
