@@ -38,47 +38,6 @@ function toUlawFrames(pcm16: Int16Array): Buffer[] {
   return frames;
 }
 
-function wavToPcm16(buf: Buffer): Int16Array | null {
-  if (buf.length < 44 || buf.toString("ascii", 0, 4) !== "RIFF") return null;
-  let offset = 12;
-  let fmt: { sampleRate: number; channels: number; bitsPerSample: number } | null = null;
-  let dataOffset = 0;
-  let dataSize = 0;
-  while (offset < buf.length - 8) {
-    const id = buf.toString("ascii", offset, offset + 4);
-    const sz = buf.readUInt32LE(offset + 4);
-    if (id === "fmt ") { fmt = { sampleRate: buf.readUInt32LE(offset + 12), channels: buf.readUInt16LE(offset + 10), bitsPerSample: buf.readUInt16LE(offset + 22) }; }
-    else if (id === "data") { dataOffset = offset + 8; dataSize = sz; break; }
-    offset += 8 + sz;
-  }
-  if (!fmt || !dataOffset) return null;
-  const raw = buf.subarray(dataOffset, dataOffset + dataSize);
-  let pcm: Int16Array;
-  if (fmt.bitsPerSample === 16) {
-    pcm = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.length / 2));
-  } else if (fmt.bitsPerSample === 8) {
-    pcm = Int16Array.from(raw, (v) => (v - 128) << 8);
-  } else return null;
-  if (fmt.channels === 2) {
-    const mono = new Int16Array(Math.floor(pcm.length / 2));
-    for (let i = 0; i < mono.length; i++) mono[i] = Math.round((pcm[i * 2] + pcm[i * 2 + 1]) / 2);
-    pcm = mono;
-  }
-  if (fmt.sampleRate !== RATE) {
-    const out = new Int16Array(Math.ceil((pcm.length * RATE) / fmt.sampleRate));
-    const step = fmt.sampleRate / RATE;
-    for (let i = 0; i < out.length; i++) {
-      const start = Math.floor(i * step);
-      const end = Math.min(pcm.length, Math.max(start + 1, Math.ceil((i + 1) * step)));
-      let acc = 0;
-      for (let j = start; j < end; j++) acc += pcm[j];
-      out[i] = Math.max(-32768, Math.min(32767, Math.round(acc / (end - start))));
-    }
-    pcm = out;
-  }
-  return pcm;
-}
-
 const EDGE_VOICE = "en-US-AvaNeural";
 const EDGE_HOST = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
@@ -182,8 +141,6 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   }
   if (!parts.length) return [];
   const combined = Buffer.concat(parts);
-  const wav = wavToPcm16(combined);
-  if (wav && wav.length > 0) return toUlawFrames(wav);
   try {
     const mod = runtimeRequire("mpg123-decoder");
     const dec = new mod.MPEGDecoder();
@@ -218,6 +175,79 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   return [];
 }
 
+function pcmuToWav(pcm16: Int16Array): Buffer {
+  const numChannels = 1;
+  const sampleRate = RATE;
+  const bitsPerSample = 16;
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataSize = pcm16.length * (bitsPerSample / 8);
+  const buf = Buffer.alloc(44 + dataSize);
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(numChannels, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(byteRate, 28);
+  buf.writeUInt16LE(blockAlign, 32);
+  buf.writeUInt16LE(bitsPerSample, 34);
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataSize, 40);
+  for (let i = 0; i < pcm16.length; i++) buf.writeInt16LE(pcm16[i], 44 + i * 2);
+  return buf;
+}
+
+function pcmuToBase64(pcmBufs: Buffer[]): string {
+  const all = Buffer.concat(pcmBufs);
+  const pcm16 = new Int16Array(all.buffer, all.byteOffset, Math.floor(all.length / 2));
+  const wav = pcmuToWav(pcm16);
+  return wav.toString("base64");
+}
+
+async function transcribeWithOpenAI(audioBase64: string): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return "";
+  try {
+    const wavBuf = Buffer.from(audioBase64, "base64");
+    const blob = new Blob([wavBuf], { type: "audio/wav" });
+    const fd = new FormData();
+    fd.append("file", blob, "audio.wav");
+    fd.append("model", "whisper-1");
+    fd.append("language", "en");
+    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: fd,
+    });
+    if (!r.ok) return "";
+    const d = await r.json();
+    return (d.text || "").trim();
+  } catch { return ""; }
+}
+
+async function chatWithOpenAI(messages: { role: string; content: string }[]): Promise<string> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return "";
+  try {
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages,
+        max_tokens: 150,
+        temperature: 0.7,
+      }),
+    });
+    if (!r.ok) return "";
+    const d = await r.json();
+    return (d.choices?.[0]?.message?.content || "").trim();
+  } catch { return ""; }
+}
+
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -236,6 +266,7 @@ export async function POST(request: Request) {
   const rcDomain = process.env.RC_SIP_DOMAIN || "sip.ringcentral.com";
   const rcProxy = process.env.RC_SIP_PROXY || "sip40.ringcentral.com";
   const rcPort = process.env.RC_SIP_PORT || "5096";
+  const hasAI = !!process.env.OPENAI_API_KEY;
 
   if (!rcUser || !rcPass) {
     return NextResponse.json({ error: "RingCentral SIP credentials not configured." }, { status: 500 });
@@ -243,52 +274,17 @@ export async function POST(request: Request) {
 
   try {
     const { sipCallBridge } = runtimeRequire("../../../management/portal/softphone");
-
     const agentConfig = await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } });
 
-    let script: string;
-    if (agentConfig) {
-      const toneIntro = agentConfig.tone === "FRIENDLY"
-        ? "Hi there, thanks for answering."
-        : agentConfig.tone === "DIRECT"
-          ? "Good day, thank you for taking my call."
-          : "Hello, thanks for picking up.";
-
-      const pitch = agentConfig.pitch?.trim() || `I'm reaching out because we provide ${agentConfig.productName || "our service"}.`;
-
-      script = [
-        `${toneIntro} This is Sophie from Zaz Logistics.`,
-        pitch,
-        agentConfig.pricing ? `Our pricing starts at ${agentConfig.pricing}.` : "",
-        "I just need a couple of details so I can help you quickly.",
-        "Could you share your name?",
-        "And what company are you with?",
-        "And the best email to reach you at?",
-        "Perfect, that is everything I need. Thank you so much.",
-        "One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991 to discuss your needs further. Have a great day!",
-      ].filter(Boolean).join(" ");
-    } else {
-      script = "Hello, this is Sophie from Zaz Logistics. I'm calling to follow up on your onboarding. We noticed you started the process but haven't completed it yet. Is there anything I can help you with? Could you share your name? And what company are you with? And the best email to reach you at? Perfect, that is everything I need. Thank you so much. One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991 to discuss your needs further. Have a great day!";
-    }
-
     const callResult = await sipCallBridge({
-      user: rcUser,
-      pass: rcPass,
-      authId: rcAuthId,
-      domain: rcDomain,
-      proxy: rcProxy,
-      port: Number(rcPort),
-      number: number,
-      callerId: rcCallerId,
+      user: rcUser, pass: rcPass, authId: rcAuthId,
+      domain: rcDomain, proxy: rcProxy, port: Number(rcPort),
+      number: number, callerId: rcCallerId,
     });
 
     if (!callResult.ok) {
       console.error("[test-call] SIP steps:", JSON.stringify(callResult.steps));
-      return NextResponse.json({
-        ok: false,
-        error: callResult.last || "Call failed to connect",
-        steps: callResult.steps,
-      }, { status: 400 });
+      return NextResponse.json({ ok: false, error: callResult.last || "Call failed", steps: callResult.steps }, { status: 400 });
     }
 
     const cs = callResult.callSession;
@@ -296,6 +292,8 @@ export async function POST(request: Request) {
     const startTime = Date.now();
     let heardAnyAudio = false;
     let currentStreamer: any = null;
+    let prospectAudioBufs: Buffer[] = [];
+    const conversationHistory: { role: string; content: string }[] = [];
 
     async function speak(text: string): Promise<void> {
       const frames = await textToFramesLocal(text);
@@ -312,38 +310,29 @@ export async function POST(request: Request) {
           }
         };
         cs.on("audioPacket", onAudio);
-        if (currentStreamer && currentStreamer.finished) {
-          currentStreamer.finished.then(() => {
-            cs.removeListener("audioPacket", onAudio);
-            if (!stopped) resolve();
-          }).catch(() => {
-            cs.removeListener("audioPacket", onAudio);
-            if (!stopped) resolve();
-          });
-        } else {
-          const durationMs = Math.max(1000, frames.length * 20);
-          setTimeout(() => {
-            cs.removeListener("audioPacket", onAudio);
-            if (!stopped) resolve();
-          }, durationMs + 500);
-        }
+        const durationMs = Math.max(1000, frames.length * 20);
+        setTimeout(() => {
+          cs.removeListener("audioPacket", onAudio);
+          if (!stopped) resolve();
+        }, durationMs + 500);
       });
     }
 
-    function waitForSilence(maxMs: number): Promise<boolean> {
+    function listenAndCollect(maxMs: number): Promise<boolean> {
       return new Promise((resolve) => {
         let gotAudio = false;
         let lastAudio = 0;
         const start = Date.now();
-        const onAudio = () => {
+        const onAudio = (data: any) => {
           heardAnyAudio = true;
           gotAudio = true;
           lastAudio = Date.now();
+          if (data && Buffer.isBuffer(data)) prospectAudioBufs.push(Buffer.from(data));
         };
         cs.on("audioPacket", onAudio);
         const check = setInterval(() => {
           if (Date.now() - startTime > 120000) { clearInterval(check); cs.removeListener("audioPacket", onAudio); resolve(gotAudio); return; }
-          if (gotAudio && Date.now() - lastAudio > 800) {
+          if (gotAudio && Date.now() - lastAudio > 1200) {
             clearInterval(check);
             cs.removeListener("audioPacket", onAudio);
             resolve(true);
@@ -357,40 +346,85 @@ export async function POST(request: Request) {
       });
     }
 
-    await waitForSilence(15000);
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+    async function sayAndListen(text: string, listenMs: number): Promise<string> {
+      prospectAudioBufs = [];
+      await speak(text);
+      if (Date.now() - startTime > 120000) return "";
+      const spoke = await listenAndCollect(listenMs);
+      if (!spoke || !hasAI || prospectAudioBufs.length === 0) return "";
+      const audioB64 = pcmuToBase64(prospectAudioBufs);
+      return await transcribeWithOpenAI(audioB64);
+    }
 
-    await speak("Hello, this is Sophie from Zaz Logistics.");
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+    if (hasAI) {
+      const systemPrompt = [
+        "You are Sophie, a friendly and professional AI assistant calling from Zaz Logistics.",
+        "You are making an outbound sales/onboarding call. Your goal is to collect the prospect's name, company name, and email address.",
+        "Be conversational, warm, and natural. Keep responses SHORT (1-2 sentences max) since this is a phone call.",
+        "If the prospect asks a question, answer it briefly then redirect to collecting their info.",
+        "If they say they're not interested, politely ask if there's a better time.",
+        "Always end by confirming you have their name, company, and email, then tell them a dispatch manager will call back at 623-400-1991.",
+      ].join(" ");
+      conversationHistory.push({ role: "system", content: systemPrompt });
 
-    await waitForSilence(3000);
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      await listenAndCollect(10000);
 
-    await speak("I'm reaching out because we provide dispatch and logistics solutions.");
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      const intro = "Hello, this is Sophie from Zaz Logistics. How are you doing today?";
+      await speak(intro);
+      conversationHistory.push({ role: "assistant", content: intro });
 
-    await waitForSilence(3000);
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      for (let turn = 0; turn < 15; turn++) {
+        if (Date.now() - startTime > 120000) break;
+        prospectAudioBufs = [];
+        const spoke = await listenAndCollect(8000);
+        if (!spoke || prospectAudioBufs.length === 0) {
+          await speak("Are you still there?");
+          prospectAudioBufs = [];
+          const retry = await listenAndCollect(5000);
+          if (!retry) break;
+        }
+        if (prospectAudioBufs.length === 0) continue;
+        const audioB64 = pcmuToBase64(prospectAudioBufs);
+        const transcript = await transcribeWithOpenAI(audioB64);
+        if (!transcript) continue;
+        conversationHistory.push({ role: "user", content: transcript });
+        const reply = await chatWithOpenAI(conversationHistory);
+        if (!reply) continue;
+        conversationHistory.push({ role: "assistant", content: reply });
+        await speak(reply);
+        if (Date.now() - startTime > 120000) break;
+      }
+    } else {
+      await listenAndCollect(15000);
+      if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
 
-    await speak("I just need a couple of details so I can help you quickly. Could you share your name?");
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      const intro = agentConfig
+        ? `${agentConfig.tone === "FRIENDLY" ? "Hi there, thanks for answering." : agentConfig.tone === "DIRECT" ? "Good day, thank you for taking my call." : "Hello, thanks for picking up."} This is Sophie from Zaz Logistics.`
+        : "Hello, this is Sophie from Zaz Logistics.";
+      await speak(intro);
+      if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
 
-    await waitForSilence(10000);
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      await listenAndCollect(3000);
+      const pitch = agentConfig?.pitch?.trim() || "I'm reaching out because we provide dispatch and logistics solutions.";
+      await speak(pitch);
+      if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
 
-    await speak("Great, thank you! And what company are you with?");
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      await listenAndCollect(3000);
+      await speak("I just need a couple of details so I can help you quickly. Could you share your name?");
+      if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
 
-    await waitForSilence(10000);
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      await listenAndCollect(10000);
+      await speak("Great, thank you! And what company are you with?");
+      if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
 
-    await speak("Perfect. And the best email to reach you at?");
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      await listenAndCollect(10000);
+      await speak("Perfect. And the best email to reach you at?");
+      if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
 
-    await waitForSilence(10000);
-    if (Date.now() - startTime > 120000) { try { cs.hangup(); } catch {} cleanup(); return NextResponse.json({ ok: true, status: "TIMEOUT", message: "Call timed out", durationSecs: Math.round((Date.now() - startTime) / 1000) }); }
+      await listenAndCollect(10000);
+      await speak("That is everything I need. Thank you so much. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!");
+    }
 
-    await speak("That is everything I need. Thank you so much. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!");
     const durationSecs = Math.round((Date.now() - startTime) / 1000);
     try { cs.hangup(); } catch {}
     setTimeout(() => { cleanup(); }, 500);
@@ -405,29 +439,28 @@ export async function POST(request: Request) {
       try {
         const now = new Date();
         const subject = `[TEST] New Interested Lead — ${number}`;
+        const transcript = conversationHistory.map(m => `${m.role}: ${m.content}`).join("\n");
         const emailText = [
           `TEST CALL LEAD NOTIFICATION`,
           ``,
           `Lead Phone: ${number}`,
-          `Lead Name: Test Prospect`,
           `Status: Interested`,
           `Call Duration: ${durationSecs}s`,
           `Call Time: ${now.toISOString()}`,
           `Agent: Sophie (Zaz Logistics)`,
           ``,
-          `A dispatch manager should call back within 30 minutes at 623-400-1991.`,
+          transcript ? `Conversation Transcript:\n${transcript}` : `A dispatch manager should call back within 30 minutes at 623-400-1991.`,
         ].join("\n");
 
         const html = [
           `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto">`,
           `<h2 style="color:#0f172a">Test Call Lead Notification</h2>`,
           `<table style="border-collapse:collapse;width:100%">`,
-          `<tr><td style="padding:6px 0"><strong>Lead Phone</strong></td><td>${number}</td></tr>`,
+          `<tr><td style="padding:6px 0"><strong>Phone</strong></td><td>${number}</td></tr>`,
           `<tr><td style="padding:6px 0"><strong>Status</strong></td><td>Interested</td></tr>`,
           `<tr><td style="padding:6px 0"><strong>Duration</strong></td><td>${durationSecs}s</td></tr>`,
-          `<tr><td style="padding:6px 0"><strong>Agent</strong></td><td>Sophie (Zaz Logistics)</td></tr>`,
           `</table>`,
-          `<p style="margin-top:16px;color:#64748b">Call back within 30 minutes at 623-400-1991.</p>`,
+          transcript ? `<pre style="background:#f1f5f9;padding:12px;border-radius:6px;font-size:13px;white-space:pre-wrap;margin-top:12px">${transcript}</pre>` : "",
           `</div>`,
         ].join("\n");
 
@@ -436,32 +469,18 @@ export async function POST(request: Request) {
 
         await prisma.notification.create({
           data: {
-            userId: user.id,
-            toEmail: "onboarding@zazlogistics.com",
-            subject,
-            body: emailText,
-            leadName: "Test Prospect",
-            phone: number,
-            leadEmail: "test@example.com",
-            seats: null,
+            userId: user.id, toEmail: "onboarding@zazlogistics.com", subject, body: emailText,
+            leadName: "Test Prospect", phone: number, leadEmail: "test@example.com", seats: null,
             otherData: JSON.stringify({ testCall: true, disposition }),
           },
         });
-      } catch (e: unknown) {
-        emailError = e instanceof Error ? e.message : "Email failed";
-      }
+      } catch (e: unknown) { emailError = e instanceof Error ? e.message : "Email failed"; }
     }
 
     return NextResponse.json({
-      ok: true,
-      status: disposition,
-      message: `Test call completed. Duration: ${durationSecs}s. ${interested ? "Prospect answered — email sent to onboarding." : "No response."}`,
-      script: script.substring(0, 200) + "...",
-      durationSecs,
-      connected,
-      interested,
-      emailSent,
-      emailError,
+      ok: true, status: disposition,
+      message: `Test call completed. Duration: ${durationSecs}s. ${interested ? "Prospect answered." : "No response."}`,
+      durationSecs, connected, interested, emailSent, emailError, hasAI,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "Unknown error";

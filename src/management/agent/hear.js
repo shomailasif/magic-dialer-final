@@ -529,4 +529,4 @@ function hearFromBuffer(audioBuffer, { sampleRate = 8000 } = {}) {
   return null;
 }
 
-module.exports = { hear, probeMic, hearFromBuffer, WORDS, PHRASES, WORDS_BY_LOCALE, PHRASES_BY_LOCALE };
+module.exports = { hear, probeMic, hearFromBuffer, mulawDecode, WORDS, PHRASES, WORDS_BY_LOCALE, PHRASES_BY_LOCALE };

@@ -218,35 +218,42 @@ async function dialViaRingCentral(ctx, session, settings) {
           session._sipCleanup = r.cleanup;
 
           const cs = r.callSession;
-          const codecStr = cs.softphone ? cs.softphone.codec : "";
-          const codec = getCodecProps(codecStr);
+          const codec = cs.softphone && cs.softphone.codec
+            ? cs.softphone.codec
+            : { packetSize: 160, id: 0, timestampInterval: 160 };
           const werift_rtp = require("werift-rtp");
 
           cs.on("audioPacket", (rtpPacket) => {
-            if (session.media && !session.media.ended) {
-              session.media.send(rtpPacket.payload, true);
-            }
+            try {
+              if (session.media && !session.media.ended) {
+                session.media.send(rtpPacket.payload, true);
+              }
+            } catch {}
             session.mediaBytesIn = (session.mediaBytesIn || 0) + rtpPacket.payload.length;
           });
 
-          session.agentAudioHandler = (mulawBuffer) => {
+          session.agentAudioHandler = (audioBuffer) => {
             if (cs.disposed) return;
-            // speakToBuffer already produces mulaw 8kHz — send directly as RTP payload
-            // Each mulaw sample is 1 byte, packetSize is 160 bytes = 20ms at 8kHz
-            const { packetSize, id } = codec;
-            for (let offset = 0; offset < mulawBuffer.length; offset += packetSize) {
-              const chunk = mulawBuffer.subarray(offset, Math.min(offset + packetSize, mulawBuffer.length));
-              const pkt = new werift_rtp.RtpPacket(new werift_rtp.RtpHeader({
-                version: 2, padding: false, paddingSize: 0, extension: false, marker: false,
-                payloadOffset: 12, payloadType: id,
-                sequenceNumber: cs.sequenceNumber, timestamp: cs.timestamp, ssrc: cs.ssrc,
-                csrcLength: 0, csrc: [], extensionProfile: 48862, extensionLength: void 0, extensions: []
-              }), chunk);
-              cs.send(cs.srtpSession.encrypt(pkt.payload, pkt.header));
-              cs.sequenceNumber = (cs.sequenceNumber + 1) % 65536;
-              cs.timestamp += codec.timestampInterval;
-            }
-            session.mediaBytesOut = (session.mediaBytesOut || 0) + mulawBuffer.length;
+            try {
+              // speakToBuffer produces mulaw 8kHz. The SDK's PCMU encoder is
+              // a passthrough, so the bytes pass through encoder.encode() unchanged.
+              // For PCMU: audioBuffer is raw mulaw → encoder.encode() returns it as-is
+              // We use sendPacket() which handles RTP framing + SRTP encrypt + UDP send.
+              const { packetSize, id } = codec;
+              for (let offset = 0; offset < audioBuffer.length; offset += packetSize) {
+                const chunk = audioBuffer.subarray(offset, Math.min(offset + packetSize, audioBuffer.length));
+                const pkt = new werift_rtp.RtpPacket(new werift_rtp.RtpHeader({
+                  version: 2, padding: false, paddingSize: 0, extension: false, marker: false,
+                  payloadOffset: 12, payloadType: id,
+                  sequenceNumber: cs.sequenceNumber, timestamp: cs.timestamp, ssrc: cs.ssrc,
+                  csrcLength: 0, csrc: [], extensionProfile: 48862, extensionLength: void 0, extensions: []
+                }), chunk);
+                cs.send(cs.srtpSession.encrypt(pkt.payload, pkt.header));
+                cs.sequenceNumber = (cs.sequenceNumber + 1) % 65536;
+                cs.timestamp += codec.timestampInterval;
+              }
+              session.mediaBytesOut = (session.mediaBytesOut || 0) + audioBuffer.length;
+            } catch {}
           };
 
           cs.once("disposed", () => {
@@ -267,19 +274,7 @@ async function dialViaRingCentral(ctx, session, settings) {
     return session;
   }
 
-  // Resolve codec properties from the softphone SDK's codec setting.
-  // The SDK stores codec as "PCMU/8000" string; extract known values.
-  function getCodecProps(codecStr) {
-    if (!codecStr) return { packetSize: 160, id: 0, timestampInterval: 160 };
-    const m = String(codecStr).match(/^(\w+)\/(\d+)$/);
-    if (m) {
-      const rate = parseInt(m[2], 10);
-      const framesPerSec = rate;
-      const packetSize = Math.round(framesPerSec * 0.02); // 20ms frames
-      return { packetSize, id: 0, timestampInterval: packetSize };
-    }
-    return { packetSize: 160, id: 0, timestampInterval: 160 };
-  }
+
 
   const fet = ctx.fetch || fetch;
   const number = normalizeNumber(settings.number);
