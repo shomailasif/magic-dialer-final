@@ -13,10 +13,11 @@ export async function POST(request: Request) {
 
   const rcUser = process.env.RC_SIP_USERNAME;
   const rcPass = process.env.RC_SIP_PASSWORD;
+  const rcAuthId = process.env.RC_SIP_AUTH_ID || rcUser;
   const rcCallerId = process.env.RC_CALLER_ID || process.env.RC_PHONE || "";
   const rcDomain = process.env.RC_SIP_DOMAIN || "sip.ringcentral.com";
   const rcProxy = process.env.RC_SIP_PROXY || "sip40.ringcentral.com";
-  const rcPort = process.env.RC_SIP_PORT || "5096";
+  const rcPort = process.env.RC_SIP_PORT || "5060";
 
   if (!rcUser || !rcPass) {
     return NextResponse.json({ error: "RingCentral SIP credentials not configured." }, { status: 500 });
@@ -24,17 +25,17 @@ export async function POST(request: Request) {
 
   try {
     const { sipCallOnce } = require("../../../management/portal/softphone");
-    const result = await sipCallOnce({
-      user: rcUser,
-      pass: rcPass,
-      authId: rcUser,
-      domain: rcDomain,
-      proxy: rcProxy,
-      port: Number(rcPort),
-      number: number,
-      callerId: rcCallerId,
-      durationMs: 15000,
-    });
+      const result = await sipCallOnce({
+        user: rcUser,
+        pass: rcPass,
+        authId: rcAuthId,
+        domain: rcDomain,
+        proxy: rcProxy,
+        port: Number(rcPort),
+        number: number,
+        callerId: rcCallerId,
+        durationMs: 15000,
+      });
 
     if (result.ok) {
       return NextResponse.json({

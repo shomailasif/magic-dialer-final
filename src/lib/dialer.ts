@@ -90,10 +90,11 @@ export async function placeCall(
 
   const rcUser = process.env.RC_SIP_USERNAME;
   const rcPass = process.env.RC_SIP_PASSWORD;
+  const rcAuthId = process.env.RC_SIP_AUTH_ID || rcUser;
   const rcCallerId = process.env.RC_CALLER_ID || process.env.RC_PHONE || input.from;
   const rcDomain = process.env.RC_SIP_DOMAIN || "sip.ringcentral.com";
   const rcProxy = process.env.RC_SIP_PROXY || "sip40.ringcentral.com";
-  const rcPort = process.env.RC_SIP_PORT || "5096";
+  const rcPort = process.env.RC_SIP_PORT || "5060";
 
   if (rcUser && rcPass && input.provider === "RINGCENTRAL") {
     try {
@@ -101,7 +102,7 @@ export async function placeCall(
       const result = await sipCallOnce({
         user: rcUser,
         pass: rcPass,
-        authId: rcUser,
+        authId: rcAuthId,
         domain: rcDomain,
         proxy: rcProxy,
         port: Number(rcPort),
