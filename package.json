@@ -16,6 +16,7 @@
   "dependencies": {
     "@prisma/client": "6.19.3",
     "bcryptjs": "^3.0.3",
+    "mpg123-decoder": "^1.0.3",
     "next": "16.3.4",
     "next-intl": "^4.14.2",
     "nodemailer": "^9.1.1",

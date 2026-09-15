@@ -12,17 +12,9 @@ export interface PlaceCallInput {
   provider: DialerProvider;
   apiKey?: string | null;
   accountSid?: string | null;
+  script?: string | null;
 }
 
-/**
- * Validate a dialer provider's credentials.
- *
- * For Twilio/RingCentral/Vonage the real validation calls the provider's API.
- * In this environment (no live provider accounts) we perform structural
- * validation of the entered credentials so the "Test connection" button has
- * meaningful behavior, while leaving a clearly-marked hook where real API
- * validation would occur.
- */
 export async function validateProvider(config: DialerConfig) {
   const hasApiKey = !!config.apiKey;
   const hasAccountSid = !!config.accountSid;
@@ -35,7 +27,6 @@ export async function validateProvider(config: DialerConfig) {
     };
   }
 
-  // Structural checks per provider.
   switch (config.provider) {
     case "TWILIO": {
       if (!config.accountSid) {
@@ -69,9 +60,8 @@ export async function validateProvider(config: DialerConfig) {
 /**
  * Place an outbound call through the configured provider.
  *
- * When RingCentral SIP credentials are available in env vars, places a real
- * call via the SIP softphone. All 3 users share the same RC line.
- * Falls back to simulation when no live credentials are present.
+ * When RingCentral SIP credentials are available, places a real SIP call
+ * and plays the AI sales script via TTS. All 3 users share the same RC line.
  */
 export async function placeCall(
   input: PlaceCallInput,
@@ -94,12 +84,14 @@ export async function placeCall(
   const rcCallerId = process.env.RC_CALLER_ID || process.env.RC_PHONE || input.from;
   const rcDomain = process.env.RC_SIP_DOMAIN || "sip.ringcentral.com";
   const rcProxy = process.env.RC_SIP_PROXY || "sip40.ringcentral.com";
-  const rcPort = process.env.RC_SIP_PORT || "5060";
+  const rcPort = process.env.RC_SIP_PORT || "5096";
 
   if (rcUser && rcPass && input.provider === "RINGCENTRAL") {
     try {
-      const { sipCallOnce } = require("../management/portal/softphone");
-      const result = await sipCallOnce({
+      const { sipCallBridge } = require("../management/portal/softphone");
+      const { textToFrames } = require("../management/portal/audio");
+
+      const callResult = await sipCallBridge({
         user: rcUser,
         pass: rcPass,
         authId: rcAuthId,
@@ -108,23 +100,41 @@ export async function placeCall(
         port: Number(rcPort),
         number: input.to,
         callerId: rcCallerId,
-        durationMs: 25000,
       });
 
-      const durationSecs = Math.round((result.durationMs || 0) / 1000);
-      const outcome = result.ok
-        ? "CONNECTED"
-        : result.outcome === "no-answer"
-          ? "NO_ANSWER"
-          : result.outcome === "busy"
-            ? "BUSY"
-            : "FAILED";
+      if (!callResult.ok) {
+        const last = String(callResult.last || "").toLowerCase();
+        const outcome = last.includes("busy") ? "BUSY"
+          : last.includes("disposed") || last.includes("no-answer") ? "NO_ANSWER"
+          : "FAILED";
+        return { connected: false, outcome: outcome as DialResult["outcome"], durationSecs: 0 };
+      }
 
-      return {
-        connected: result.ok,
-        outcome: outcome as DialResult["outcome"],
-        durationSecs,
-      };
+      const cs = callResult.callSession;
+      const cleanup = callResult.cleanup;
+      const startTime = Date.now();
+
+      // Play the AI script via TTS if provided
+      if (input.script) {
+        const { textToFrames: tts } = require("../management/portal/audio");
+        const frames = await tts(input.script);
+        if (frames.length > 0) {
+          cs.streamAudio(Buffer.concat(frames));
+        }
+      }
+
+      // Wait for call to end (prospect hangs up or silence)
+      await new Promise<void>((resolve) => {
+        const maxDuration = 60000;
+        cs.once("disposed", () => resolve());
+        cs.once("ended", () => resolve());
+        setTimeout(() => { try { cs.hangup(); } catch {} resolve(); }, maxDuration);
+      });
+
+      const durationSecs = Math.round((Date.now() - startTime) / 1000);
+      setTimeout(() => { cleanup(); }, 500);
+
+      return { connected: true, outcome: "CONNECTED", durationSecs };
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "SIP call failed";
       console.error("[dialer] SIP call error:", msg);
@@ -132,7 +142,7 @@ export async function placeCall(
     }
   }
 
-  // Simulation fallback when no live SIP credentials
+  // Simulation fallback
   const seed = [...input.to].reduce((acc, c) => acc + c.charCodeAt(0), 0);
   const r = seed % 100;
 
