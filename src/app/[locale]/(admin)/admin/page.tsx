@@ -1,6 +1,6 @@
 import { Link } from "@/i18n/navigation";
 import { prisma } from "@/lib/db";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, getAdminId } from "@/lib/auth";
 import { StatCard, Card, Badge, Button } from "@/components/ui";
 import { PLAN_BY_ID } from "@/lib/constants";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -27,17 +27,20 @@ export default async function AdminDashboardPage({
   const t = await getTranslations("adminOverview");
   const tpl = await getTranslations("plans");
   const te = await getTranslations("enums");
-  await requireAdmin();
+  const admin = await requireAdmin();
+  const adminId = admin.id;
+
+  const where = { role: "BUSINESS_ADMIN" as const, createdByAdminId: adminId };
 
   const [totalAccounts, active, pending, suspended, deactivated, customers] =
     await Promise.all([
-      prisma.user.count({ where: { role: "BUSINESS_ADMIN" } }),
-      prisma.subscription.count({ where: { status: "ACTIVE" } }),
-      prisma.subscription.count({ where: { status: "PENDING" } }),
-      prisma.subscription.count({ where: { status: "SUSPENDED" } }),
-      prisma.subscription.count({ where: { status: "DEACTIVATED" } }),
+      prisma.user.count({ where }),
+      prisma.subscription.count({ where: { status: "ACTIVE", user: where } }),
+      prisma.subscription.count({ where: { status: "PENDING", user: where } }),
+      prisma.subscription.count({ where: { status: "SUSPENDED", user: where } }),
+      prisma.subscription.count({ where: { status: "DEACTIVATED", user: where } }),
       prisma.user.findMany({
-        where: { role: "BUSINESS_ADMIN" },
+        where,
         include: {
           subscription: true,
           _count: { select: { leads: true, calls: true } },

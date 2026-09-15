@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { hashPassword } from "@/lib/password";
+import { getCurrentUser } from "@/lib/auth";
 
 export async function POST(request: Request) {
-  let body: { companyName?: string; email?: string; password?: string };
+  let body: { companyName?: string; email?: string; password?: string; createdByAdminId?: string };
   try {
     body = await request.json();
   } catch {
@@ -40,6 +41,17 @@ export async function POST(request: Request) {
 
   const passwordHash = await hashPassword(password);
 
+  // If an admin is creating this user, stamp the admin ID.
+  let createdByAdminId: string | undefined = body.createdByAdminId;
+  if (!createdByAdminId) {
+    try {
+      const currentUser = await getCurrentUser();
+      if (currentUser?.role === "SUPER_ADMIN") {
+        createdByAdminId = currentUser.id;
+      }
+    } catch {}
+  }
+
   const user = await prisma.user.create({
     data: {
       companyName,
@@ -47,6 +59,7 @@ export async function POST(request: Request) {
       passwordHash,
       name: companyName,
       role: "BUSINESS_ADMIN",
+      createdByAdminId: createdByAdminId || null,
     },
   });
 

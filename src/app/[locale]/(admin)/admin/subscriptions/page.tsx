@@ -1,6 +1,6 @@
 import { Link } from "@/i18n/navigation";
 import { prisma } from "@/lib/db";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, getAdminId } from "@/lib/auth";
 import { Card, Badge, StatCard } from "@/components/ui";
 import { PLAN_BY_ID } from "@/lib/constants";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -27,14 +27,18 @@ export default async function SubscriptionsPage({
   const t = await getTranslations("subscriptions");
   const tpl = await getTranslations("plans");
   const te = await getTranslations("enums");
-  await requireAdmin();
+  const admin = await requireAdmin();
+  const adminId = admin.id;
+
+  const userFilter = { role: "BUSINESS_ADMIN" as const, createdByAdminId: adminId };
 
   const [subscriptions, totalActive] = await Promise.all([
     prisma.subscription.findMany({
+      where: { user: userFilter },
       include: { user: true, history: { orderBy: { changedAt: "desc" }, take: 5 } },
       orderBy: { updatedAt: "desc" },
     }),
-    prisma.subscription.count({ where: { status: "ACTIVE" } }),
+    prisma.subscription.count({ where: { status: "ACTIVE", user: userFilter } }),
   ]);
 
   return (

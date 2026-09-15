@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, getAdminId } from "@/lib/auth";
 import { Badge, Card, CardHeader, StatCard, EmptyState } from "@/components/ui";
 import { PLAN_BY_ID } from "@/lib/constants";
 import { CustomerActions } from "./customer-actions";
@@ -22,10 +22,11 @@ export default async function CustomerDetailPage({
   const t = await getTranslations("customerDetail");
   const tpl = await getTranslations("plans");
   const te = await getTranslations("enums");
-  await requireAdmin();
+  const admin = await requireAdmin();
+  const adminId = admin.id;
 
   const customer = await prisma.user.findFirst({
-    where: { id, role: "BUSINESS_ADMIN" },
+    where: { id, role: "BUSINESS_ADMIN", createdByAdminId: adminId },
     include: {
       subscription: true,
       agentConfig: true,

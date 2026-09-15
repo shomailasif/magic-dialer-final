@@ -10,7 +10,6 @@ const schema = z.object({
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const admin = await requireAdmin();
-  void admin;
 
   const { id } = await params;
 
@@ -27,7 +26,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const target = await prisma.user.findFirst({
-    where: { id, role: "BUSINESS_ADMIN" },
+    where: { id, role: "BUSINESS_ADMIN", createdByAdminId: admin.id },
     include: { subscription: true },
   });
   if (!target) return NextResponse.json({ error: "Business account not found." }, { status: 404 });

@@ -78,6 +78,12 @@ export async function requireAdmin(): Promise<AuthUser> {
   return user;
 }
 
+/** Return the admin ID of the currently logged-in super admin. */
+export async function getAdminId(): Promise<string> {
+  const admin = await requireAdmin();
+  return admin.id;
+}
+
 export function isSubscriptionActive(user: AuthUser): boolean {
   return user.subscription?.status === "ACTIVE";
 }

@@ -1,6 +1,6 @@
 import { Link } from "@/i18n/navigation";
 import { prisma } from "@/lib/db";
-import { requireAdmin } from "@/lib/auth";
+import { requireAdmin, getAdminId } from "@/lib/auth";
 import { Card, Badge } from "@/components/ui";
 import { PLAN_BY_ID } from "@/lib/constants";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -27,10 +27,11 @@ export default async function CustomersPage({
   const t = await getTranslations("customers");
   const tpl = await getTranslations("plans");
   const te = await getTranslations("enums");
-  await requireAdmin();
+  const admin = await requireAdmin();
+  const adminId = admin.id;
 
   const customers = await prisma.user.findMany({
-    where: { role: "BUSINESS_ADMIN" },
+    where: { role: "BUSINESS_ADMIN", createdByAdminId: adminId },
     include: {
       subscription: true,
       _count: { select: { leads: true, calls: true } },

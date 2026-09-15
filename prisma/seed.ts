@@ -4,27 +4,48 @@ import { hashPassword } from "../src/lib/password";
 const prisma = new PrismaClient();
 
 async function main() {
-  const adminEmail = "admin@autodial.ai";
-  const demoEmail = "demo@company.com";
-
-  // Super admin (no subscription needed).
-  const adminExists = await prisma.user.findUnique({ where: { email: adminEmail } });
-  if (!adminExists) {
-    const ph = await hashPassword("AdminPass123!");
-    await prisma.user.create({
+  // --- Admin 1 ---
+  const admin1Email = "admin1@autodial.ai";
+  const admin1Exists = await prisma.user.findUnique({ where: { email: admin1Email } });
+  let admin1: Awaited<ReturnType<typeof prisma.user.create>>;
+  if (!admin1Exists) {
+    const ph = await hashPassword("Admin1Pass!");
+    admin1 = await prisma.user.create({
       data: {
-        email: adminEmail,
+        email: admin1Email,
         passwordHash: ph,
-        name: "Platform Super Admin",
+        name: "Admin One",
         role: "SUPER_ADMIN",
       },
     });
-    console.log("Super admin created:", adminEmail, "/ AdminPass123!");
+    console.log("Admin 1 created:", admin1Email, "/ Admin1Pass!");
   } else {
-    console.log("Super admin already exists.");
+    admin1 = admin1Exists;
+    console.log("Admin 1 already exists.");
   }
 
-  // Demo business admin with ACTIVE subscription + config + dialer + leads.
+  // --- Admin 2 ---
+  const admin2Email = "admin2@autodial.ai";
+  const admin2Exists = await prisma.user.findUnique({ where: { email: admin2Email } });
+  let admin2: Awaited<ReturnType<typeof prisma.user.create>>;
+  if (!admin2Exists) {
+    const ph = await hashPassword("Admin2Pass!");
+    admin2 = await prisma.user.create({
+      data: {
+        email: admin2Email,
+        passwordHash: ph,
+        name: "Admin Two",
+        role: "SUPER_ADMIN",
+      },
+    });
+    console.log("Admin 2 created:", admin2Email, "/ Admin2Pass!");
+  } else {
+    admin2 = admin2Exists;
+    console.log("Admin 2 already exists.");
+  }
+
+  // --- Demo business admin (owned by Admin 1) ---
+  const demoEmail = "demo@company.com";
   let demo = await prisma.user.findUnique({ where: { email: demoEmail } });
   if (!demo) {
     const ph = await hashPassword("DemoPass123!");
@@ -35,6 +56,7 @@ async function main() {
         name: "Demo Business",
         companyName: "Acme Inc.",
         role: "BUSINESS_ADMIN",
+        createdByAdminId: admin1.id,
       },
     });
 
