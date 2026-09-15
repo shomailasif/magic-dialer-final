@@ -214,30 +214,62 @@ function splitForTts(text: string): string[] {
 async function textToFramesLocal(text: string): Promise<Buffer[]> {
   const chunks = splitForTts(text);
   console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
-  const parts: Buffer[] = [];
+
+  const allParts: Buffer[] = [];
   for (const chunk of chunks) {
-    const m = await edgeTts(chunk, EDGE_VOICE);
-    if (m) {
-      parts.push(m);
-      console.log("[sip-conv] TTS got mp3 chunk:", m.length, "bytes");
-    } else {
-      console.error("[sip-conv] TTS returned null for chunk:", chunk.slice(0, 40));
+    let mp3: Buffer | null = null;
+
+    // 1) Try Edge TTS WebSocket
+    if (!edgeTtsBroken) {
+      try {
+        mp3 = await edgeTts(chunk, EDGE_VOICE);
+        if (mp3 && mp3.length > 100) {
+          allParts.push(mp3);
+          console.log("[sip-conv] Edge TTS OK:", mp3.length, "bytes");
+          continue;
+        }
+        console.error("[sip-conv] Edge TTS returned null/tiny for:", chunk.slice(0, 40));
+        edgeTtsBroken = true;
+        console.log("[sip-conv] Edge TTS marked broken, switching to HTTP fallback");
+      } catch { edgeTtsBroken = true; }
     }
+
+    // 2) Fallback: Google Translate TTS (plain HTTP)
+    try {
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodeURIComponent(chunk)}`;
+      const resp = await fetch(url, {
+        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      });
+      if (resp.ok) {
+        const arr = Buffer.from(await resp.arrayBuffer());
+        if (arr.length > 100) {
+          allParts.push(arr);
+          console.log("[sip-conv] Google TTS OK:", arr.length, "bytes");
+          continue;
+        }
+      }
+      console.error("[sip-conv] Google TTS failed:", resp.status);
+    } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
+
+    // 3) Fallback: pre-recorded silence/tone
+    console.error("[sip-conv] All TTS failed for chunk, generating tone");
+    const toneBuf = Buffer.alloc(1600);
+    for (let i = 0; i < toneBuf.length; i++) {
+      toneBuf[i] = ((Math.sin((2 * Math.PI * 440 * i) / 8000) * 4000) | 0) ^ 0xff;
+    }
+    allParts.push(toneBuf);
   }
-  if (!parts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
-  const combined = Buffer.concat(parts);
-  console.log("[sip-conv] TTS combined mp3:", combined.length, "bytes");
+
+  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
+  const combined = Buffer.concat(allParts);
+  console.log("[sip-conv] TTS combined:", combined.length, "bytes");
   const wav = wavToPcm16(combined);
-  if (wav && wav.length > 0) { console.log("[sip-conv] TTS decoded as WAV:", wav.length, "samples"); return toUlawFrames(wav); }
-  console.log("[sip-conv] TTS not WAV, trying mpg123...");
+  if (wav && wav.length > 0) { console.log("[sip-conv] decoded as WAV:", wav.length, "samples"); return toUlawFrames(wav); }
   try {
     const mod = runtimeRequire("mpg123-decoder");
-    console.log("[sip-conv] mpg123 loaded:", typeof mod.MPEGDecoder);
     const dec = new mod.MPEGDecoder();
     if (dec.ready) await dec.ready;
-    console.log("[sip-conv] mpg123 decoder ready");
     const r = dec.decode(new Uint8Array(combined));
-    console.log("[sip-conv] mpg123 decoded:", r?.samplesDecoded, "samples,", r?.channelData?.length, "channels");
     if (r && r.channelData && r.channelData.length) {
       const channels = r.channelData.length;
       const rate = Number(r.sampleRate) || 8000;
@@ -264,10 +296,11 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
       console.log("[sip-conv] TTS final pcm:", pcm.length, "samples");
       return toUlawFrames(pcm);
     }
-    console.error("[sip-conv] mpg123 decode returned no channel data");
-  } catch (e: any) { console.error("[sip-conv] mpg123 decode error:", e?.message, e?.stack?.split("\n").slice(0, 3).join(" ")); }
+  } catch (e: any) { console.error("[sip-conv] decode error:", e?.message); }
   return [];
 }
+
+let edgeTtsBroken = false;
 
 function listenForSpeech(
   cs: any,
