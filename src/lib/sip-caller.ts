@@ -217,7 +217,7 @@ export async function makeSIPCall(
 ): Promise<SIPCallResult> {
   preloadSTT();
 
-  const { sipCallBridge } = runtimeRequire("../../../management/portal/softphone");
+  const { sipCallBridge } = runtimeRequire("../management/portal/softphone");
 
   const callResult = await sipCallBridge(sipConfig);
   if (!callResult.ok) {
