@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { placeCall, validateProvider } from "@/lib/dialer";
 import { runAIagent, recordLearning, detectLeadLanguage } from "@/lib/ai-agent";
 import { deliverOutcomeNotification } from "@/lib/notifications";
+import { makeSIPCall } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
 
 /**
@@ -66,33 +67,84 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     data: { userId, name: `Campaign ${new Date().toISOString().slice(0, 16)}` },
   });
 
-  for (const lead of dueLeads) {
-    const dialResult = await placeCall({
-      from: user.dialerConfig?.outboundNumber || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "Unknown Caller",
-      to: lead.phone || "",
-      provider: user.dialerConfig?.provider || "RINGCENTRAL",
-      apiKey: user.dialerConfig?.apiKey || process.env.RC_API_KEY || null,
-      accountSid: user.dialerConfig?.accountSid || process.env.RC_ACCOUNT_SID || null,
-    });
+  const hasSIP = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
 
+  for (const lead of dueLeads) {
     let aiResult = null as Awaited<ReturnType<typeof runAIagent>> | null;
-    if (dialResult.connected && user.agentConfig) {
-      // Auto-detect the other party's language so the agent responds in it,
-      // defaulting to the configured default (English if unset).
-      const callLocale = detectLeadLanguage(lead, user.agentConfig);
-      aiResult = await runAIagent(user.agentConfig, lead, callLocale);
+    let sipResult = null as Awaited<ReturnType<typeof makeSIPCall>> | null;
+    let dialResult: { connected: boolean; outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED"; durationSecs: number } = { connected: false, outcome: "FAILED", durationSecs: 0 };
+
+    if (hasSIP && lead.phone) {
+      try {
+        sipResult = await makeSIPCall(
+          {
+            user: process.env.RC_SIP_USERNAME || "",
+            pass: process.env.RC_SIP_PASSWORD || "",
+            authId: process.env.RC_SIP_AUTH_ID || process.env.RC_SIP_USERNAME || "",
+            domain: process.env.RC_SIP_DOMAIN || "sip.ringcentral.com",
+            proxy: process.env.RC_SIP_PROXY || "sip40.ringcentral.com",
+            port: Number(process.env.RC_SIP_PORT || "5096"),
+            number: lead.phone,
+            callerId: process.env.RC_CALLER_ID || "",
+          },
+          {
+            tone: user.agentConfig?.tone || "PROFESSIONAL",
+            productName: user.agentConfig?.productName || "",
+            pitch: user.agentConfig?.pitch || "",
+            pricing: user.agentConfig?.pricing || undefined,
+          },
+        );
+        dialResult = {
+          connected: sipResult.connected,
+          outcome: sipResult.connected ? "CONNECTED" : "NO_ANSWER",
+          durationSecs: sipResult.durationSecs,
+        };
+      } catch (e) {
+        console.error("[campaign] SIP call failed, falling back to RingOut:", e);
+        sipResult = null;
+      }
     }
 
-    const resultStatus = aiResult ? aiResult.leadStatus : "FAILED";
-    const disposition = aiResult
-      ? aiResult.disposition
-      : dialResult.outcome;
+    if (!sipResult) {
+      dialResult = await placeCall({
+        from: user.dialerConfig?.outboundNumber || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "Unknown Caller",
+        to: lead.phone || "",
+        provider: user.dialerConfig?.provider || "RINGCENTRAL",
+        apiKey: user.dialerConfig?.apiKey || process.env.RC_API_KEY || null,
+        accountSid: user.dialerConfig?.accountSid || process.env.RC_ACCOUNT_SID || null,
+      });
+
+      if (dialResult.connected && user.agentConfig) {
+        const callLocale = detectLeadLanguage(lead, user.agentConfig);
+        aiResult = await runAIagent(user.agentConfig, lead, callLocale);
+      }
+    }
+
+    let resultStatus: string;
+    let disposition: string;
+    let transcript: string;
+    let collectedEmail: string | null;
+    let collectedSeats: number | null;
+
+    if (sipResult) {
+      resultStatus = sipResult.interested ? "INTERESTED" : sipResult.connected ? "NO_RESPONSE" : "FAILED";
+      disposition = sipResult.disposition;
+      transcript = sipResult.transcript;
+      collectedEmail = sipResult.collectedEmail;
+      collectedSeats = null;
+    } else {
+      resultStatus = aiResult ? aiResult.leadStatus : "FAILED";
+      disposition = aiResult ? aiResult.disposition : dialResult.outcome;
+      transcript = aiResult?.transcript || "";
+      collectedEmail = aiResult?.collectedEmail || null;
+      collectedSeats = aiResult?.collectedSeats || null;
+    }
 
     await prisma.$transaction([
       prisma.lead.update({
         where: { id: lead.id },
         data: {
-          status: resultStatus,
+          status: resultStatus as any,
           lastCallAt: new Date(),
           disposition,
           followUpDueAt: scheduleFollowUp(resultStatus, user.agentConfig?.followUpAttempts ?? 2, user.agentConfig?.followUpIntervalHours ?? 24),
@@ -122,16 +174,15 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         durationSecs: dialResult.durationSecs,
         outcome: dialResult.outcome,
         disposition,
-        aiSummary: aiResult?.summary || null,
-        transcript: aiResult?.transcript || null,
+        aiSummary: sipResult ? `Call with ${sipResult.collectedName || "prospect"}. ${sipResult.transcript.slice(0, 500)}` : aiResult?.summary || null,
+        transcript: transcript || null,
         resultStatus: resultStatus as never,
-        collectedData: aiResult
-          ? JSON.stringify({
-              seats: aiResult.collectedSeats,
-              email: aiResult.collectedEmail,
-              ...aiResult.otherData,
-            })
-          : null,
+        collectedData: JSON.stringify({
+          seats: collectedSeats,
+          email: collectedEmail,
+          name: sipResult?.collectedName || null,
+          company: sipResult?.collectedCompany || null,
+        }),
       },
     });
 
@@ -139,14 +190,13 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     if (resultStatus === "INTERESTED") interested++;
     if (resultStatus === "CONVERTED") converted++;
 
-    // Trigger outcome notification (4.2)
-    if (aiResult && (resultStatus === "INTERESTED" || resultStatus === "CONVERTED")) {
+    if (resultStatus === "INTERESTED" || resultStatus === "CONVERTED") {
       await deliverOutcomeNotification(userId, user.email, lead, {
-        leadName: lead.name || "Prospect",
+        leadName: sipResult?.collectedName || lead.name || "Prospect",
         phone: lead.phone || "N/A",
-        leadEmail: lead.email || aiResult.collectedEmail || "N/A",
-        seats: aiResult.collectedSeats,
-        otherData: aiResult.otherData,
+        leadEmail: collectedEmail || lead.email || "N/A",
+        seats: collectedSeats,
+        otherData: { transcript },
       }, locale);
     }
   }
