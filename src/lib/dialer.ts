@@ -1,4 +1,6 @@
 import type { DialerConfig, DialerProvider } from "@prisma/client";
+import { sipCallBridge } from "../management/portal/softphone";
+import { textToFrames } from "../management/portal/audio";
 
 export interface DialResult {
   connected: boolean;
@@ -88,9 +90,6 @@ export async function placeCall(
 
   if (rcUser && rcPass && input.provider === "RINGCENTRAL") {
     try {
-      const { sipCallBridge } = require("../management/portal/softphone");
-      const { textToFrames } = require("../management/portal/audio");
-
       const callResult = await sipCallBridge({
         user: rcUser,
         pass: rcPass,
@@ -116,8 +115,7 @@ export async function placeCall(
 
       // Play the AI script via TTS if provided
       if (input.script) {
-        const { textToFrames: tts } = require("../management/portal/audio");
-        const frames = await tts(input.script);
+        const frames = await textToFrames(input.script);
         if (frames.length > 0) {
           cs.streamAudio(Buffer.concat(frames));
         }
