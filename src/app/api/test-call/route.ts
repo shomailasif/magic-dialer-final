@@ -183,7 +183,39 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   if (!parts.length) return [];
   const combined = Buffer.concat(parts);
   const wav = wavToPcm16(combined);
-  if (wav) return toUlawFrames(wav);
+  if (wav && wav.length > 0) return toUlawFrames(wav);
+  try {
+    const mod = runtimeRequire("mpg123-decoder");
+    const dec = new mod.MPEGDecoder();
+    if (dec.ready) await dec.ready;
+    const r = dec.decode(new Uint8Array(combined));
+    if (r && r.channelData && r.channelData.length) {
+      const channels = r.channelData.length;
+      const rate = Number(r.sampleRate) || 24000;
+      const mono = new Float64Array(r.samplesDecoded);
+      for (let i = 0; i < mono.length; i++) {
+        let acc = 0;
+        for (let ch = 0; ch < channels; ch++) acc += r.channelData[ch][i] || 0;
+        mono[i] = (acc / channels) * 32767;
+      }
+      dec.free();
+      const pcm = Int16Array.from(mono, (v) => Math.max(-32768, Math.min(32767, Math.round(v))));
+      let final = pcm;
+      if (rate !== RATE) {
+        const out = new Int16Array(Math.ceil((pcm.length * RATE) / rate));
+        const step = rate / RATE;
+        for (let i = 0; i < out.length; i++) {
+          const start = Math.floor(i * step);
+          const end = Math.min(pcm.length, Math.max(start + 1, Math.ceil((i + 1) * step)));
+          let acc = 0;
+          for (let j = start; j < end; j++) acc += pcm[j];
+          out[i] = Math.max(-32768, Math.min(32767, Math.round(acc / (end - start))));
+        }
+        final = out;
+      }
+      return toUlawFrames(final);
+    }
+  } catch {}
   return [];
 }
 
