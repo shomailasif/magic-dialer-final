@@ -68,6 +68,8 @@ if (RC_CALLER_ID) process.env.RC_CALLER_ID = RC_CALLER_ID;
  * business-platform dashboard on "/".
  */
 
+const ZAZ_COMPANY_NAME = "Zaz Logistics";
+
 async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, adminPassword: pw } = {}) {
   const adminPassword = pw || process.env.ADM_PASSWORD || "MagicDialer2026!";
   const db = await openDb(dbPath);
@@ -490,6 +492,38 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
             text: `A qualified lead was found.\n\n${body.summary || ""}\n\nFull conversation:\n${String(body.transcript || "").slice(0, 2000)}`,
           });
         }
+        // Real-time forwarding to onboarding@zazlogistics.com
+        const ONBOARDING_EMAIL = "onboarding@zazlogistics.com";
+        const leadName = (q.answers && (q.answers.NAME || q.answers["NAME"])) || "N/A";
+        const leadCompany = (q.answers && (q.answers["COMPANY NAME"] || q.answers.COMPANY)) || "N/A";
+        const leadMcDot = (q.answers && (q.answers["MC/DOT NUMBER"] || q.answers.MC || q.answers["MC NUMBER"])) || "N/A";
+        const leadTruckType = (q.answers && (q.answers["TRUCK TYPE"])) || "N/A";
+        const leadTruckSize = (q.answers && (q.answers["TRUCK SIZE"])) || "N/A";
+        const leadEmptyInfo = (q.answers && (q.answers["WHEN AND WHERE IS THE PERSON GETTING EMPTY"])) || "N/A";
+        const leadPhone = body.destination || body.phone || "N/A";
+        const aiAgentName = owner?.persona || owner?.name || "AI Agent";
+        const leadDetails = [
+          `NEW QUALIFIED LEAD - ${ZAZ_COMPANY_NAME}`,
+          ``,
+          `AI Agent: ${aiAgentName}`,
+          `Lead Name: ${leadName}`,
+          `Company: ${leadCompany}`,
+          `MC/DOT: ${leadMcDot}`,
+          `Truck Type: ${leadTruckType}`,
+          `Truck Size: ${leadTruckSize}`,
+          `Empty Info: ${leadEmptyInfo}`,
+          `Phone: ${leadPhone}`,
+          ``,
+          `Callback promised: within 30 minutes from 623-400-1991`,
+          ``,
+          `--- Full Transcript ---`,
+          String(body.transcript || "").slice(0, 3000),
+        ].join("\n");
+        await sendEmail({
+          to: ONBOARDING_EMAIL,
+          subject: `[Qualified Lead] ${leadName} - ${leadCompany} (${aiAgentName})`,
+          text: leadDetails,
+        });
       }
       return send(200, {
         ok: true,
@@ -777,6 +811,16 @@ function customerHomeHtml(c) {
 
     <button class="btn" id="saveBtn" style="width:100%;padding:14px">Save settings</button>
     <div class="err" id="msg" style="display:block;color:#a7f3d0;font-size:13px;margin-top:12px;text-align:center"></div>
+
+    <div class="card" style="padding:26px;margin-top:18px">
+      <div style="font-size:14px;font-weight:700;color:#e2e8f0;margin-bottom:6px">Test call</div>
+      <div style="color:#7c8aa8;font-size:12px;margin-bottom:12px">Place a test call to verify your VOIP line is working before going live.</div>
+      <div style="display:flex;gap:8px">
+        <input id="testNumber" class="inp" placeholder="+16234001991" style="flex:1">
+        <button class="btn" id="testCallBtn" style="padding:10px 20px">Dial test</button>
+      </div>
+      <div id="testResult" style="margin-top:10px;font-size:12px;color:#7c8aa8"></div>
+    </div>
   </div>
   <script>
     const HOSTED = ${jsonSafe(HOSTED_VOIP_SERVERS)};
@@ -820,6 +864,21 @@ function customerHomeHtml(c) {
       const r2 = await fetch('/api/customer/'+token+'/calllist', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ numbers: nums })});
       if (r1.ok && r2.ok) { msg.textContent = 'Saved - your agent picks this up on its next heartbeat.'; location.reload(); }
       else { msg.style.color = '#f87171'; msg.textContent = 'Save failed - session expired?'; }
+    });
+    document.getElementById('testCallBtn').addEventListener('click', async () => {
+      const result = document.getElementById('testResult');
+      const number = document.getElementById('testNumber').value.trim();
+      if (!number) { result.style.color = '#f87171'; result.textContent = 'Enter a phone number to test.'; return; }
+      const btn = document.getElementById('testCallBtn');
+      btn.disabled = true; btn.textContent = 'Dialing...'; result.style.color = '#7c8aa8'; result.textContent = 'Placing test call...';
+      try {
+        const token = ${jsonSafe(c.token)};
+        const r = await fetch('/api/dial', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({token, number})});
+        const j = await r.json();
+        if (j.status === 'error') { result.style.color = '#f87171'; result.textContent = 'Call failed: ' + (j.error || 'Unknown error'); }
+        else { result.style.color = '#34d399'; result.textContent = 'Call placed (' + (j.providerLabel || j.provider) + '), status: ' + j.status; }
+      } catch(e) { result.style.color = '#f87171'; result.textContent = 'Error: ' + e.message; }
+      btn.disabled = false; btn.textContent = 'Dial test';
     });
   </script>`);
 }

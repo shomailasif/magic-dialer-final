@@ -47,6 +47,8 @@ const WRAPPERS = [
   "Excellent, I have all the information. Thank you and take care.",
 ];
 
+const CALLBACK_PROMISE = "One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991 to discuss your needs further. Have a great day!";
+
 const DEFAULT_CLAIMS = [
   "We help businesses like yours get connected and qualified quickly.",
   "Our service is fast, easy, and helps you save time every day.",
@@ -137,6 +139,7 @@ function generateScript(inputs) {
     fields.forEach((f, i) => lines.push(questionFor(f, i + salt)));
   }
   lines.push(pick(WRAPPERS, salt));
+  lines.push(CALLBACK_PROMISE);
   return lines.join(" ");
 }
 
