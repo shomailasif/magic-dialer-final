@@ -300,7 +300,7 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   return [];
 }
 
-let edgeTtsBroken = false;
+let edgeTtsBroken = true;
 
 function listenForSpeech(
   cs: any,
