@@ -129,7 +129,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     if (sipResult) {
       resultStatus = sipResult.interested ? "INTERESTED" : sipResult.connected ? "NO_RESPONSE" : "FAILED";
       disposition = sipResult.disposition;
-      transcript = sipResult.transcript;
+      transcript = Array.isArray(sipResult.transcript) ? sipResult.transcript.join("\n") : sipResult.transcript;
       collectedEmail = sipResult.collectedEmail;
       collectedSeats = null;
     } else {
@@ -174,7 +174,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         durationSecs: dialResult.durationSecs,
         outcome: dialResult.outcome,
         disposition,
-        aiSummary: sipResult ? `Call with ${sipResult.collectedName || "prospect"}. ${sipResult.transcript.slice(0, 500)}` : aiResult?.summary || null,
+        aiSummary: sipResult ? `Call with ${sipResult.collectedName || "prospect"}. ${(Array.isArray(sipResult.transcript) ? sipResult.transcript.join("\n") : sipResult.transcript).slice(0, 500)}` : aiResult?.summary || null,
         transcript: transcript || null,
         resultStatus: resultStatus as never,
         collectedData: JSON.stringify({
