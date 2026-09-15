@@ -297,34 +297,64 @@ export async function POST(request: Request) {
     const startTime = Date.now();
     let heardAnyAudio = false;
 
-    cs.on("audioPacket", () => { heardAnyAudio = true; });
+    const turns: string[] = agentConfig
+      ? [
+          `${agentConfig.tone === "FRIENDLY" ? "Hi there, thanks for answering." : agentConfig.tone === "DIRECT" ? "Good day, thank you for taking my call." : "Hello, thanks for picking up."} This is Sophie from Zaz Logistics.`,
+          agentConfig.pitch?.trim() || `I'm reaching out because we provide ${agentConfig.productName || "our service"}.`,
+          agentConfig.pricing ? `Our pricing starts at ${agentConfig.pricing}.` : "",
+          "I just need a couple of details so I can help you quickly.",
+          "Could you share your name?",
+          "And what company are you with?",
+          "And the best email to reach you at?",
+          "Perfect, that is everything I need. Thank you so much.",
+          "One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991 to discuss your needs further. Have a great day!",
+        ].filter(Boolean)
+      : [
+          "Hello, this is Sophie from Zaz Logistics. I'm calling to follow up on your onboarding.",
+          "Is there anything I can help you with?",
+          "Could you share your name?",
+          "And what company are you with?",
+          "And the best email to reach you at?",
+          "Perfect, that is everything I need. Thank you so much.",
+          "One of our dispatch managers will give you a call back within 30 minutes at 623-400-1991. Have a great day!",
+        ];
 
-    const frames = await textToFramesLocal(script);
-    if (frames.length > 0) {
-      cs.streamAudio(Buffer.concat(frames));
+    const maxCallDuration = 120000;
+
+    async function playAndWait(text: string, listenMs: number): Promise<boolean> {
+      const frames = await textToFramesLocal(text);
+      if (frames.length > 0) {
+        cs.streamAudio(Buffer.concat(frames));
+      }
+      const silenceThreshold = 2500;
+      let lastAudioTime = Date.now();
+      let gotResponse = false;
+
+      cs.on("audioPacket", () => {
+        heardAnyAudio = true;
+        lastAudioTime = Date.now();
+        gotResponse = true;
+      });
+
+      return new Promise<boolean>((resolve) => {
+        const check = setInterval(() => {
+          if (Date.now() - startTime > maxCallDuration) { clearInterval(check); resolve(gotResponse); return; }
+          if (Date.now() - lastAudioTime > silenceThreshold && Date.now() - (lastAudioTime - listenMs) > listenMs) {
+            clearInterval(check);
+            resolve(gotResponse);
+          }
+        }, 500);
+        setTimeout(() => { clearInterval(check); resolve(gotResponse); }, listenMs);
+      });
     }
 
-    const scriptDuration = Math.max(5000, frames.length * 20);
-    const maxCallDuration = 45000;
-
-    await new Promise<void>((resolve) => {
-      const scriptTimer = setTimeout(() => {
-        const listenStart = Date.now();
-        const listenTimer = setInterval(() => {
-          const elapsed = Date.now() - listenStart;
-          if (elapsed > 8000 || Date.now() - startTime > maxCallDuration) {
-            clearInterval(listenTimer);
-            clearTimeout(watchdog);
-            resolve();
-          }
-        }, 1000);
-      }, scriptDuration);
-
-      const watchdog = setTimeout(() => {
-        clearTimeout(scriptTimer);
-        resolve();
-      }, maxCallDuration);
-    });
+    for (let i = 0; i < turns.length; i++) {
+      if (Date.now() - startTime > maxCallDuration) break;
+      const isQuestion = /\?$/.test(turns[i]);
+      const listenTime = isQuestion ? 8000 : 2000;
+      await playAndWait(turns[i], listenTime);
+      if (Date.now() - startTime > maxCallDuration) break;
+    }
 
     const durationSecs = Math.round((Date.now() - startTime) / 1000);
     try { cs.hangup(); } catch {}
