@@ -32,11 +32,14 @@ assert(controller.includes("transcribeAuto"), "captured telephone audio must rea
 assert(!controller.includes("mediaConnect("), "V2 active call path must not route live audio through Suga WSS");
 assert(agent.includes("runLocalCall"), "production agent must delegate live calls to local controller");
 
-assert(Array.isArray(SUPPORTED_LANGUAGES) && SUPPORTED_LANGUAGES.length >= 20, "at least 20 languages required");
+assert(Object.keys(SUPPORTED_LANGUAGES).length >= 20, "at least 20 languages required");
 assert(stt.includes("whisper-large-v3-turbo") && stt.includes("verbose_json"), "automatic multilingual Whisper path missing");
 assert(runner.includes("language-switch") && runner.includes("activeLocale"), "mid-call language switching missing");
 assert(normalizeLanguage("en") === "en", "English normalization missing");
 assert(normalizeLanguage("urd") === "ur", "Urdu ISO-3 normalization missing");
+assert(normalizeLanguage("English") === "en", "Whisper English-name normalization missing");
+assert(normalizeLanguage("Urdu") === "ur", "Whisper Urdu-name normalization missing");
+assert(normalizeLanguage("Mandarin") === "zh", "Whisper Mandarin-name normalization missing");
 
 // Voice is synthesized at neural quality and converted only at the telephone boundary.
 assert(voice.includes('"-ar", "8000"'), "telephone boundary must resample to 8kHz");
