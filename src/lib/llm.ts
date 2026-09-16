@@ -1,12 +1,15 @@
 /**
  * LLM Client - Pollinations AI (Free, No API Key)
  *
- * Tries openai-fast first (less likely to hit budget), then openai as fallback.
- * OpenAI-compatible endpoint: https://text.pollinations.ai/openai
+ * Multiple strategies to avoid rate limits:
+ * 1. POST without model param (different rate limit bucket)
+ * 2. POST with openai-fast model
+ * 3. POST with openai model
+ * 4. GET endpoint (completely different path)
  */
 
 const POLLINATIONS_URL = "https://text.pollinations.ai/openai";
-const LLM_MODELS = ["openai-fast", "openai"];
+const POLLINATIONS_GET_URL = "https://text.pollinations.ai";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -20,7 +23,7 @@ export interface LLMResponse {
 
 /**
  * Send a chat completion request to Pollinations AI
- * Tries multiple models with automatic failover
+ * Tries multiple strategies to avoid rate limits
  */
 export async function chatCompletion(
   messages: LLMMessage[],
@@ -34,58 +37,78 @@ export async function chatCompletion(
     temperature = 0.7,
   } = options;
 
-  for (const model of LLM_MODELS) {
+  const errorPatterns = ["budget", "rate limit", "api key", "limit reached", "quota", "exceeded", "raise the key"];
+
+  // Strategy 1-3: POST with different model params
+  const postConfigs = [
+    { label: "no-model", body: { messages, max_tokens: maxTokens, temperature, stream: false } },
+    { label: "openai-fast", body: { model: "openai-fast", messages, max_tokens: maxTokens, temperature, stream: false } },
+    { label: "openai", body: { model: "openai", messages, max_tokens: maxTokens, temperature, stream: false } },
+  ];
+
+  for (const cfg of postConfigs) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 10000);
+      const timeout = setTimeout(() => controller.abort(), 12000);
 
       const resp = await fetch(POLLINATIONS_URL, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          max_tokens: maxTokens,
-          temperature,
-          stream: false,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg.body),
         signal: controller.signal,
       });
 
       clearTimeout(timeout);
 
       if (!resp.ok) {
-        const errorText = await resp.text().catch(() => "unknown");
-        console.error(`[llm] ${model} HTTP ${resp.status}:`, errorText.slice(0, 80));
+        console.error(`[llm] ${cfg.label} HTTP ${resp.status}`);
         continue;
       }
 
       const data = await resp.json();
       const content = data?.choices?.[0]?.message?.content || "";
 
-      const errorPatterns = ["budget", "rate limit", "api key", "limit reached", "quota", "exceeded", "raise the key"];
-      const lowerContent = content.toLowerCase();
-      if (content && errorPatterns.some(p => lowerContent.includes(p))) {
-        console.error(`[llm] ${model} returned error content:`, content.slice(0, 100));
-        continue;
-      }
-
       if (!content || content.trim().length === 0) {
-        console.error(`[llm] ${model} returned empty content`);
+        console.error(`[llm] ${cfg.label} empty content`);
         continue;
       }
 
-      console.log(`[llm] ${model} OK:`, content.slice(0, 60));
+      if (errorPatterns.some(p => content.toLowerCase().includes(p))) {
+        console.error(`[llm] ${cfg.label} error content:`, content.slice(0, 80));
+        continue;
+      }
+
+      console.log(`[llm] ${cfg.label} OK:`, content.slice(0, 60));
       return { content };
     } catch (e: any) {
-      console.error(`[llm] ${model} error:`, e?.message);
-      continue;
+      console.error(`[llm] ${cfg.label} error:`, e?.message);
     }
   }
 
-  return { content: "", error: "All LLM models failed" };
+  // Strategy 4: GET endpoint (completely different path, may have separate rate limit)
+  try {
+    const lastUserMsg = messages.filter(m => m.role === "user").pop()?.content || "Hello";
+    const systemMsg = messages.find(m => m.role === "system")?.content || "";
+    const prompt = systemMsg ? `${systemMsg}\n\nProspect said: ${lastUserMsg}` : lastUserMsg;
+    const getUrl = `${POLLINATIONS_GET_URL}/${encodeURIComponent(prompt.slice(0, 500))}?json=true`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const resp = await fetch(getUrl, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    const text = await resp.text();
+
+    if (!errorPatterns.some(p => text.toLowerCase().includes(p)) && text.trim().length > 0) {
+      console.log(`[llm] GET OK:`, text.slice(0, 60));
+      return { content: text.trim() };
+    }
+    console.error(`[llm] GET failed:`, text.slice(0, 80));
+  } catch (e: any) {
+    console.error(`[llm] GET error:`, e?.message);
+  }
+
+  return { content: "", error: "All LLM strategies failed" };
 }
 
 /**

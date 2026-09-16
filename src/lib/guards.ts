@@ -67,13 +67,14 @@ export const GUARD_SPEAK_MUST_STREAM = true;
 export const GUARD_VOICE = "en-US-JennyNeural";
 
 // ============================================================================
-// GUARD 8: LLM must be Pollinations AI (free, unlimited)
+// GUARD 8: LLM must use Pollinations AI (free, no API key)
 // ============================================================================
 // WHY: Pollinations is the only truly free option with no daily limits.
-// Other providers (KeylessAI, Groq, Gemini) have rate limits or are down.
-// LAST BROKEN: KeylessAI went down → DNS failed → LLM error → silence
+// Multiple strategies (POST no-model, POST openai-fast, POST openai, GET)
+// to avoid rate limits on specific endpoints.
+// LAST BROKEN: Single model strategy → budget error from Suga IP → silence
 export const GUARD_LLM_PROVIDER = "pollinations";
-export const GUARD_LLM_BASE_URL = "https://text.pollinations.ai/openai";
+export const GUARD_LLM_BASE_URL = "https://text.pollinations.ai";
 
 // ============================================================================
 // GUARD 9: Silence detection must be under 4 seconds
