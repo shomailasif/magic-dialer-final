@@ -22,7 +22,8 @@ fetch('https://dashboard.suga.app/api/mcp', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer ' + token.access_token,
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'Accept': 'application/json, text/event-stream'
   },
   body: JSON.stringify(body)
 }).then(r => r.text())

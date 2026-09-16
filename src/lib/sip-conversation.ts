@@ -148,7 +148,7 @@ function toUlawFrames(pcm16: Int16Array): Buffer[] {
   return frames;
 }
 
-function antiAliasLowPass(pcm: Int16Array, factor: number): Int16Array {
+function antiAliasLowPass(pcm: Int16Array, factor: number) {
   if (factor <= 1) return pcm;
   const windowSize = Math.max(2, factor * 2 + 1);
   const half = Math.floor(windowSize / 2);
@@ -180,7 +180,7 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
   }
   if (!fmt || !dataOffset) return null;
   const raw = buf.subarray(dataOffset, dataOffset + dataSize);
-  let pcm: Int16Array;
+  let pcm;
   if (fmt.bitsPerSample === 16) {
     pcm = new Int16Array(raw.buffer, raw.byteOffset, Math.floor(raw.length / 2));
   } else if (fmt.bitsPerSample === 8) {
@@ -194,7 +194,7 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
   if (fmt.sampleRate !== RATE) {
     const ratio = Math.round(fmt.sampleRate / RATE);
     if (ratio > 1) {
-      pcm = antiAliasLowPass(pcm, ratio);
+      pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;
       const outLen = Math.ceil(pcm.length / ratio);
       const out = new Int16Array(outLen);
       for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
@@ -352,7 +352,7 @@ async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
       if (rate !== RATE) {
         const ratio = Math.round(rate / RATE);
         if (ratio > 1) {
-          pcm = antiAliasLowPass(pcm, ratio);
+          pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;
           const outLen = Math.ceil(pcm.length / ratio);
           const out = new Int16Array(outLen);
           for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
