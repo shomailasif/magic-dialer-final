@@ -177,19 +177,35 @@ function toUlawFrames(pcm16: Int16Array): Buffer[] {
   return frames;
 }
 
-function antiAliasLowPass(pcm: Int16Array, factor: number) {
+function antiAliasLowPass(pcm: Int16Array, factor: number): Int16Array {
   if (factor <= 1) return pcm;
-  const windowSize = Math.max(2, factor * 2 + 1);
-  const half = Math.floor(windowSize / 2);
-  const out = new Int16Array(pcm.length);
+  // Windowed sinc low-pass filter: cutoff at Nyquist of target rate
+  const cutoff = 0.5 / factor;
+  const M = Math.max(8, Math.ceil(4 / cutoff));
+  const h = new Float64Array(M);
+  const mid = (M - 1) / 2;
+  let sum = 0;
+  for (let i = 0; i < M; i++) {
+    const x = (i - mid) * Math.PI;
+    h[i] = x === 0 ? 2 * cutoff : Math.sin(2 * cutoff * x) / x;
+    h[i] *= 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (M - 1));
+    sum += h[i];
+  }
+  for (let i = 0; i < M; i++) h[i] /= sum;
+  const half = Math.floor(M / 2);
+  const filtered = new Float64Array(pcm.length);
   for (let i = 0; i < pcm.length; i++) {
-    let sum = 0;
-    let count = 0;
-    for (let j = -half; j <= half; j++) {
-      const idx = i + j;
-      if (idx >= 0 && idx < pcm.length) { sum += pcm[idx]; count++; }
+    let val = 0;
+    for (let j = 0; j < M; j++) {
+      const idx = i + j - half;
+      if (idx >= 0 && idx < pcm.length) val += pcm[idx] * h[j];
     }
-    out[i] = Math.round(sum / count);
+    filtered[i] = val;
+  }
+  const outLen = Math.ceil(pcm.length / factor);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(filtered[i * factor])));
   }
   return out;
 }
@@ -289,7 +305,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
     const stamp = edgeDateString();
     ws.on("open", () => {
       console.log("[sip-conv] edgeTts WS open, sending config...");
-      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"riff-24khz-16bit-mono-pcm"}}}}\r\n`, (err: any) => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
         if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
@@ -482,19 +498,12 @@ function listenForSpeech(
     };
     cs.on("audioPacket", on);
 
-    // Keepalive: send silent PCMU frames every 3s so SBC doesn't kill the session
-    const KEEPALIVE_FRAME = Buffer.alloc(160, 0xFF); // 0xFF = silence in PCMU
+    // Keepalive: enqueue silent PCMU audio every 3s so SBC doesn't kill the session
+    // Uses the queue mechanism (correct RTP via SDK) instead of manual packet construction
+    const SILENT_FRAME = Buffer.alloc(160, 0xFF); // 0xFF = silence in PCMU
     const keepaliveIv = setInterval(() => {
       if (cs.disposed) { clearInterval(keepaliveIv); return; }
-      try {
-        const rtp = require("werift-rtp");
-        const packet = new rtp.RtpPacket({
-          header: new rtp.RtpHeader({ payloadType: 0, sequenceNumber: (Date.now() / 20) & 0xFFFF, timestamp: (Date.now() / 1000 * 8000) & 0xFFFFFFFF, ssrc: 12345 }),
-          payload: KEEPALIVE_FRAME,
-        });
-        const enc = cs.srtpSession?.encrypt?.(packet) || packet;
-        cs.send(enc.serialize());
-      } catch {}
+      try { enqueueAudio(SILENT_FRAME); } catch {}
     }, 3000);
 
     const finish = async () => {
