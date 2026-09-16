@@ -148,6 +148,23 @@ function toUlawFrames(pcm16: Int16Array): Buffer[] {
   return frames;
 }
 
+function antiAliasLowPass(pcm: Int16Array, factor: number): Int16Array {
+  if (factor <= 1) return pcm;
+  const windowSize = Math.max(2, factor * 2 + 1);
+  const half = Math.floor(windowSize / 2);
+  const out = new Int16Array(pcm.length);
+  for (let i = 0; i < pcm.length; i++) {
+    let sum = 0;
+    let count = 0;
+    for (let j = -half; j <= half; j++) {
+      const idx = i + j;
+      if (idx >= 0 && idx < pcm.length) { sum += pcm[idx]; count++; }
+    }
+    out[i] = Math.round(sum / count);
+  }
+  return out;
+}
+
 function wavToPcm16(buf: Buffer): Int16Array | null {
   if (buf.length < 44 || buf.toString("ascii", 0, 4) !== "RIFF") return null;
   let offset = 12;
@@ -175,18 +192,14 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
     pcm = mono;
   }
   if (fmt.sampleRate !== RATE) {
-    const ratio = fmt.sampleRate / RATE;
-    const outLen = Math.ceil(pcm.length / ratio);
-    const out = new Int16Array(outLen);
-    for (let i = 0; i < outLen; i++) {
-      const srcPos = i * ratio;
-      const idx = Math.floor(srcPos);
-      const frac = srcPos - idx;
-      const a = pcm[idx] || 0;
-      const b = pcm[Math.min(idx + 1, pcm.length - 1)] || 0;
-      out[i] = Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * frac)));
+    const ratio = Math.round(fmt.sampleRate / RATE);
+    if (ratio > 1) {
+      pcm = antiAliasLowPass(pcm, ratio);
+      const outLen = Math.ceil(pcm.length / ratio);
+      const out = new Int16Array(outLen);
+      for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
+      pcm = out;
     }
-    pcm = out;
   }
   return pcm;
 }
@@ -234,7 +247,7 @@ function edgeClean(text: string): string {
 function edgeTts(text: string, voice: string): Promise<Buffer | null> {
   return new Promise((resolve) => {
     let done = false;
-    const timer = setTimeout(() => { console.error("[sip-conv] edgeTts TIMEOUT for:", text.slice(0, 40)); finish(null); }, 8000);
+    const timer = setTimeout(() => { console.error("[sip-conv] edgeTts TIMEOUT for:", text.slice(0, 40)); finish(null); }, 4000);
     function finish(buf: Buffer | null) { if (!done) { done = true; clearTimeout(timer); resolve(buf); } }
     let ws: any;
     try {
@@ -337,19 +350,14 @@ async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
       dec.free();
       let pcm = Int16Array.from(mono, (v) => Math.max(-32768, Math.min(32767, Math.round(v))));
       if (rate !== RATE) {
-        // Linear interpolation downsampling - much smoother than block averaging
-        const ratio = rate / RATE;
-        const outLen = Math.ceil(pcm.length / ratio);
-        const out = new Int16Array(outLen);
-        for (let i = 0; i < outLen; i++) {
-          const srcPos = i * ratio;
-          const idx = Math.floor(srcPos);
-          const frac = srcPos - idx;
-          const a = pcm[idx] || 0;
-          const b = pcm[Math.min(idx + 1, pcm.length - 1)] || 0;
-          out[i] = Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * frac)));
+        const ratio = Math.round(rate / RATE);
+        if (ratio > 1) {
+          pcm = antiAliasLowPass(pcm, ratio);
+          const outLen = Math.ceil(pcm.length / ratio);
+          const out = new Int16Array(outLen);
+          for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
+          pcm = out;
         }
-        pcm = out;
       }
       console.log("[sip-conv] TTS final pcm:", pcm.length, "samples");
       return toUlawFrames(pcm);
@@ -358,7 +366,7 @@ async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
   return [];
 }
 
-async function textToFramesLocal(text: string): Promise<Buffer[]> {
+async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer[]> {
   const chunks = splitForTts(text);
   console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
 
@@ -367,7 +375,7 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
     let mp3: Buffer | null = null;
 
     // 1) Try Edge TTS (JennyNeural voice - human-sounding)
-    if (!edgeTtsBroken) {
+    if (!edgeTtsBroken && !skipEdge) {
       try {
         mp3 = await edgeTts(chunk, EDGE_VOICE);
         if (mp3 && mp3.length > 100) {
@@ -417,8 +425,8 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   return toFramesFromAudio(combined);
 }
 
-// GUARD: Must start as GUARD_EDGE_TTS_BROKEN_INIT (true). Edge TTS WebSocket is blocked on Suga.
-// Setting this to false causes 20-second timeouts per text chunk, making calls silent.
+// GUARD: Edge TTS starts enabled (GUARD_EDGE_TTS_BROKEN_INIT = false).
+// Gets set to true if Edge TTS fails, then falls back to Google TTS.
 let edgeTtsBroken = GUARD_EDGE_TTS_BROKEN_INIT;
 
 function listenForSpeech(
@@ -461,10 +469,10 @@ function listenForSpeech(
   });
 }
 
-async function speak(cs: any, text: string, heardRef: { current: boolean }): Promise<void> {
+async function speak(cs: any, text: string, heardRef: { current: boolean }, skipEdge = false): Promise<void> {
   console.log("[sip-conv] speak:", text.slice(0, 80));
   let frames: Buffer[];
-  try { frames = await textToFramesLocal(text); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
+  try { frames = await textToFramesLocal(text, skipEdge); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
   if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
   // GUARD: NEVER stop streaming because an inbound audioPacket arrived.
@@ -524,10 +532,10 @@ export async function runConversation(
   const cs = call.callSession;
   const cleanup = call.cleanup;
 
-  // Speak immediately - no 15s wait since we initiated the call
+  // Speak immediately - use Google TTS for greeting (fast, native 8kHz)
   const greeting = getInitialGreeting(state);
   lines.push(`Agent: ${greeting}`);
-  await speak(cs, greeting, heardRef);
+  await speak(cs, greeting, heardRef, true);
 
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
@@ -544,8 +552,12 @@ export async function runConversation(
     // Use real Whisper transcript
     let txt = r.transcript;
     if (!txt || txt.trim().length === 0) {
-      // Whisper returned empty — skip this turn, don't send garbage to LLM
-      console.log("[sip-conv] Whisper returned empty transcript, skipping");
+      // Whisper returned empty but prospect DID speak - use smart fallback to keep conversation alive
+      console.log("[sip-conv] Whisper empty but prospect spoke, using smart fallback");
+      const fallbackResp = await processProspectInput(state, "");
+      let fallbackText = fallbackResp.text || "Sorry, could you repeat that?";
+      lines.push(`Agent: ${fallbackText}`);
+      await speak(cs, fallbackText, heardRef);
       continue;
     }
     txt = txt.trim();
