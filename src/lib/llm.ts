@@ -1,12 +1,12 @@
 /**
- * LLM Client - Pollinations AI (Free, Unlimited, No API Key)
- * 
+ * LLM Client - Pollinations AI (Free, No API Key)
+ *
+ * Tries openai-fast first (less likely to hit budget), then openai as fallback.
  * OpenAI-compatible endpoint: https://text.pollinations.ai/openai
- * Uses GPT-OSS 20B model (free, no signup, no limits)
- * Automatic, no API key required
  */
 
-const POLLINATIONS_BASE_URL = "https://text.pollinations.ai/openai";
+const POLLINATIONS_URL = "https://text.pollinations.ai/openai";
+const LLM_MODELS = ["openai-fast", "openai"];
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -20,61 +20,72 @@ export interface LLMResponse {
 
 /**
  * Send a chat completion request to Pollinations AI
+ * Tries multiple models with automatic failover
  */
 export async function chatCompletion(
   messages: LLMMessage[],
   options: {
-    model?: string;
     maxTokens?: number;
     temperature?: number;
   } = {}
 ): Promise<LLMResponse> {
   const {
-    model = "openai",
     maxTokens = 300,
     temperature = 0.7,
   } = options;
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+  for (const model of LLM_MODELS) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
 
-    const resp = await fetch(POLLINATIONS_BASE_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages,
-        max_tokens: maxTokens,
-        temperature,
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
+      const resp = await fetch(POLLINATIONS_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: maxTokens,
+          temperature,
+          stream: false,
+        }),
+        signal: controller.signal,
+      });
 
-    clearTimeout(timeout);
+      clearTimeout(timeout);
 
-    if (!resp.ok) {
-      const errorText = await resp.text().catch(() => "unknown");
-      return { content: "", error: `LLM HTTP ${resp.status}: ${errorText}` };
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => "unknown");
+        console.error(`[llm] ${model} HTTP ${resp.status}:`, errorText.slice(0, 80));
+        continue;
+      }
+
+      const data = await resp.json();
+      const content = data?.choices?.[0]?.message?.content || "";
+
+      const errorPatterns = ["budget", "rate limit", "api key", "limit reached", "quota", "exceeded", "raise the key"];
+      const lowerContent = content.toLowerCase();
+      if (content && errorPatterns.some(p => lowerContent.includes(p))) {
+        console.error(`[llm] ${model} returned error content:`, content.slice(0, 100));
+        continue;
+      }
+
+      if (!content || content.trim().length === 0) {
+        console.error(`[llm] ${model} returned empty content`);
+        continue;
+      }
+
+      console.log(`[llm] ${model} OK:`, content.slice(0, 60));
+      return { content };
+    } catch (e: any) {
+      console.error(`[llm] ${model} error:`, e?.message);
+      continue;
     }
-
-    const data = await resp.json();
-    const content = data?.choices?.[0]?.message?.content || "";
-
-    const errorPatterns = ["budget", "rate limit", "api key", "error", "limit reached", "quota", "exceeded"];
-    const lowerContent = content.toLowerCase();
-    if (content && errorPatterns.some(p => lowerContent.includes(p))) {
-      console.error("[llm] Detected error in response content:", content.slice(0, 100));
-      return { content: "", error: "LLM returned error content" };
-    }
-
-    return { content };
-  } catch (e: any) {
-    return { content: "", error: `LLM error: ${e?.message}` };
   }
+
+  return { content: "", error: "All LLM models failed" };
 }
 
 /**
@@ -140,7 +151,6 @@ export async function getAIResponse(
   ];
 
   const response = await chatCompletion(messages, {
-    model: "openai",
     maxTokens: 200,
     temperature: 0.7,
   });
