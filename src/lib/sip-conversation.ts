@@ -53,6 +53,8 @@ const RATE = 8000;
 const FRAME = 160;
 const ULAW_SEG_END = [0x0ff, 0x1ff, 0x3ff, 0x7ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff];
 
+const GROQ_API_KEY = "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";
+
 function ulawEncode(sample: number): number {
   let s = sample | 0;
   const sign = (s >> 8) & 0x80;
@@ -66,6 +68,70 @@ function ulawEncode(sample: number): number {
   else { const mant = (s >> (e + 3)) & 0x0f; b = (e << 4) | mant; }
   b |= sign;
   return b ^ 0xff;
+}
+
+function ulawDecode(muLaw: number): number {
+  muLaw = ~muLaw & 0xff;
+  const sign = muLaw & 0x80;
+  const exponent = (muLaw >> 4) & 0x07;
+  const mantissa = muLaw & 0x0f;
+  let sample = ((mantissa << 1) + 0x21) << (exponent + 2);
+  sample -= 0x84;
+  return sign ? -sample : sample;
+}
+
+function ulawToPcm16(muLawBuf: Buffer): Int16Array {
+  const pcm = new Int16Array(muLawBuf.length);
+  for (let i = 0; i < muLawBuf.length; i++) pcm[i] = ulawDecode(muLawBuf[i]);
+  return pcm;
+}
+
+function pcm16ToWav(pcm: Int16Array, sampleRate: number): Buffer {
+  const dataSize = pcm.length * 2;
+  const buf = Buffer.alloc(44 + dataSize);
+  buf.write("RIFF", 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write("WAVE", 8);
+  buf.write("fmt ", 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20);
+  buf.writeUInt16LE(1, 22);
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28);
+  buf.writeUInt16LE(2, 32);
+  buf.writeUInt16LE(16, 34);
+  buf.write("data", 36);
+  buf.writeUInt32LE(dataSize, 40);
+  for (let i = 0; i < pcm.length; i++) buf.writeInt16LE(pcm[i], 44 + i * 2);
+  return buf;
+}
+
+async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
+  if (!audioChunks.length) return "";
+  const raw = Buffer.concat(audioChunks);
+  const pcm = ulawToPcm16(raw);
+  if (pcm.length < 800) return "";
+  const wav = pcm16ToWav(pcm, RATE);
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([new Uint8Array(wav)] as any, { type: "audio/wav" }), "speech.wav");
+    form.append("model", "whisper-large-v3-turbo");
+    form.append("language", "en");
+    form.append("temperature", "0");
+    const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: form,
+      signal: AbortSignal.timeout(8000),
+    });
+    const d = await r.json();
+    const text = (d?.text || "").trim();
+    console.log("[sip-conv] Whisper STT:", text || "(empty)");
+    return text;
+  } catch (e: any) {
+    console.error("[sip-conv] Whisper error:", e?.message);
+    return "";
+  }
 }
 
 function toUlawFrames(pcm16: Int16Array): Buffer[] {
@@ -344,46 +410,36 @@ function listenForSpeech(
   callStart: number,
   heardRef: { current: boolean },
   maxMs: number,
-): Promise<{ spoke: boolean; durationMs: number; peakEnergy: number }> {
+): Promise<{ spoke: boolean; durationMs: number; transcript: string }> {
   return new Promise((resolve) => {
     let got = false;
     let last = 0;
     let first = 0;
-    let peak = 0;
     const start = Date.now();
+    const audioChunks: Buffer[] = [];
     const on = (d: any) => {
       heardRef.current = true;
       if (!got) first = Date.now();
       got = true;
       last = Date.now();
-      if (Buffer.isBuffer(d)) {
-        let s = 0;
-        for (let i = 0; i < d.length; i++) s += Math.abs(d[i] - 128);
-        const avg = s / d.length;
-        if (avg > peak) peak = avg;
-      }
+      if (Buffer.isBuffer(d)) audioChunks.push(d);
     };
     cs.on("audioPacket", on);
+    const finish = async () => {
+      clearInterval(iv);
+      cs.removeListener("audioPacket", on);
+      if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
+      const dur = Date.now() - first;
+      if (dur < 500) { resolve({ spoke: true, durationMs: dur, transcript: "" }); return; }
+      const transcript = await transcribeWithWhisper(audioChunks);
+      resolve({ spoke: true, durationMs: dur, transcript });
+    };
     const iv = setInterval(() => {
-      if (Date.now() - callStart > MAX_CALL_MS) { clearInterval(iv); cs.removeListener("audioPacket", on); resolve({ spoke: got, durationMs: got ? Date.now() - first : 0, peakEnergy: peak }); return; }
-      if (got && Date.now() - last > 1200) { clearInterval(iv); cs.removeListener("audioPacket", on); resolve({ spoke: true, durationMs: Date.now() - first, peakEnergy: peak }); }
-      if (!got && Date.now() - start > maxMs) { clearInterval(iv); cs.removeListener("audioPacket", on); resolve({ spoke: false, durationMs: 0, peakEnergy: 0 }); }
+      if (Date.now() - callStart > MAX_CALL_MS) { finish(); return; }
+      if (got && Date.now() - last > 2000) { finish(); return; }
+      if (!got && Date.now() - start > maxMs) { finish(); return; }
     }, 100);
   });
-}
-
-function inferProspectText(state: ConversationState, dur: number, energy: number): string {
-  if (dur < 800 && energy < 30) return "yes";
-  if (dur < 2000) {
-    if (state.phase === "collect_name") return "my name is prospect";
-    if (state.phase === "collect_company") return "I'm with a company";
-    if (state.phase === "collect_email") return "prospect@example.com";
-    return "yes okay sounds good";
-  }
-  if (state.phase === "collect_name") return "my name is prospect";
-  if (state.phase === "collect_company") return "I'm with a logistics company";
-  if (state.phase === "collect_email") return "my email is prospect@example.com";
-  return "I have some concerns about this";
 }
 
 async function speak(cs: any, text: string, heardRef: { current: boolean }): Promise<void> {
@@ -454,17 +510,24 @@ export async function runConversation(
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
 
-    // Listen for 3 seconds max - respond quickly when prospect stops talking
-    const r = await listenForSpeech(cs, start, heardRef, 3000);
+    // Listen for speech and transcribe with Whisper
+    const r = await listenForSpeech(cs, start, heardRef, 4000);
     if (!r.spoke) {
       await speak(cs, "Are you still there?", heardRef);
-      const retry = await listenForSpeech(cs, start, heardRef, 2000);
+      const retry = await listenForSpeech(cs, start, heardRef, 3000);
       if (!retry.spoke) break;
     }
     if (Date.now() - start > maxDurationMs) break;
 
-    // Use actual audio data for inference
-    const txt = inferProspectText(state, r.durationMs, r.peakEnergy);
+    // Use real Whisper transcript
+    let txt = r.transcript;
+    if (!txt || txt.trim().length === 0) {
+      // Whisper returned empty — skip this turn, don't send garbage to LLM
+      console.log("[sip-conv] Whisper returned empty transcript, skipping");
+      continue;
+    }
+    txt = txt.trim();
+    console.log("[sip-conv] Prospect said:", txt);
     lines.push(`Prospect: ${txt}`);
     const resp = await processProspectInput(state, txt);
     // Always speak - use fallback if LLM returned empty
