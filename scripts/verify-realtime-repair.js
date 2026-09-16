@@ -2,6 +2,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const { createVad } = require("../src/management/agent/vad");
+const { systemPrompt } = require("../src/management/agent/intelligent-brain");
 
 function ulawEncode(sample) {
   let s = sample | 0; const sign = (s >> 8) & 0x80; if (sign) s = -s;
@@ -16,11 +17,8 @@ function frame(amplitude) {
   return b;
 }
 
-// VAD: continuous telephony silence must not count as speech.
 let vad = createVad({ minSpeechMs: 160, endSilenceMs: 620 });
 for (let i = 0; i < 50; i++) assert.equal(vad.push(Buffer.alloc(160, 0xff)).speaking, false);
-
-// VAD: actual speech starts, then ends from sustained silence rather than a preset turn timer.
 vad = createVad({ minSpeechMs: 160, endSilenceMs: 620 });
 for (let i = 0; i < 20; i++) vad.push(Buffer.alloc(160, 0xff));
 let state;
@@ -33,14 +31,31 @@ assert.equal(state.ended, true);
 
 const call = fs.readFileSync(path.join(__dirname, "../src/management/agent/call.js"), "utf8");
 const runner = fs.readFileSync(path.join(__dirname, "../src/management/agent/call-runner.js"), "utf8");
+const ai = fs.readFileSync(path.join(__dirname, "../src/management/agent/intelligent-brain.js"), "utf8");
+const voice = fs.readFileSync(path.join(__dirname, "../src/management/agent/voice.js"), "utf8");
+const agent = fs.readFileSync(path.join(__dirname, "../src/management/agent/agent.js"), "utf8");
 const trunk = fs.readFileSync(path.join(__dirname, "../src/management/portal/trunk.js"), "utf8");
 const softphone = fs.readFileSync(path.join(__dirname, "../src/management/portal/softphone.js"), "utf8");
 const projectNotes = fs.readFileSync(path.join(__dirname, "../PROJECT_NOTES.md"), "utf8");
 
 assert(call.includes('require("./vad")'));
 assert(call.includes("endSilenceMs: 620"));
+assert(runner.includes('require("./intelligent-brain")'));
+assert(!runner.includes('require("./brain-i18n")'));
 assert(!runner.includes("setTimeout(r, 600)"));
 assert(!runner.includes("100 + Math.floor(Math.random() * 150)"));
+assert(ai.includes("prior turns as context"));
+assert(ai.includes("Never assume freight, dispatch, logistics, trucking"));
+assert(ai.includes("GROQ_API_KEY"));
+assert(!ai.includes("gsk_"));
+const prompt = systemPrompt({ product: "dental appointments", companyName: "Example Dental", leadFields: ["preferred appointment time"], locale: "en" });
+assert(prompt.includes("Example Dental"));
+assert(prompt.includes("dental appointments"));
+assert(prompt.includes("preferred appointment time"));
+assert(voice.includes("AvaNeural") || voice.includes("JennyNeural"));
+assert(agent.includes("config.voip"));
+assert(agent.includes("config.product"));
+assert(agent.includes("config.companyName"));
 assert(trunk.includes("rtpPacket.payload"));
 assert(softphone.includes("streamAudio") || trunk.includes("streamAudio") || projectNotes.includes("customer's PC"));
 assert(projectNotes.includes("Each customer's PC acts as a learning node"));
