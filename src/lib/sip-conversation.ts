@@ -260,7 +260,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
     const stamp = edgeDateString();
     ws.on("open", () => {
       console.log("[sip-conv] edgeTts WS open, sending config...");
-      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-16khz-32kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
         if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
