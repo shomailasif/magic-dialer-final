@@ -1,0 +1,21 @@
+name: Realtime Repair Check
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax check changed runtime files
+        run: |
+          node --check src/management/agent/vad.js
+          node --check src/management/agent/call.js
+          node --check src/management/agent/call-runner.js
+      - name: Offline regression checks
+        run: node scripts/verify-realtime-repair.js
