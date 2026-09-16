@@ -361,11 +361,22 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   for (const chunk of chunks) {
     let mp3: Buffer | null = null;
 
-    // SKIP Edge TTS - it outputs 24kHz MP3 which needs downsampling to 8kHz
-    // for SIP, causing voice distortion. Google TTS outputs native 8kHz MP3.
+    // 1) Try Edge TTS (JennyNeural voice - human-sounding)
+    if (!edgeTtsBroken) {
+      try {
+        mp3 = await edgeTts(chunk, EDGE_VOICE);
+        if (mp3 && mp3.length > 100) {
+          allParts.push(mp3);
+          console.log("[sip-conv] Edge TTS OK:", mp3.length, "bytes");
+          continue;
+        }
+        console.error("[sip-conv] Edge TTS returned null/tiny for:", chunk.slice(0, 40));
+        edgeTtsBroken = true;
+        console.log("[sip-conv] Edge TTS marked broken, switching to HTTP fallback");
+      } catch { edgeTtsBroken = true; }
+    }
 
-    // 1) Google Translate TTS (plain HTTP, native 8kHz output)
-    // GUARD: client=dict-chrome-ex is the working endpoint. client=tw-ob returns HTML CAPTCHAs.
+    // 2) Fallback: Google Translate TTS (plain HTTP)
     try {
       const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=${GUARD_GOOGLE_TTS_CLIENT}&q=${encodeURIComponent(chunk)}`;
       const controller = new AbortController();
@@ -378,7 +389,6 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
         signal: controller.signal,
       });
       clearTimeout(timeout);
-      // GUARD: Validate Content-Type is audio, not HTML (CAPTCHA page)
       const ct = resp.headers.get("content-type") || "";
       if (resp.ok && ct.includes("audio")) {
         const arr = Buffer.from(await resp.arrayBuffer());
@@ -391,8 +401,7 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
       console.error("[sip-conv] Google TTS failed:", resp.status, "content-type:", ct);
     } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
 
-    // 2) Fallback: pre-recorded tone (valid 8kHz 16-bit WAV so the decode
-    //    path yields real frames instead of feeding raw ulaw to a decoder).
+    // 3) Fallback: pre-recorded tone
     console.error("[sip-conv] All TTS failed for chunk, generating tone");
     allParts.push(toneWav(800));
   }
@@ -489,6 +498,9 @@ export async function runConversation(
   const heardRef = { current: false };
 
   console.log("[sip-conv] Starting conversation with", sipConfig.number);
+
+  // Reset Edge TTS for each new call
+  edgeTtsBroken = false;
 
   const state = createConversation({
     tone: agentConfig.tone,
