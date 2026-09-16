@@ -2,45 +2,21 @@ const { speak, speakToBuffer } = require("./voice");
 const { hear, hearFromBuffer } = require("./hear");
 const { runCall } = require("./call-runner");
 const { mediaConnect } = require("./media-client");
+const { createVad } = require("./vad");
 
-/**
- * Live voice call driver.
- *
- * Two modes:
- *   1. MEDIA CHANNEL (when portal + token provided): audio flows through the
- *      cloud portal's WSS media channel. No PC mic or speakers needed — works
- *      for any customer hardware setup. TTS goes down the channel to the
- *      carrier; lead audio comes back up the channel for transcription.
- *   2. LOCAL MIC (fallback): PC speakers play TTS, PC mic listens. Traditional
- *      speakerphone mode for testing without a carrier.
- */
-
-const AUDIO_SAMPLE_RATE = 8000;  // mulaw telephony standard
+const AUDIO_SAMPLE_RATE = 8000;
+const FRAME_BYTES = 160;
+const FRAME_MS = 20;
 
 async function voiceCall({
-  product,
-  leadFields,
-  persona,
-  companyName,
-  callbackNumber,
-  callbackIn,
-  contactEmail,
-  token,
-  portal,
-  learning,
-  locale = "en",
-  voiceStyle = "human",
-  onLog = () => {},
-  onMode = () => {},
-  speakFn,
-  listenFn,
+  product, leadFields, persona, companyName, callbackNumber, callbackIn,
+  contactEmail, token, portal, learning, locale = "en", voiceStyle = "friendly",
+  onLog = () => {}, onMode = () => {}, speakFn, listenFn,
 }) {
-  // --- Try to connect to the media channel ---
   let channel = null;
   if (portal && token) {
     try {
       onLog("Connecting to media channel…");
-      // We need the session ID — it's passed as `sessionId` or derived
       const sessionId = arguments[0].sessionId || null;
       if (sessionId) {
         channel = await mediaConnect({ portal, sessionId, token, onLog });
@@ -54,19 +30,29 @@ async function voiceCall({
   let say, listen;
 
   if (channel && channel.open) {
-    // === MEDIA CHANNEL MODE ===
-    // Accumulator for incoming audio from the lead
-    let audioChunks = [];
-    let audioResolve = null;
-    let listenActive = false;
+    let listenState = null;
 
     channel.onAudio((buffer) => {
-      if (listenActive) {
-        audioChunks.push(buffer);
-        if (audioResolve) {
-          const resolve = audioResolve;
-          audioResolve = null;
-          resolve();
+      const state = listenState;
+      if (!state || !buffer || !buffer.length) return;
+      for (let off = 0; off < buffer.length; off += FRAME_BYTES) {
+        const frame = buffer.subarray(off, Math.min(off + FRAME_BYTES, buffer.length));
+        const v = state.vad.push(frame, FRAME_MS);
+        if (!state.started) {
+          state.preRoll.push(frame);
+          if (state.preRoll.length > 10) state.preRoll.shift();
+          if (v.speaking) {
+            state.started = true;
+            state.startedAt = Date.now();
+            state.chunks.push(...state.preRoll);
+            state.preRoll = [];
+          }
+        } else {
+          state.chunks.push(frame);
+          if (v.ended && !state.done) {
+            state.done = true;
+            state.resolve();
+          }
         }
       }
     });
@@ -75,78 +61,54 @@ async function voiceCall({
       onMode("speaking");
       onLog("AGENT: " + text);
       const result = await speakToBuffer(text, { locale, style: voiceStyle });
-      if (result && result.buffer) {
-        // Send in 160-byte chunks (20ms at 8kHz mulaw)
-        const CHUNK = 160;
-        for (let i = 0; i < result.buffer.length; i += CHUNK) {
-          const chunk = result.buffer.subarray(i, Math.min(i + CHUNK, result.buffer.length));
-          channel.sendAudio(chunk);
-          // Pace: 20ms per chunk (real-time streaming)
-          await new Promise(r => setTimeout(r, 20));
-        }
-        onLog(`[media] sent ${result.buffer.length} bytes TTS`);
-      } else {
+      if (!result || !result.buffer) {
         onLog("[media] TTS buffer generation failed");
+        return;
       }
+      for (let i = 0; i < result.buffer.length; i += FRAME_BYTES) {
+        if (!channel.open) break;
+        channel.sendAudio(result.buffer.subarray(i, Math.min(i + FRAME_BYTES, result.buffer.length)));
+        await new Promise((r) => setTimeout(r, FRAME_MS));
+      }
+      onLog(`[media] sent ${result.buffer.length} bytes TTS (${result.engine})`);
     };
 
     listen = async () => {
       onMode("listening");
-      onLog("(listening via media channel…)");
-      listenActive = true;
-      audioChunks = [];
+      onLog("(listening for speech…)");
+      const vad = createVad({ minSpeechMs: 160, endSilenceMs: 620 });
+      let release;
+      const ended = new Promise((resolve) => { release = resolve; });
+      const state = { vad, chunks: [], preRoll: [], started: false, startedAt: 0, done: false, resolve: release };
+      listenState = state;
 
-      // Wait for audio or timeout
-      const timeoutMs = 6000;
-      const start = Date.now();
-      while (Date.now() - start < timeoutMs) {
-        if (audioChunks.length > 0) {
-          // Got some audio — wait a bit more for speech to finish
-          const silenceWait = 1200;
-          const silenceStart = Date.now();
-          const preLen = audioChunks.length;
-          while (Date.now() - silenceStart < silenceWait) {
-            await new Promise(r => setTimeout(r, 200));
-            if (audioChunks.length > preLen) break; // more audio arrived
-          }
-          break;
-        }
-        await new Promise(r => setTimeout(r, 100));
-      }
-      listenActive = false;
+      // This is only a dead-line safety ceiling. Conversation timing is VAD-driven.
+      const safety = setTimeout(() => { if (!state.done) { state.done = true; state.resolve(); } }, 15000);
+      await ended;
+      clearTimeout(safety);
+      if (listenState === state) listenState = null;
 
-      if (audioChunks.length === 0) {
-        onLog("(nothing heard via media)");
+      if (!state.started || state.chunks.length === 0) {
+        onLog("(no speech detected)");
         return null;
       }
-
-      // Concatenate all audio chunks into one buffer
-      const fullAudio = Buffer.concat(audioChunks);
-      onLog(`[media] received ${fullAudio.length} bytes audio`);
-
-      // Transcribe with vosk
+      const fullAudio = Buffer.concat(state.chunks);
+      onLog(`[media] speech turn ${fullAudio.length} bytes, ${Math.round(fullAudio.length / 8)}ms`);
       const text = hearFromBuffer(fullAudio, { locale, sampleRate: AUDIO_SAMPLE_RATE });
-      if (text) {
-        onLog("LEAD:  " + text);
-        return text;
-      }
-      onLog("(nothing transcribed)");
+      if (text) { onLog("LEAD:  " + text); return text; }
+      onLog("(speech detected but nothing transcribed)");
       return null;
     };
-
   } else {
-    // === LOCAL MIC MODE (fallback) ===
     say = speakFn || (async (text) => {
-      onMode("speaking");
-      onLog("AGENT: " + text);
+      onMode("speaking"); onLog("AGENT: " + text);
       return speak(text, { locale, style: voiceStyle });
     });
     listen = listenFn || (async () => {
-      onMode("listening");
-      onLog("(listening…)");
+      onMode("listening"); onLog("(listening…)");
+      // Local-mic capture remains the offline fallback. The real phone/media path above is VAD-driven.
       const t = await hear({ timeoutMs: 4500, locale });
-      if (t) onLog("LEAD:  " + t);
-      else onLog("(nothing heard)");
+      if (t) onLog("LEAD:  " + t); else onLog("(nothing heard)");
       return t;
     });
   }
@@ -164,32 +126,18 @@ async function voiceCall({
   if (channel) channel.close();
 
   const updatedLearning = result.learning || learning || {};
-
   let posted = null;
   if (portal && token) {
     try {
       const res = await fetch(`${portal.replace(/\/+$/, "")}/api/call-result`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          product,
-          transcript: result.transcript,
-          score: result.score,
-          goodLead: result.goodLead,
-          escalateToHuman: result.escalateToHuman,
-          strategies: result.strategies || [],
-          summary: result.summary,
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, product, transcript: result.transcript, score: result.score, goodLead: result.goodLead, escalateToHuman: result.escalateToHuman, strategies: result.strategies || [], summary: result.summary }),
       });
       posted = res.status;
       const body = await res.json().catch(() => ({}));
       onLog(body.emailed ? "Qualified lead email sent ✓" : "Result reported.");
-    } catch (e) {
-      onLog(`Could not report result (${e.message}).`);
-    }
+    } catch (e) { onLog(`Could not report result (${e.message}).`); }
   }
-
   return { ...result, posted, learning: updatedLearning };
 }
 
