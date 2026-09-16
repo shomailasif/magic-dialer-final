@@ -5,18 +5,20 @@ const { normalizeLanguage } = require("./language");
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
 
-function fallbackOpening({ companyName, product }) {
+function fallbackOpening({ companyName, product, locale }) {
   const company = String(companyName || "our team").trim();
   const offering = String(product || "what we offer").trim();
+  if (normalizeLanguage(locale, "en") !== "en") return `Hello. ${company}. ${offering}.`;
   return `Hi, this is Autumn from ${company}. I'm calling briefly about ${offering}. Is now an okay time for a quick conversation?`;
 }
-function fallbackReply(text, { callbackNumber, callbackIn }) {
-  if (STOP_RE.test(String(text || ""))) return "Absolutely. I'll end the sales conversation here.";
+function fallbackReply(text, { callbackNumber, callbackIn, locale }) {
+  const lang = normalizeLanguage(locale, "en");
+  if (STOP_RE.test(String(text || ""))) return lang === "en" ? "Absolutely. I'll end the sales conversation here." : "Understood. I will end the call now.";
   if (HUMAN_RE.test(String(text || ""))) {
-    if (callbackNumber) return `Of course. I can have a person follow up, or you can call ${callbackNumber}${callbackIn ? ` ${callbackIn}` : ""}.`;
-    return "Of course. I'll mark this for a human follow-up.";
+    if (callbackNumber) return lang === "en" ? `Of course. I can have a person follow up, or you can call ${callbackNumber}${callbackIn ? ` ${callbackIn}` : ""}.` : `A person can follow up. ${callbackNumber}${callbackIn ? ` ${callbackIn}` : ""}.`;
+    return lang === "en" ? "Of course. I'll mark this for a human follow-up." : "Understood. I will request human follow-up.";
   }
-  return "I want to answer that accurately rather than guess. Let me note it for the team to follow up.";
+  return lang === "en" ? "I want to answer that accurately rather than guess. Let me note it for the team to follow up." : "I do not have that detail, so I will not guess. I will note it for follow-up.";
 }
 
 async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en" }) {
@@ -34,9 +36,9 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     const heard=typeof heardResult==="string"?heardResult:(heardResult&&heardResult.text);
     const detected=typeof heardResult==="object"&&heardResult&&heardResult.language?normalizeLanguage(heardResult.language,null):null;
     if(detected && detected!==activeLocale){activeLocale=detected;timeline.push({at:Date.now(),event:"language-switch",locale:activeLocale});}
-    if(!heard||String(heard).startsWith("(silence)")){lead("(silence)");if(turn===0){await agent("Hello? I just want to make sure you can hear me.");continue;}break;}
+    if(!heard||String(heard).startsWith("(silence)")){lead("(silence)");if(turn===0){const hello=await nextTurn({transcript:[...transcript,{role:"lead",text:"The line is quiet. Briefly check whether the prospect can hear you."}],...config()});if(!hello.text)llmFailures++;await agent(hello.text||(activeLocale==="en"?"Hello? I just want to make sure you can hear me.":"Hello?"));continue;}break;}
     lead(heard,detected);stopRequested=STOP_RE.test(heard);humanRequested=HUMAN_RE.test(heard)&&/\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
-    if(stopRequested){await agent("Absolutely. I'll end the sales conversation here.");break;}
+    if(stopRequested){const stopLine=await nextTurn({transcript:[...transcript,{role:"lead",text:"Acknowledge the do-not-call request immediately and end the call."}],...config()});await agent(stopLine.text||fallbackReply(heard,config()));break;}
     if(humanRequested){await agent(fallbackReply(heard,config()));break;}
     const ai=await nextTurn({transcript,...config()});if(!ai.text)llmFailures++;await agent(ai.text||fallbackReply(heard,config()));if(llmFailures>=2)break;
   }
