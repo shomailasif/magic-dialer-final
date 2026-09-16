@@ -14,7 +14,7 @@
 // Fixed headers now match edge-tts Python library. Set to false to enable
 // JennyNeural voice. If blocked again, falls back to Google TTS in 8s.
 // LAST BROKEN: Wrong Origin header → 403 Forbidden → 20s timeout per chunk
-export const GUARD_EDGE_TTS_BROKEN_INIT = true;
+export const GUARD_EDGE_TTS_BROKEN_INIT = false;
 
 // ============================================================================
 // GUARD 2: Google TTS URL must use dict-chrome-ex client
