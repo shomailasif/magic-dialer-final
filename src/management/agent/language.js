@@ -1,7 +1,7 @@
 "use strict";
 
-// V2 spoken-language contract. These locales all have neural female voice
-// coverage in voice.js and are accepted for automatic call-language routing.
+// V2 spoken-language contract. These locales have neural female voice coverage
+// in voice.js and are accepted for automatic call-language routing.
 const SUPPORTED_LANGUAGES = Object.freeze({
   en: "English", es: "Spanish", fr: "French", de: "German", pt: "Portuguese",
   it: "Italian", nl: "Dutch", pl: "Polish", ru: "Russian", uk: "Ukrainian",
@@ -19,10 +19,18 @@ const ALIASES = Object.freeze({
   kor:"ko", ind:"id", msa:"ms", may:"ms", vie:"vi", tha:"th", heb:"he",
   ell:"el", gre:"el", ces:"cs", cze:"cs", ron:"ro", rum:"ro", swe:"sv",
   dan:"da", fin:"fi", nor:"nb", nob:"nb", slk:"sk", slo:"sk", slv:"sl",
+  english:"en", spanish:"es", french:"fr", german:"de", portuguese:"pt",
+  italian:"it", dutch:"nl", polish:"pl", russian:"ru", ukrainian:"uk",
+  turkish:"tr", arabic:"ar", hindi:"hi", urdu:"ur", chinese:"zh",
+  mandarin:"zh", japanese:"ja", korean:"ko", indonesian:"id", malay:"ms",
+  vietnamese:"vi", thai:"th", hebrew:"he", greek:"el", czech:"cs",
+  romanian:"ro", swedish:"sv", danish:"da", finnish:"fi", norwegian:"nb",
+  slovak:"sk", slovenian:"sl",
 });
 
 function normalizeLanguage(code, fallback="en") {
   const raw=String(code||"").trim().toLowerCase().replace(/_/g,"-");
+  if (ALIASES[raw]) return ALIASES[raw];
   const base=raw.split("-")[0];
   const normalized=ALIASES[base]||base;
   return SUPPORTED_LANGUAGES[normalized] ? normalized : fallback;
