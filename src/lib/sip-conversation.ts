@@ -175,14 +175,16 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
     pcm = mono;
   }
   if (fmt.sampleRate !== RATE) {
-    const out = new Int16Array(Math.ceil((pcm.length * RATE) / fmt.sampleRate));
-    const step = fmt.sampleRate / RATE;
-    for (let i = 0; i < out.length; i++) {
-      const start = Math.floor(i * step);
-      const end = Math.min(pcm.length, Math.max(start + 1, Math.ceil((i + 1) * step)));
-      let acc = 0;
-      for (let j = start; j < end; j++) acc += pcm[j];
-      out[i] = Math.max(-32768, Math.min(32767, Math.round(acc / (end - start))));
+    const ratio = fmt.sampleRate / RATE;
+    const outLen = Math.ceil(pcm.length / ratio);
+    const out = new Int16Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      const srcPos = i * ratio;
+      const idx = Math.floor(srcPos);
+      const frac = srcPos - idx;
+      const a = pcm[idx] || 0;
+      const b = pcm[Math.min(idx + 1, pcm.length - 1)] || 0;
+      out[i] = Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * frac)));
     }
     pcm = out;
   }
@@ -245,7 +247,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
     const stamp = edgeDateString();
     ws.on("open", () => {
       console.log("[sip-conv] edgeTts WS open, sending config...");
-      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-16khz-32kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
         if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
@@ -335,14 +337,17 @@ async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
       dec.free();
       let pcm = Int16Array.from(mono, (v) => Math.max(-32768, Math.min(32767, Math.round(v))));
       if (rate !== RATE) {
-        const out = new Int16Array(Math.ceil((pcm.length * RATE) / rate));
-        const step = rate / RATE;
-        for (let i = 0; i < out.length; i++) {
-          const s = Math.floor(i * step);
-          const e = Math.min(pcm.length, Math.max(s + 1, Math.ceil((i + 1) * step)));
-          let a = 0;
-          for (let j = s; j < e; j++) a += pcm[j];
-          out[i] = Math.max(-32768, Math.min(32767, Math.round(a / (e - s))));
+        // Linear interpolation downsampling - much smoother than block averaging
+        const ratio = rate / RATE;
+        const outLen = Math.ceil(pcm.length / ratio);
+        const out = new Int16Array(outLen);
+        for (let i = 0; i < outLen; i++) {
+          const srcPos = i * ratio;
+          const idx = Math.floor(srcPos);
+          const frac = srcPos - idx;
+          const a = pcm[idx] || 0;
+          const b = pcm[Math.min(idx + 1, pcm.length - 1)] || 0;
+          out[i] = Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * frac)));
         }
         pcm = out;
       }
