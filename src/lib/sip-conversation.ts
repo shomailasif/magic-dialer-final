@@ -532,10 +532,10 @@ export async function runConversation(
   const cs = call.callSession;
   const cleanup = call.cleanup;
 
-  // Speak immediately - use Google TTS for greeting (fast, native 8kHz)
+  // Speak immediately - Google TTS only (clean native 8kHz, no downsampling)
   const greeting = getInitialGreeting(state);
   lines.push(`Agent: ${greeting}`);
-  await speak(cs, greeting, heardRef, true);
+  await speak(cs, greeting, heardRef);
 
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
