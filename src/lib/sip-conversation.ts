@@ -512,8 +512,7 @@ export async function runConversation(
 
   console.log("[sip-conv] Starting conversation with", sipConfig.number);
 
-  // Reset Edge TTS for each new call
-  edgeTtsBroken = false;
+  // Edge TTS broken state persists from guard - do NOT reset per call
 
   const state = createConversation({
     tone: agentConfig.tone,
