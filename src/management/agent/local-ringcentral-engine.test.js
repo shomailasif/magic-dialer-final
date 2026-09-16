@@ -22,6 +22,12 @@ assert(agent.includes("await engine.sendAudio(r.buffer)"),"complete TTS utteranc
 assert(agent.includes("createVad"),"inbound speech must pass through VAD");
 assert(agent.includes("hearFromBuffer(audio"),"captured telephone audio must reach transcription");
 assert(!agent.includes("mediaConnect("),"V2 active call path must not route live audio through Suga WSS");
-assert(voice.includes("pcm16ToMulaw")&&voice.includes("8000"),"TTS path must produce 8k telephone audio");
+// Voice is synthesized by the neural TTS engine in its native high-quality
+// format, then converted only at the telephone boundary to RingCentral's
+// required PCMU/8kHz mono format. Do not require low-rate source synthesis.
+assert(voice.includes('"-ar", "8000"'),"telephone boundary must resample to 8kHz");
+assert(voice.includes('"-ac", "1"'),"telephone boundary must be mono");
+assert(voice.includes('"-f", "mulaw"'),"telephone boundary must encode PCMU/mulaw");
+assert(voice.includes("edge_tts")&&voice.includes("AvaNeural"),"high-quality friendly neural female TTS path missing");
 assert(hear.includes("mulawDecode")&&hear.includes("hearFromBuffer"),"inbound PCMU decode/transcription path missing");
 console.log("local RingCentral media v2 acceptance checks: PASS");
