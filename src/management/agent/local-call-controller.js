@@ -20,9 +20,9 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     sip: {
       user: v.username,
       pass: v.sipPassword,
-      authId: v.extension || v.username,
-      domain: v.server || "sip.ringcentral.com",
-      proxy: v.server || "sip40.ringcentral.com",
+      authId: v.authId || v.username,
+      domain: v.domain || "sip.ringcentral.com",
+      proxy: v.host || v.server || "sip40.ringcentral.com",
       port: Number(v.port || 5096),
     },
     onLog,
