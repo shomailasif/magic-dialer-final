@@ -481,7 +481,12 @@ export async function runConversation(
     lines.push(`Prospect: ${txt}`);
     const resp = await processProspectInput(state, txt);
     // Always speak - use fallback if LLM returned empty
-    const responseText = resp.text || "I'm sorry, could you repeat that?";
+    let responseText = resp.text || "I'm sorry, could you repeat that?";
+    const ERROR_PATTERNS = ["budget", "rate limit", "api key", "error", "limit reached"];
+    if (ERROR_PATTERNS.some(p => responseText.toLowerCase().includes(p))) {
+      console.error("[sip-conv] Error text blocked from TTS:", responseText.slice(0, 80));
+      responseText = "I'm sorry, could you repeat that?";
+    }
     lines.push(`Agent: ${responseText}`);
     await speak(cs, responseText, heardRef);
     if (resp.shouldEnd) break;

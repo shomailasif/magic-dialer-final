@@ -1,0 +1,82 @@
+[
+  {
+    "level": "info",
+    "name": "node",
+    "detail": "24.19.0"
+  },
+  {
+    "level": "info",
+    "name": "platform",
+    "detail": "win32 x64"
+  },
+  {
+    "level": "info",
+    "name": "cwd",
+    "detail": "C:\\Users\\USER\\Documents\\Default Project\\autodial-ai"
+  },
+  {
+    "level": "pass",
+    "name": "mpg123-decoder loads",
+    "detail": "object"
+  },
+  {
+    "level": "pass",
+    "name": "MPEGDecoder class",
+    "detail": "present"
+  },
+  {
+    "level": "info",
+    "name": "client=dict-chrome-ex",
+    "detail": "status=200 ctype=audio/mpeg bytes=35136"
+  },
+  {
+    "level": "pass",
+    "name": "Google TTS audio",
+    "detail": "35136 bytes"
+  },
+  {
+    "level": "pass",
+    "name": "MP3 decode",
+    "detail": "105408 samples, 24000Hz, 2ch"
+  },
+  {
+    "level": "pass",
+    "name": "PCM peak",
+    "detail": "peak=19601"
+  },
+  {
+    "level": "info",
+    "name": "resample",
+    "detail": "24000Hz → 8000Hz, 35136 samples"
+  },
+  {
+    "level": "pass",
+    "name": "uLaw frames",
+    "detail": "220 frames / 217 non-silent / 35200 bytes"
+  },
+  {
+    "level": "info",
+    "name": "wavToPcm16 on MP3",
+    "detail": "correctly returned null (it's MP3, not WAV)"
+  },
+  {
+    "level": "pass",
+    "name": "softphone loads",
+    "detail": "sipCallOnce, sipCallBridge, pcmuTone, rawReg, registerSession"
+  },
+  {
+    "level": "pass",
+    "name": "sipCallBridge",
+    "detail": "function"
+  },
+  {
+    "level": "pass",
+    "name": "ringcentral-softphone loads",
+    "detail": "function"
+  },
+  {
+    "level": "pass",
+    "name": "ws loads",
+    "detail": "function"
+  }
+]

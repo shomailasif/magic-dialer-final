@@ -63,6 +63,14 @@ export async function chatCompletion(
 
     const data = await resp.json();
     const content = data?.choices?.[0]?.message?.content || "";
+
+    const errorPatterns = ["budget", "rate limit", "api key", "error", "limit reached", "quota", "exceeded"];
+    const lowerContent = content.toLowerCase();
+    if (content && errorPatterns.some(p => lowerContent.includes(p))) {
+      console.error("[llm] Detected error in response content:", content.slice(0, 100));
+      return { content: "", error: "LLM returned error content" };
+    }
+
     return { content };
   } catch (e: any) {
     return { content: "", error: `LLM error: ${e?.message}` };
