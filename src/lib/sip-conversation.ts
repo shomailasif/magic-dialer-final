@@ -217,81 +217,42 @@ function splitForTts(text: string): string[] {
   return chunks.length ? chunks : [String(text || "Hello").slice(0, 180)];
 }
 
-async function textToFramesLocal(text: string): Promise<Buffer[]> {
-  const chunks = splitForTts(text);
-  console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
-
-  const allParts: Buffer[] = [];
-  for (const chunk of chunks) {
-    let mp3: Buffer | null = null;
-
-    // 1) Try Edge TTS WebSocket
-    // GUARD: Recovery timer - reset edgeTtsBroken after 5 minutes
-    if (edgeTtsBroken && Date.now() - edgeTtsBrokenSince > EDGE_TTS_RECOVERY_MS) {
-      console.log("[sip-conv] Edge TTS recovery: resetting broken flag after 5 minutes");
-      edgeTtsBroken = false;
-    }
-    if (!edgeTtsBroken) {
-      try {
-        mp3 = await edgeTts(chunk, EDGE_VOICE);
-        if (mp3 && mp3.length > 100) {
-          allParts.push(mp3);
-          console.log("[sip-conv] Edge TTS OK:", mp3.length, "bytes");
-          continue;
-        }
-        console.error("[sip-conv] Edge TTS returned null/tiny for:", chunk.slice(0, 40));
-        edgeTtsBroken = true;
-        edgeTtsBrokenSince = Date.now();
-        console.log("[sip-conv] Edge TTS marked broken, switching to HTTP fallback");
-      } catch { edgeTtsBroken = true; edgeTtsBrokenSince = Date.now(); }
-    }
-
-    // 2) Fallback: Google Translate TTS (plain HTTP)
-    // GUARD: client=dict-chrome-ex is the working endpoint. client=tw-ob returns HTML CAPTCHAs.
-    try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=${GUARD_GOOGLE_TTS_CLIENT}&q=${encodeURIComponent(chunk)}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      const resp = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win6; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-          "Referer": "https://translate.google.com/",
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      // GUARD: Validate Content-Type is audio, not HTML (CAPTCHA page)
-      const ct = resp.headers.get("content-type") || "";
-      if (resp.ok && ct.includes("audio")) {
-        const arr = Buffer.from(await resp.arrayBuffer());
-        if (arr.length > 100) {
-          allParts.push(arr);
-          console.log("[sip-conv] Google TTS OK:", arr.length, "bytes, type:", ct);
-          continue;
-        }
-      }
-      console.error("[sip-conv] Google TTS failed:", resp.status, "content-type:", ct);
-    } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
-
-    // 3) Fallback: pre-recorded silence/tone
-    console.error("[sip-conv] All TTS failed for chunk, generating tone");
-    const toneBuf = Buffer.alloc(1600);
-    for (let i = 0; i < toneBuf.length; i++) {
-      toneBuf[i] = ((Math.sin((2 * Math.PI * 440 * i) / 8000) * 4000) | 0) ^ 0xff;
-    }
-    allParts.push(toneBuf);
+function toneWav(ms = 1000): Buffer {
+  const n = Math.floor((RATE * ms) / 1000);
+  const data = Buffer.alloc(n * 2);
+  for (let i = 0; i < n; i++) {
+    const v = Math.round(Math.sin((2 * Math.PI * 440 * i) / RATE) * 4000);
+    data.writeInt16LE(v, i * 2);
   }
+  const wav = Buffer.alloc(44 + data.length);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + data.length, 4);
+  wav.write("WAVE", 8);
+  wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(RATE, 24);
+  wav.writeUInt32LE(RATE * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(data.length, 40);
+  data.copy(wav, 44);
+  return wav;
+}
 
-  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
-  const combined = Buffer.concat(allParts);
-  console.log("[sip-conv] TTS combined:", combined.length, "bytes");
-  const wav = wavToPcm16(combined);
-  if (wav && wav.length > 0) { console.log("[sip-conv] decoded as WAV:", wav.length, "samples"); return toUlawFrames(wav); }
+async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
+  const wav = wavToPcm16(mp3);
+  if (wav && wav.length > 0) {
+    console.log("[sip-conv] decoded as WAV:", wav.length, "samples");
+    return toUlawFrames(wav);
+  }
   try {
     const mod = runtimeRequire("mpg123-decoder");
     const dec = new mod.MPEGDecoder();
     if (dec.ready) await dec.ready;
-    const r = dec.decode(new Uint8Array(combined));
+    const r = dec.decode(new Uint8Array(mp3));
     if (r && r.channelData && r.channelData.length) {
       const channels = r.channelData.length;
       const rate = Number(r.sampleRate) || 8000;
@@ -322,13 +283,74 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   return [];
 }
 
+async function textToFramesLocal(text: string): Promise<Buffer[]> {
+  const chunks = splitForTts(text);
+  console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
+
+  const allParts: Buffer[] = [];
+  for (const chunk of chunks) {
+    let mp3: Buffer | null = null;
+
+    // 1) Try Edge TTS WebSocket
+    // GUARD: Edge TTS WebSocket is blocked on Suga. It is never retried during
+    // a call because each attempt burns a 20s timeout -> 20s of silence. Only
+    // a fresh process (edgeTtsBroken=false never happens) re-enables it.
+    if (!edgeTtsBroken) {
+      try {
+        mp3 = await edgeTts(chunk, EDGE_VOICE);
+        if (mp3 && mp3.length > 100) {
+          allParts.push(mp3);
+          console.log("[sip-conv] Edge TTS OK:", mp3.length, "bytes");
+          continue;
+        }
+        console.error("[sip-conv] Edge TTS returned null/tiny for:", chunk.slice(0, 40));
+        edgeTtsBroken = true;
+        console.log("[sip-conv] Edge TTS marked broken, switching to HTTP fallback");
+      } catch { edgeTtsBroken = true; }
+    }
+
+    // 2) Fallback: Google Translate TTS (plain HTTP)
+    // GUARD: client=dict-chrome-ex is the working endpoint. client=tw-ob returns HTML CAPTCHAs.
+    try {
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=${GUARD_GOOGLE_TTS_CLIENT}&q=${encodeURIComponent(chunk)}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const resp = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win6; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "Referer": "https://translate.google.com/",
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      // GUARD: Validate Content-Type is audio, not HTML (CAPTCHA page)
+      const ct = resp.headers.get("content-type") || "";
+      if (resp.ok && ct.includes("audio")) {
+        const arr = Buffer.from(await resp.arrayBuffer());
+        if (arr.length > 100) {
+          allParts.push(arr);
+          console.log("[sip-conv] Google TTS OK:", arr.length, "bytes, type:", ct);
+          continue;
+        }
+      }
+      console.error("[sip-conv] Google TTS failed:", resp.status, "content-type:", ct);
+    } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
+
+    // 3) Fallback: pre-recorded tone (valid 8kHz 16-bit WAV so the decode
+    //    path yields real frames instead of feeding raw ulaw to a decoder).
+    console.error("[sip-conv] All TTS failed for chunk, generating tone");
+    allParts.push(toneWav(800));
+  }
+
+  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
+  const combined = Buffer.concat(allParts);
+  console.log("[sip-conv] TTS combined:", combined.length, "bytes");
+  return toFramesFromAudio(combined);
+}
+
 // GUARD: Must start as GUARD_EDGE_TTS_BROKEN_INIT (true). Edge TTS WebSocket is blocked on Suga.
 // Setting this to false causes 20-second timeouts per text chunk, making calls silent.
 let edgeTtsBroken = GUARD_EDGE_TTS_BROKEN_INIT;
-
-// Recovery: Reset edgeTtsBroken after 5 minutes so transient failures don't cause permanent degradation
-let edgeTtsBrokenSince = Date.now();
-const EDGE_TTS_RECOVERY_MS = 5 * 60 * 1000;
 
 function listenForSpeech(
   cs: any,
@@ -383,20 +405,29 @@ async function speak(cs: any, text: string, heardRef: { current: boolean }): Pro
   try { frames = await textToFramesLocal(text); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
   if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
+  // GUARD: NEVER stop streaming because an inbound audioPacket arrived.
+  // The moment the callee answers they make noise ("hello?"); the old handler
+  // called streamer.stop() on that first packet and killed the AI's audio a
+  // few ms in -> the call sounded silent. Audio must play end-to-end; barge-in
+  // is not wired to real STT, so truncating here only ever produces silence.
   return new Promise<void>((resolve) => {
-    let stopped = false;
-    const streamer = cs.streamAudio(Buffer.concat(frames));
-    const onAudio = () => {
-      if (!stopped) {
-        stopped = true;
-        try { streamer.stop(); } catch {}
-        cs.removeListener("audioPacket", onAudio);
-        resolve();
-      }
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let streamer: any = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { if (streamer) streamer.stop(); } catch {}
+      try { cs.removeListener("disposed", onDisposed); } catch {}
+      resolve();
     };
-    cs.on("audioPacket", onAudio);
+    const onDisposed = () => finish();
+    cs.on("disposed", onDisposed);
+    streamer = cs.streamAudio(Buffer.concat(frames));
+    try { streamer.once("finished", () => finish()); } catch {}
     const dur = Math.max(1000, frames.length * 20);
-    setTimeout(() => { cs.removeListener("audioPacket", onAudio); if (!stopped) resolve(); }, dur + 500);
+    timer = setTimeout(() => finish(), dur + 1500);
   });
 }
 
