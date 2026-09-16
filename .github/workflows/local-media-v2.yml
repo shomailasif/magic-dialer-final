@@ -2,6 +2,8 @@ name: Local Media V2 Verification
 on:
   push:
     branches: ["build/local-call-engine-v2"]
+  pull_request:
+    branches: ["main"]
   workflow_dispatch:
 jobs:
   verify:
@@ -15,18 +17,35 @@ jobs:
         run: |
           node --check src/management/agent/local-ringcentral-engine.js
           node --check src/management/agent/local-ringcentral-engine.test.js
+          node --check src/management/agent/local-call-controller.js
+          node --check src/management/agent/multilingual-stt.js
+          node --check src/management/agent/language.js
+          node --check src/management/agent/call-runner.js
           node --check src/management/agent/agent.js
       - name: Local media regression checks
         run: node src/management/agent/local-ringcentral-engine.test.js
       - name: Enforce no manual RTP in V2 engine
         shell: bash
         run: |
-          ! grep -E 'werift-rtp|srtpSession\.encrypt|RtpPacket' src/management/agent/local-ringcentral-engine.js
+          ! grep -E 'werift-rtp|srtpSession\.encrypt|RtpPacket|sendPacket\(' src/management/agent/local-ringcentral-engine.js
           grep -q 'session.streamAudio(audio)' src/management/agent/local-ringcentral-engine.js
           grep -q 'audioPacket' src/management/agent/local-ringcentral-engine.js
-      - name: Enforce local engine integration
+      - name: Enforce restored production agent structure
         shell: bash
         run: |
-          grep -q 'createLocalRingCentralEngine' src/management/agent/agent.js
-          grep -q 'engine.sendAudio' src/management/agent/agent.js
-          grep -q 'onAudio' src/management/agent/agent.js
+          grep -q 'runWatchdog' src/management/agent/agent.js
+          grep -q 'takeAgentLock' src/management/agent/agent.js
+          grep -q 'localDb.open' src/management/agent/agent.js
+          grep -q 'topStrategy' src/management/agent/agent.js
+          grep -q 'emailQualifiedLead' src/management/agent/agent.js
+          grep -q 'onSetup' src/management/agent/agent.js
+          grep -q '\-\-watchdog' src/management/agent/agent.js
+      - name: Enforce local controller integration
+        shell: bash
+        run: |
+          grep -q 'runLocalCall' src/management/agent/agent.js
+          grep -q 'createLocalRingCentralEngine' src/management/agent/local-call-controller.js
+          grep -q 'engine.sendAudio' src/management/agent/local-call-controller.js
+          grep -q 'onAudio' src/management/agent/local-call-controller.js
+          grep -q 'transcribeAuto' src/management/agent/local-call-controller.js
+          grep -q 'normalizeLanguage' src/management/agent/local-call-controller.js
