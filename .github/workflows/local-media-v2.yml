@@ -1,0 +1,32 @@
+name: Local Media V2 Verification
+on:
+  push:
+    branches: ["build/local-call-engine-v2"]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax check V2 runtime
+        run: |
+          node --check src/management/agent/local-ringcentral-engine.js
+          node --check src/management/agent/local-ringcentral-engine.test.js
+          node --check src/management/agent/agent.js
+      - name: Local media regression checks
+        run: node src/management/agent/local-ringcentral-engine.test.js
+      - name: Enforce no manual RTP in V2 engine
+        shell: bash
+        run: |
+          ! grep -E 'werift-rtp|srtpSession\.encrypt|RtpPacket' src/management/agent/local-ringcentral-engine.js
+          grep -q 'session.streamAudio(audio)' src/management/agent/local-ringcentral-engine.js
+          grep -q 'audioPacket' src/management/agent/local-ringcentral-engine.js
+      - name: Enforce local engine integration
+        shell: bash
+        run: |
+          grep -q 'createLocalRingCentralEngine' src/management/agent/agent.js
+          grep -q 'engine.sendAudio' src/management/agent/agent.js
+          grep -q 'onAudio' src/management/agent/agent.js
