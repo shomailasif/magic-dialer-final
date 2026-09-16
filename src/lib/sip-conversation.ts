@@ -403,8 +403,8 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
   for (const chunk of chunks) {
     let mp3: Buffer | null = null;
 
-    // 1) Try Edge TTS (JennyNeural voice - human-sounding)
-    if (!edgeTtsBroken && !skipEdge) {
+    // 1) Try Edge TTS (JennyNeural voice - human-sounding, 8kHz native)
+    if (!skipEdge) {
       try {
         mp3 = await edgeTts(chunk, EDGE_VOICE);
         if (mp3 && mp3.length > 100) {
@@ -413,9 +413,7 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
           continue;
         }
         console.error("[sip-conv] Edge TTS returned null/tiny for:", chunk.slice(0, 40));
-        edgeTtsBroken = true;
-        console.log("[sip-conv] Edge TTS marked broken, switching to HTTP fallback");
-      } catch { edgeTtsBroken = true; }
+      } catch (e: any) { console.error("[sip-conv] Edge TTS error:", e?.message); }
     }
 
     // 2) Fallback: Google Translate TTS (plain HTTP)
@@ -570,6 +568,10 @@ export async function runConversation(
   pendingAudio = [];
   streamActive = false;
 
+  // Log when call is disposed so we know WHY
+  cs.on("disposed", () => console.log("[sip-conv] *** CALL DISPOSED ***"));
+  cs.on("busy", () => console.log("[sip-conv] *** CALL BUSY ***"));
+
   // Speak greeting immediately
   const greeting = getInitialGreeting(state);
   lines.push(`Agent: ${greeting}`);
@@ -583,6 +585,7 @@ export async function runConversation(
     // Listen for speech — 1s silence = done speaking
     const r = await listenForSpeech(cs, start, heardRef, 3000);
     console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });
+    if (cs.disposed) { console.log("[sip-conv] call disposed during listen, ending"); break; }
     if (!r.spoke) {
       if (cs.disposed) break;
       await speak(cs, "Are you still there?", heardRef);
