@@ -7,7 +7,7 @@
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_KEY = "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";
-const GROQ_MODEL = "llama-3.1-8b-instruct";
+const GROQ_MODEL = "llama-3.1-8b-instant";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
