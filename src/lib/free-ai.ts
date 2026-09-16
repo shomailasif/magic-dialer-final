@@ -26,21 +26,330 @@ export interface ConversationState {
   silenceCount: number;
 }
 
-export interface AIResponse { text: string; state: ConversationState; shouldEnd: boolean; }
+export interface AIResponse {
+  text: string;
+  state: ConversationState;
+  shouldEnd: boolean;
+}
+
+// Pattern banks
 const BYE = ["bye", "goodbye", "see you", "talk later", "gotta go", "have to go", "hung up", "stop calling", "don't call again", "remove me"];
 const POSITIVE = ["yes", "yeah", "yep", "sure", "okay", "ok", "sounds good", "tell me more", "i'm interested", "go on", "continue", "alright", "what is it"];
 const OBJECTION = ["not interested", "no thanks", "no thank you", "busy", "can't talk", "cannot talk", "in a meeting", "driving", "send me an email", "not now", "later", "maybe", "not the right time", "who is this", "how did you get my number"];
 const QUESTION_WORDS = ["what", "how", "why", "when", "where", "who", "can you", "could you", "tell me", "explain"];
 const INTRODUCE = ["who are you", "what is this", "what company", "what do you do", "what are you selling"];
 const SILENCE_RESPONSES = ["Are you still there?", "Hello?", "I'm still here if you have any questions.", "Just let me know if you'd like to hear more."];
-function matchesAny(text: string, patterns: string[]) { const lower = text.toLowerCase(); return patterns.some((p) => lower.includes(p)); }
-function extractEmail(text: string) { const match = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/); return match ? match[0] : null; }
-function extractName(text: string): string | null { const lower=text.toLowerCase(); for(const indicator of ["my name is","i'm","i am","this is","name's","it's","call me"]){const idx=lower.indexOf(indicator);if(idx!==-1){let name=text.slice(idx+indicator.length).trim().split(/[.,!?]/)[0].trim();const words=name.split(/\s+/);if(words.length>3)name=words.slice(0,3).join(" ");if(name.length>1&&name.length<40&&!/^\d+$/.test(name))return name;}} return null; }
-function extractCompany(text:string):string|null{const lower=text.toLowerCase();for(const indicator of ["company","business","organization","firm","corp","inc","llc","work at","from","i'm with","i work for"]){const idx=lower.indexOf(indicator);if(idx!==-1){const company=text.slice(idx+indicator.length).trim().split(/[.,!?]/)[0].trim();if(company.length>1&&company.length<60)return company;}}return null;}
-function randomPick(arr:string[]){return arr[Math.floor(Math.random()*arr.length)];}
-function smartFallback(state:ConversationState):string{const text=state.lastProspectSaid.toLowerCase();const turn=state.turnCount;const name=state.collectedName;const hasName=!!name;if(matchesAny(text,BYE))return hasName?`Thank you ${name}! We'll be in touch. Have a great day!`:"Thank you for your time! We'll be in touch. Have a great day!";if(matchesAny(text,OBJECTION)){state.objectionCount++;if(state.objectionCount>=3)return hasName?`I understand ${name}. I'll let you go. We'll follow up by email instead. Have a great day!`:"I understand. I won't keep you. We'll send you an email instead. Have a great day!";if(text.includes("not interested")||text.includes("no thanks"))return"I completely understand. Most of our clients felt the same way at first. Could I just take 30 seconds to explain what we do?";if(text.includes("busy")||text.includes("meeting")||text.includes("driving"))return"I'm sorry to bother you. When would be a better time to call back?";if(text.includes("who is this")||text.includes("how did you"))return"This is Sarah from Dispatch Solutions. We help businesses like yours save up to 30% on dispatch costs. Can I ask what your current setup looks like?";if(text.includes("email"))return"Absolutely, I can send you an email. What's the best email address for you?";return"I understand. We just help businesses save time and money on dispatch. Can I ask one quick question?";}if(matchesAny(text,INTRODUCE))return"We're Dispatch Solutions. We help businesses streamline their dispatch operations and save money. What does your current dispatch setup look like?";if(matchesAny(text,QUESTION_WORDS))return"Great question! We provide dispatch solutions that help businesses save up to 30% on logistics costs. What's your biggest challenge with your current dispatch process?";if(matchesAny(text,POSITIVE)){if(!state.collectedName&&turn>=2){state.phase="collect_name";return hasName?`Great, ${name}! Let me get your details. What company are you with?`:"Wonderful! Let me get your details. What's your name?";}if(!state.collectedCompany&&state.collectedName){state.phase="collect_company";return`And ${name}, what company are you with?`;}if(!state.collectedEmail){state.phase="collect_email";return"Perfect! And what's the best email to reach you at?";}return"Excellent! We have everything we need. A dispatch manager will call you within 30 minutes. Have a great day!";}if(text===""||text==="silence"){state.silenceCount++;if(state.silenceCount>=3)return"I think we might have a bad connection. We'll follow up by email. Have a great day!";return randomPick(SILENCE_RESPONSES);}if(turn<=2)return`Hi${name?" "+name:""}! I'm calling from Dispatch Solutions. We help businesses save up to 30% on dispatch costs. What does your current dispatch setup look like?`;return randomPick([`I appreciate that${name?", "+name:""}. Could you tell me a bit about your business?`,`That's interesting. What's the biggest challenge you face with dispatch?`,`I see. We've helped businesses like yours save a lot of time and money. Would you like to hear how?`,`Makes sense. Can I ask what your role is at the company?`]);}
-function generateClosing(state:ConversationState){const name=state.collectedName?` ${state.collectedName}`:"";return`Thank${name?" you, "+state.collectedName:" you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes. Have a great day!`;}
-export function createConversation(config:{tone?:string;productName?:string;pitch?:string;pricing?:string;}):ConversationState{return{phase:"greeting",collectedName:null,collectedCompany:null,collectedEmail:null,turnCount:0,objectionCount:0,lastProspectSaid:"",prospectSaidHistory:[],agentSaidHistory:[],tone:(config.tone as ConversationState["tone"])||"PROFESSIONAL",productName:config.productName||"",pitch:config.pitch||"",pricing:config.pricing||null,conversationHistory:[],lastAgentSaid:"",silenceCount:0};}
-export async function processProspectInput(state:ConversationState,transcript:string):Promise<AIResponse>{const text=transcript.trim();if(!text){state.silenceCount++;const response=smartFallback(state);state.agentSaidHistory.push(response);state.conversationHistory.push({role:"assistant",content:response});return{text:response,state,shouldEnd:false};}state.turnCount++;state.lastProspectSaid=text;state.prospectSaidHistory.push(text);state.silenceCount=0;if(matchesAny(text,BYE)){const closing=generateClosing(state);state.phase="done";state.agentSaidHistory.push(closing);return{text:closing,state,shouldEnd:true};}if(state.turnCount>20){const closing=generateClosing(state);state.phase="done";state.agentSaidHistory.push(closing);return{text:closing,state,shouldEnd:true};}state.conversationHistory.push({role:"user",content:text});let aiText:string;try{aiText=await getAIResponse(state.conversationHistory,{productName:state.productName,pitch:state.pitch,tone:state.tone,pricing:state.pricing||undefined});}catch{aiText=smartFallback(state);}if(aiText==="I'm sorry, could you repeat that?"||aiText.length<5)aiText=smartFallback(state);state.conversationHistory.push({role:"assistant",content:aiText});state.agentSaidHistory.push(aiText);state.lastAgentSaid=aiText;if(!state.collectedName){const name=extractName(text);if(name)state.collectedName=name;}if(!state.collectedCompany){const company=extractCompany(text);if(company)state.collectedCompany=company;}if(!state.collectedEmail){const email=extractEmail(text);if(email)state.collectedEmail=email;}const lowerAi=aiText.toLowerCase();const hasCollectedData=state.collectedName||state.collectedEmail;if(hasCollectedData&&(lowerAi.includes("goodbye")||lowerAi.includes("have a great day"))){state.phase="done";return{text:aiText,state,shouldEnd:true};}if(state.collectedEmail)state.phase="closing";else if(state.collectedCompany)state.phase="collect_email";else if(state.collectedName)state.phase="collect_company";else if(state.turnCount>1)state.phase="collect_name";return{text:aiText,state,shouldEnd:false};}
-export function getInitialGreeting(state:ConversationState){const greeting="Hello! Thank you for taking my call. How are you doing today?";state.agentSaidHistory.push(greeting);state.conversationHistory.push({role:"assistant",content:greeting});return greeting;}
-export function getCollectedData(state:ConversationState){return{name:state.collectedName,company:state.collectedCompany,email:state.collectedEmail};}
+
+function matchesAny(text: string, patterns: string[]): boolean {
+  const lower = text.toLowerCase();
+  return patterns.some((p) => lower.includes(p));
+}
+
+function extractEmail(text: string): string | null {
+  const match = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/);
+  return match ? match[0] : null;
+}
+
+function extractName(text: string): string | null {
+  const lower = text.toLowerCase();
+  const indicators = ["my name is", "i'm", "i am", "this is", "name's", "it's", "call me"];
+  for (const indicator of indicators) {
+    const idx = lower.indexOf(indicator);
+    if (idx !== -1) {
+      let name = text.slice(idx + indicator.length).trim();
+      name = name.split(/[.,!?]/)[0].trim();
+      // Clean up common false positives
+      const words = name.split(/\s+/);
+      if (words.length > 3) name = words.slice(0, 3).join(" ");
+      if (name.length > 1 && name.length < 40 && !/^\d+$/.test(name)) return name;
+    }
+  }
+  return null;
+}
+
+function extractCompany(text: string): string | null {
+  const lower = text.toLowerCase();
+  const indicators = ["company", "business", "organization", "firm", "corp", "inc", "llc", "work at", "from", "i'm with", "i work for"];
+  for (const indicator of indicators) {
+    const idx = lower.indexOf(indicator);
+    if (idx !== -1) {
+      let company = text.slice(idx + indicator.length).trim();
+      company = company.split(/[.,!?]/)[0].trim();
+      if (company.length > 1 && company.length < 60) return company;
+    }
+  }
+  return null;
+}
+
+function randomPick(arr: string[]): string {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/**
+ * Smart pattern-based response when LLM is unavailable
+ */
+function smartFallback(state: ConversationState): string {
+  const text = state.lastProspectSaid.toLowerCase();
+  const turn = state.turnCount;
+  const name = state.collectedName;
+  const hasName = !!name;
+
+  // Phase 1: Handle goodbye immediately
+  if (matchesAny(text, BYE)) {
+    if (hasName) return `Thank you ${name}! We'll be in touch. Have a great day!`;
+    return "Thank you for your time! We'll be in touch. Have a great day!";
+  }
+
+  // Phase 2: Handle objections
+  if (matchesAny(text, OBJECTION)) {
+    state.objectionCount++;
+    if (state.objectionCount >= 3) {
+      if (hasName) return `I understand ${name}. I'll let you go. We'll follow up by email instead. Have a great day!`;
+      return "I understand. I won't keep you. We'll send you an email instead. Have a great day!";
+    }
+    if (text.includes("not interested") || text.includes("no thanks")) {
+      return "I completely understand. Most of our clients felt the same way at first. Could I just take 30 seconds to explain what we do?";
+    }
+    if (text.includes("busy") || text.includes("meeting") || text.includes("driving")) {
+      return "I'm sorry to bother you. When would be a better time to call back?";
+    }
+    if (text.includes("who is this") || text.includes("how did you")) {
+      return "This is Sarah from Dispatch Solutions. We help businesses like yours save up to 30% on dispatch costs. Can I ask what your current setup looks like?";
+    }
+    if (text.includes("email")) {
+      return "Absolutely, I can send you an email. What's the best email address for you?";
+    }
+    return "I understand. We just help businesses save time and money on dispatch. Can I ask one quick question?";
+  }
+
+  // Phase 3: Handle questions about who we are
+  if (matchesAny(text, INTRODUCE)) {
+    return "We're Dispatch Solutions. We help businesses streamline their dispatch operations and save money. What does your current dispatch setup look like?";
+  }
+
+  // Phase 4: Handle "what" questions
+  if (matchesAny(text, QUESTION_WORDS)) {
+    return "Great question! We provide dispatch solutions that help businesses save up to 30% on logistics costs. What's your biggest challenge with your current dispatch process?";
+  }
+
+  // Phase 5: Handle positive responses
+  if (matchesAny(text, POSITIVE)) {
+    if (!state.collectedName && turn >= 2) {
+      state.phase = "collect_name";
+      return hasName ? `Great, ${name}! Let me get your details. What company are you with?` : "Wonderful! Let me get your details. What's your name?";
+    }
+    if (!state.collectedCompany && state.collectedName) {
+      state.phase = "collect_company";
+      return `And ${name}, what company are you with?`;
+    }
+    if (!state.collectedEmail) {
+      state.phase = "collect_email";
+      return "Perfect! And what's the best email to reach you at?";
+    }
+    return "Excellent! We have everything we need. A dispatch manager will call you within 30 minutes. Have a great day!";
+  }
+
+  // Phase 6: Handle silences
+  if (text === "" || text === "silence") {
+    state.silenceCount++;
+    if (state.silenceCount >= 3) {
+      return "I think we might have a bad connection. We'll follow up by email. Have a great day!";
+    }
+    return randomPick(SILENCE_RESPONSES);
+  }
+
+  // Phase 7: Collect data based on phase
+  if (state.phase === "collect_name" && !state.collectedName) {
+    const nameAttempt = extractName(text);
+    if (nameAttempt) {
+      state.collectedName = nameAttempt;
+      state.collectedCompany = extractCompany(text);
+      state.phase = state.collectedCompany ? "collect_email" : "collect_company";
+      return `Nice to meet you, ${nameAttempt}! ${state.collectedCompany ? "And what's the best email for you?" : "What company are you with?"}`;
+    }
+    return "I didn't catch your name. Could you spell it out for me?";
+  }
+
+  if (state.phase === "collect_company" && !state.collectedCompany) {
+    const companyAttempt = extractCompany(text);
+    if (companyAttempt) {
+      state.collectedCompany = companyAttempt;
+      state.phase = "collect_email";
+      return `${companyAttempt}, got it! And what's the best email to reach you at?`;
+    }
+    return "What's the name of your company?";
+  }
+
+  if (state.phase === "collect_email" && !state.collectedEmail) {
+    const emailAttempt = extractEmail(text);
+    if (emailAttempt) {
+      state.collectedEmail = emailAttempt;
+      state.phase = "closing";
+      const n = state.collectedName || "there";
+      return `Perfect, ${n}! I have everything I need. A dispatch manager will reach out to you within 30 minutes. Have a great day!`;
+    }
+    return "I didn't quite catch the email. Could you spell it out?";
+  }
+
+  // Phase 8: Default responses based on turn
+  if (turn <= 2) {
+    return `Hi${name ? " " + name : ""}! I'm calling from Dispatch Solutions. We help businesses save up to 30% on dispatch costs. What does your current dispatch setup look like?`;
+  }
+
+  // Generic smart responses
+  const genericResponses = [
+    `I appreciate that${name ? ", " + name : ""}. Could you tell me a bit about your business?`,
+    `That's interesting. What's the biggest challenge you face with dispatch?`,
+    `I see. We've helped businesses like yours save a lot of time and money. Would you like to hear how?`,
+    `Makes sense. Can I ask what your role is at the company?`,
+  ];
+  return randomPick(genericResponses);
+}
+
+function generateClosing(state: ConversationState): string {
+  const name = state.collectedName ? ` ${state.collectedName}` : "";
+  return `Thank${name ? " you, " + state.collectedName : " you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes. Have a great day!`;
+}
+
+export function createConversation(config: {
+  tone?: string;
+  productName?: string;
+  pitch?: string;
+  pricing?: string;
+}): ConversationState {
+  return {
+    phase: "greeting",
+    collectedName: null,
+    collectedCompany: null,
+    collectedEmail: null,
+    turnCount: 0,
+    objectionCount: 0,
+    lastProspectSaid: "",
+    prospectSaidHistory: [],
+    agentSaidHistory: [],
+    tone: (config.tone as ConversationState["tone"]) || "PROFESSIONAL",
+    productName: config.productName || "",
+    pitch: config.pitch || "",
+    pricing: config.pricing || null,
+    conversationHistory: [],
+    lastAgentSaid: "",
+    silenceCount: 0,
+  };
+}
+
+export async function processProspectInput(
+  state: ConversationState,
+  transcript: string
+): Promise<AIResponse> {
+  const text = transcript.trim();
+  if (!text) {
+    state.silenceCount++;
+    // Handle silence with smart fallback
+    const response = smartFallback(state);
+    state.agentSaidHistory.push(response);
+    state.conversationHistory.push({ role: "assistant", content: response });
+    return { text: response, state, shouldEnd: false };
+  }
+
+  state.turnCount++;
+  state.lastProspectSaid = text;
+  state.prospectSaidHistory.push(text);
+  state.silenceCount = 0;
+
+  // Check for goodbye/end signals
+  if (matchesAny(text, BYE)) {
+    const closing = generateClosing(state);
+    state.phase = "done";
+    state.agentSaidHistory.push(closing);
+    return { text: closing, state, shouldEnd: true };
+  }
+
+  // Limit conversation turns
+  if (state.turnCount > 20) {
+    const closing = generateClosing(state);
+    state.phase = "done";
+    state.agentSaidHistory.push(closing);
+    return { text: closing, state, shouldEnd: true };
+  }
+
+  // Get AI response from LLM
+  state.conversationHistory.push({ role: "user", content: text });
+  
+  let aiText: string;
+  
+  try {
+    aiText = await getAIResponse(state.conversationHistory, {
+      productName: state.productName,
+      pitch: state.pitch,
+      tone: state.tone,
+      pricing: state.pricing || undefined,
+    });
+  } catch (e) {
+    console.error("[free-ai] LLM threw error, using smart fallback");
+    aiText = smartFallback(state);
+  }
+
+  // If LLM returned the generic fallback, use our smart pattern instead
+  if (aiText === "I'm sorry, could you repeat that?" || aiText.length < 5) {
+    console.log("[free-ai] Using smart pattern fallback (LLM unavailable)");
+    aiText = smartFallback(state);
+  }
+
+  state.conversationHistory.push({ role: "assistant", content: aiText });
+  state.agentSaidHistory.push(aiText);
+  state.lastAgentSaid = aiText;
+
+  // Try to extract collected data from prospect's message
+  if (!state.collectedName) {
+    const name = extractName(text);
+    if (name) state.collectedName = name;
+  }
+  if (!state.collectedCompany) {
+    const company = extractCompany(text);
+    if (company) state.collectedCompany = company;
+  }
+  if (!state.collectedEmail) {
+    const email = extractEmail(text);
+    if (email) state.collectedEmail = email;
+  }
+
+  // Check if AI is closing (indicates we should end)
+  const lowerAi = aiText.toLowerCase();
+  const hasCollectedData = state.collectedName || state.collectedEmail;
+  if (hasCollectedData && (lowerAi.includes("goodbye") || lowerAi.includes("have a great day"))) {
+    state.phase = "done";
+    return { text: aiText, state, shouldEnd: true };
+  }
+
+  // Update phase based on what was collected
+  if (state.collectedEmail) {
+    state.phase = "closing";
+  } else if (state.collectedCompany) {
+    state.phase = "collect_email";
+  } else if (state.collectedName) {
+    state.phase = "collect_company";
+  } else if (state.turnCount > 1) {
+    state.phase = "collect_name";
+  }
+
+  return { text: aiText, state, shouldEnd: false };
+}
+
+export function getInitialGreeting(state: ConversationState): string {
+  const greeting = "Hello! Thank you for taking my call. How are you doing today?";
+  state.agentSaidHistory.push(greeting);
+  state.conversationHistory.push({ role: "assistant", content: greeting });
+  return greeting;
+}
+
+export function getCollectedData(state: ConversationState): {
+  name: string | null;
+  company: string | null;
+  email: string | null;
+} {
+  return {
+    name: state.collectedName,
+    company: state.collectedCompany,
+    email: state.collectedEmail,
+  };
+}
