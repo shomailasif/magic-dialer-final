@@ -51,22 +51,6 @@ export interface ConversationResult {
 const MAX_CALL_MS = 120000;
 const RATE = 8000;
 const FRAME = 160;
-
-// FIFO queue — only one Streamer active at any time to prevent RTP sequence collisions
-let pendingAudio: Buffer[] = [];
-let streamActive = false;
-let csRef: any = null;
-
-function drainAudioQueue() {
-  if (streamActive || pendingAudio.length === 0 || !csRef) return;
-  streamActive = true;
-  const next = pendingAudio.shift()!;
-  const streamer = csRef.streamAudio(next);
-  streamer.once("finished", () => {
-    streamActive = false;
-    drainAudioQueue();
-  });
-}
 const ULAW_SEG_END = [0x0ff, 0x1ff, 0x3ff, 0x7ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff];
 
 const GROQ_API_KEY = "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";
@@ -491,12 +475,24 @@ async function speak(cs: any, text: string, heardRef: { current: boolean }, skip
   try { frames = await textToFramesLocal(text, skipEdge); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
   if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
-  pendingAudio.push(Buffer.concat(frames));
-  drainAudioQueue();
   return new Promise<void>((resolve) => {
-    const check = setInterval(() => {
-      if (!streamActive && pendingAudio.length === 0) { clearInterval(check); resolve(); }
-    }, 100);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let streamer: any = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { if (streamer) streamer.stop(); } catch {}
+      try { cs.removeListener("disposed", onDisposed); } catch {}
+      resolve();
+    };
+    const onDisposed = () => finish();
+    cs.on("disposed", onDisposed);
+    streamer = cs.streamAudio(Buffer.concat(frames));
+    try { streamer.once("finished", () => finish()); } catch {}
+    const dur = Math.max(1000, frames.length * 20);
+    timer = setTimeout(() => finish(), dur + 1500);
   });
 }
 
@@ -529,9 +525,6 @@ export async function runConversation(
   console.log("[sip-conv] SIP call connected, steps:", call.steps?.slice(-3));
   const cs = call.callSession;
   const cleanup = call.cleanup;
-
-  // Set queue reference for this call
-  csRef = cs;
 
   // Speak immediately - Google TTS only (clean native 8kHz, no downsampling)
   const greeting = getInitialGreeting(state);
@@ -582,21 +575,8 @@ export async function runConversation(
   lines.push(`Agent: ${closing}`);
   await speak(cs, closing, heardRef);
 
-  // Wait for final audio to finish playing before hangup
-  await new Promise<void>((resolve) => {
-    const check = setInterval(() => {
-      if (!streamActive && pendingAudio.length === 0) { clearInterval(check); resolve(); }
-    }, 100);
-  });
-
   const dur = Math.round((Date.now() - start) / 1000);
   try { cs.hangup(); } catch {}
-
-  // Cleanup queue state — prevents bleed into next call
-  pendingAudio = [];
-  streamActive = false;
-  csRef = null;
-
   setTimeout(() => { cleanup(); }, 500);
 
   const connected = dur > 5;
