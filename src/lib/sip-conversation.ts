@@ -422,7 +422,9 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
   if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
   const combined = Buffer.concat(allParts);
   console.log("[sip-conv] TTS combined:", combined.length, "bytes");
-  return toFramesFromAudio(combined);
+  const frames = await toFramesFromAudio(combined);
+  console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");
+  return frames;
 }
 
 // GUARD: Edge TTS starts enabled (GUARD_EDGE_TTS_BROKEN_INIT = false).
@@ -475,6 +477,8 @@ async function speak(cs: any, text: string, heardRef: { current: boolean }, skip
   try { frames = await textToFramesLocal(text, skipEdge); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
   if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
+  const audio = Buffer.concat(frames);
+  console.log("[sip-conv] speak: audio buffer", audio.length, "bytes, first 10:", Array.from(audio.subarray(0, 10)));
   return new Promise<void>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -485,14 +489,18 @@ async function speak(cs: any, text: string, heardRef: { current: boolean }, skip
       if (timer) clearTimeout(timer);
       try { if (streamer) streamer.stop(); } catch {}
       try { cs.removeListener("disposed", onDisposed); } catch {}
+      console.log("[sip-conv] speak: finished");
       resolve();
     };
-    const onDisposed = () => finish();
+    const onDisposed = () => { console.log("[sip-conv] speak: call disposed"); finish(); };
     cs.on("disposed", onDisposed);
-    streamer = cs.streamAudio(Buffer.concat(frames));
-    try { streamer.once("finished", () => finish()); } catch {}
+    console.log("[sip-conv] speak: calling cs.streamAudio(), cs.disposed=", cs.disposed, "cs.ssrc=", cs.ssrc);
+    streamer = cs.streamAudio(audio);
+    console.log("[sip-conv] speak: streamer created, streamer.finished=", streamer.finished);
+    try { streamer.once("finished", () => { console.log("[sip-conv] speak: streamer.finished event"); finish(); }); } catch {}
     const dur = Math.max(1000, frames.length * 20);
-    timer = setTimeout(() => finish(), dur + 1500);
+    console.log("[sip-conv] speak: safety timeout", dur + 1500, "ms");
+    timer = setTimeout(() => { console.log("[sip-conv] speak: safety timeout fired"); finish(); }, dur + 1500);
   });
 }
 
@@ -533,9 +541,11 @@ export async function runConversation(
 
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
+    console.log("[sip-conv] turn", turn, "elapsed", Math.round((Date.now() - start) / 1000), "s");
 
     // Listen for speech and transcribe with Whisper
     const r = await listenForSpeech(cs, start, heardRef, 4000);
+    console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });
     if (!r.spoke) {
       await speak(cs, "Are you still there?", heardRef);
       const retry = await listenForSpeech(cs, start, heardRef, 3000);
