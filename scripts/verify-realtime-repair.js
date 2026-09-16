@@ -35,6 +35,7 @@ const ai = fs.readFileSync(path.join(__dirname, "../src/management/agent/intelli
 const voice = fs.readFileSync(path.join(__dirname, "../src/management/agent/voice.js"), "utf8");
 const agent = fs.readFileSync(path.join(__dirname, "../src/management/agent/agent.js"), "utf8");
 const trunk = fs.readFileSync(path.join(__dirname, "../src/management/portal/trunk.js"), "utf8");
+const media = fs.readFileSync(path.join(__dirname, "../src/management/portal/media.js"), "utf8");
 const softphone = fs.readFileSync(path.join(__dirname, "../src/management/portal/softphone.js"), "utf8");
 const projectNotes = fs.readFileSync(path.join(__dirname, "../PROJECT_NOTES.md"), "utf8");
 
@@ -57,7 +58,16 @@ assert(agent.includes("config.voip"));
 assert(agent.includes("config.product"));
 assert(agent.includes("config.companyName"));
 assert(trunk.includes("rtpPacket.payload"));
-assert(softphone.includes("streamAudio") || trunk.includes("streamAudio") || projectNotes.includes("customer's PC"));
+assert(softphone.includes("streamAudio"));
+
+// Live RingCentral SIP audio MUST bypass trunk.js's legacy manual RTP sender.
+// media.js owns the active WSS->SIP path and serializes PCMU frames through
+// ringcentral-softphone's supported callSession.streamAudio() implementation.
+assert(media.includes('session.provider === "ringcentral-sip"'));
+assert(media.includes("sendRingCentralSipAudio(session, payload)"));
+assert(media.includes("cs.streamAudio(frame)"));
+const sipBranch = media.slice(media.indexOf('session.provider === "ringcentral-sip"'), media.indexOf('session.provider === "ringcentral"'));
+assert(!sipBranch.includes("session.agentAudioHandler(payload)"));
 assert(projectNotes.includes("Each customer's PC acts as a learning node"));
 assert(projectNotes.includes("Each customer gets their own VOIP credentials"));
 
