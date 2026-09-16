@@ -66,31 +66,47 @@ const TONE_8K_16BIT = (() => {
 
 /*
  * Safe RingCentral outbound media path.
- * Agent sends 160-byte PCMU/20ms frames. We serialize those frames through
- * ringcentral-softphone's supported streamAudio() API. This deliberately
- * bypasses the old manual RTP/SRTP packet construction in trunk.js.
+ * Agent sends 160-byte PCMU/20ms frames. Queue every frame immediately,
+ * including frames generated while SIP is still dialing. Once the SDK call
+ * session exists, serialize the complete queue through streamAudio(). This
+ * prevents the opening greeting from being discarded before answer and keeps
+ * manual RTP/SRTP in trunk.js completely bypassed by the active WSS path.
  */
 function sendRingCentralSipAudio(session, payload) {
-  const cs = session && session._sipCallSession;
-  if (!cs || cs.disposed || typeof cs.streamAudio !== "function") return false;
+  if (!session) return false;
   if (!session._sdkAudioQueue) session._sdkAudioQueue = [];
   session._sdkAudioQueue.push(Buffer.from(payload));
   if (session._sdkAudioPumping) return true;
   session._sdkAudioPumping = true;
 
   const pump = () => {
-    if (!session._sdkAudioQueue || !session._sdkAudioQueue.length || cs.disposed) {
+    const cs = session._sipCallSession;
+    if (!session._sdkAudioQueue || !session._sdkAudioQueue.length) {
       session._sdkAudioPumping = false;
+      return;
+    }
+    // Dialing is asynchronous. Keep the queued greeting intact until the
+    // answered RingCentral SDK call session is attached by trunk.js.
+    if (!cs || cs.disposed || typeof cs.streamAudio !== "function") {
+      if (session.status === "error" || session.status === "completed") {
+        session._sdkAudioPumping = false;
+        return;
+      }
+      setTimeout(pump, 20);
       return;
     }
     const frame = session._sdkAudioQueue.shift();
     let streamer;
     try { streamer = cs.streamAudio(frame); }
-    catch { session._sdkAudioPumping = false; return; }
+    catch {
+      session._sdkAudioQueue.unshift(frame);
+      setTimeout(pump, 20);
+      return;
+    }
     session.mediaBytesOut = (session.mediaBytesOut || 0) + frame.length;
     if (streamer && typeof streamer.once === "function") {
       streamer.once("finished", pump);
-      streamer.once("error", () => { session._sdkAudioPumping = false; });
+      streamer.once("error", () => setTimeout(pump, 20));
     } else {
       setTimeout(pump, 20);
     }
@@ -127,10 +143,9 @@ function install(server, { getSession }) {
         if (session.provider === "sim") {
           const p = payload; setTimeout(() => { media.send(p); }, 250);
         } else if (session.provider === "ringcentral-sip") {
-          // Use only the SDK RTP/SRTP implementation for the live SIP call.
-          // If the call session is not ready yet, retain the latest frame; the
-          // agent continues sending subsequent frames once the bridge is live.
-          if (!sendRingCentralSipAudio(session, payload)) session._agentAudio = payload;
+          // Always queue through the SDK path, even before the SIP call has
+          // answered. The queue pump waits for _sipCallSession and then sends.
+          sendRingCentralSipAudio(session, payload);
           session._agentAudioAt = Date.now();
         } else if (session.provider === "ringcentral" || session.provider === "twilio") {
           if (session.agentAudioHandler) { try { session.agentAudioHandler(payload); } catch {} }
