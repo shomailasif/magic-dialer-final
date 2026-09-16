@@ -242,6 +242,21 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       return send(200, { ok: true, disabled: c.disabled === 1, token: c.token });
     }
 
+    // Agent bearer-token lookup for the live call it must attach to.
+    // The access token is already the agent credential used by heartbeat; only
+    // the owning token can discover its own active session.
+    if (url.pathname === "/api/agent/active-call" && method === "POST") {
+      const body = await readBody(req);
+      const token = String(body.token || "").trim();
+      const owner = token ? await getCustomerByToken(db, token) : null;
+      if (!owner) return send(401, { error: "Invalid access token" });
+      const sessions = trunk.getSessionsFor(gatewayCtx.portalId)
+        .filter((x) => x && x.token === token && !["error", "completed"].includes(String(x.status || "")))
+        .sort((a, b) => Number(b.startedAt || 0) - Number(a.startedAt || 0));
+      const active = sessions[0] || null;
+      return send(200, { ok: true, sessionId: active ? active.id : null, status: active ? active.status : null });
+    }
+
     // --- Cloud call gateway: dialer control plane ---
     // All outbound calls are placed FROM THE CLOUD over 443 (no customer PC
     // ever needs SIP ports). The customer drops a number on their line.

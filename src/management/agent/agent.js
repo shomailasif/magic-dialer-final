@@ -452,7 +452,19 @@ async function runAgent(opts = {}) {
     let voiceCall;
     try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + err.message); }
     if (voiceCall) try {
+      // Bind this conversation to the cloud SIP session that actually owns the
+      // phone audio. Never let a telephone call silently fall back to the PC mic.
+      let sessionId = null;
+      if (portal && config.token) {
+        try {
+          const active = await post(`${portal}/api/agent/active-call`, { token: config.token });
+          if (active.status === 200 && active.body) sessionId = active.body.sessionId || null;
+        } catch {}
+      }
+      if (!sessionId) throw new Error("No active phone media session found - refusing PC-microphone fallback.");
+      log("Attaching AI to phone media session " + sessionId);
       const result = await voiceCall({
+        sessionId,
         product: config.product,
         leadFields: config.leadFields || [],
         persona: config.persona,

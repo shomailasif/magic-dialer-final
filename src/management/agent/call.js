@@ -12,14 +12,13 @@ const FRAME_MS = 20;
 
 async function voiceCall({
   product, leadFields, persona, companyName, callbackNumber, callbackIn,
-  contactEmail, token, portal, learning, locale = "en", voiceStyle = "friendly",
+  contactEmail, token, portal, sessionId = null, learning, locale = "en", voiceStyle = "friendly",
   onLog = () => {}, onMode = () => {}, speakFn, listenFn,
 }) {
   let channel = null;
   if (portal && token) {
     try {
       onLog("Connecting to media channel…");
-      const sessionId = arguments[0].sessionId || null;
       if (sessionId) {
         channel = await mediaConnect({ portal, sessionId, token, onLog });
         onLog("Media channel connected ✓");
@@ -30,6 +29,10 @@ async function voiceCall({
   }
 
   let say, listen;
+
+  if (portal && token && sessionId && (!channel || !channel.open)) {
+    throw new Error("Phone media channel failed to connect; refusing local microphone fallback.");
+  }
 
   if (channel && channel.open) {
     let listenState = null;
