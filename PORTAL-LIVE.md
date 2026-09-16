@@ -1,7 +1,7 @@
 # Magic Dialer — Live Portal Status
 
 ## LIVE CLOUD PORTAL (permanent, free, always-on)
-**URL:** https://05rslk7b3fch-production-4w2zqfnq.europe-west1.suga.run
+**URL:** https://0nrl0r6g7wyn-production-4w2zqfnq.europe-west1.suga.run
 
 **Admin login password:** NeonPortal2026!
 
