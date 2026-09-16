@@ -1,0 +1,14 @@
+"use strict";
+const assert = require("node:assert");
+const fs = require("node:fs");
+const { normalizePcmu, FRAME_BYTES } = require("./local-ringcentral-engine");
+assert.strictEqual(normalizePcmu(Buffer.alloc(FRAME_BYTES)).length, 160);
+const odd = normalizePcmu(Buffer.alloc(161, 0x22));
+assert.strictEqual(odd.length, 320);
+assert.strictEqual(odd[319], 0xff);
+const src = fs.readFileSync(__filename.replace(/\.test\.js$/, ".js"), "utf8");
+assert(!src.includes("werift-rtp"));
+assert(!src.includes("srtpSession.encrypt"));
+assert(src.includes("session.streamAudio(audio)"));
+assert(src.includes('session.on("audioPacket"'));
+console.log("local RingCentral media v2 checks: PASS");
