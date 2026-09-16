@@ -21,7 +21,9 @@ jobs:
           node --check src/management/agent/multilingual-stt.js
           node --check src/management/agent/language.js
           node --check src/management/agent/call-runner.js
+          node --check src/management/agent/call.js
           node --check src/management/agent/agent.js
+          node --check src/management/portal/trunk.js
       - name: Local media regression checks
         run: node src/management/agent/local-ringcentral-engine.test.js
       - name: Enforce no manual RTP in V2 engine
@@ -40,12 +42,15 @@ jobs:
           grep -q 'emailQualifiedLead' src/management/agent/agent.js
           grep -q 'onSetup' src/management/agent/agent.js
           grep -q '\-\-watchdog' src/management/agent/agent.js
-      - name: Enforce local controller integration
+      - name: Enforce shared production media integration
         shell: bash
         run: |
-          grep -q 'runLocalCall' src/management/agent/agent.js
+          grep -q 'require("./call")' src/management/agent/agent.js
+          grep -q 'voiceCall' src/management/agent/agent.js
+          grep -q 'cs.streamAudio(Buffer.from(audioBuffer))' src/management/portal/trunk.js
+          grep -q 'rtpPacket.payload' src/management/portal/trunk.js
+          ! grep -E 'werift-rtp|werift_rtp|srtpSession\.encrypt|RtpPacket' src/management/portal/trunk.js
           grep -q 'createLocalRingCentralEngine' src/management/agent/local-call-controller.js
           grep -q 'engine.sendAudio' src/management/agent/local-call-controller.js
-          grep -q 'onAudio' src/management/agent/local-call-controller.js
           grep -q 'transcribeAuto' src/management/agent/local-call-controller.js
           grep -q 'normalizeLanguage' src/management/agent/local-call-controller.js
