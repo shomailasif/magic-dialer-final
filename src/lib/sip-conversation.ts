@@ -51,6 +51,40 @@ export interface ConversationResult {
 const MAX_CALL_MS = 120000;
 const RATE = 8000;
 const FRAME = 160;
+// FIFO queue — only one Streamer active at any time
+let pendingAudio: Buffer[] = [];
+let streamActive = false;
+let csRef: any = null;
+
+function drainAudioQueue() {
+  if (streamActive || pendingAudio.length === 0 || !csRef || csRef.disposed) {
+    if (csRef && csRef.disposed) { pendingAudio = []; streamActive = false; }
+    return;
+  }
+  streamActive = true;
+  const next = pendingAudio.shift()!;
+  const streamer = csRef.streamAudio(next);
+  streamer.once("finished", () => {
+    streamActive = false;
+    drainAudioQueue();
+  });
+  // Safety: if finished never fires, force-unlock after estimated duration
+  setTimeout(() => { if (streamActive) { streamActive = false; drainAudioQueue(); } }, Math.max(3000, next.length / 80 * 20 + 500));
+}
+
+function enqueueAudio(audio: Buffer) {
+  pendingAudio.push(audio);
+  drainAudioQueue();
+}
+
+function waitForQueue(): Promise<void> {
+  return new Promise((resolve) => {
+    const check = setInterval(() => {
+      if (!streamActive && pendingAudio.length === 0) { clearInterval(check); resolve(); }
+    }, 50);
+  });
+}
+
 const ULAW_SEG_END = [0x0ff, 0x1ff, 0x3ff, 0x7ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff];
 
 const GROQ_API_KEY = "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";
@@ -465,7 +499,7 @@ function listenForSpeech(
     };
     const iv = setInterval(() => {
       if (Date.now() - callStart > MAX_CALL_MS) { finish(); return; }
-      if (got && Date.now() - last > 2000) { finish(); return; }
+      if (got && Date.now() - last > 1000) { finish(); return; }
       if (!got && Date.now() - start > maxMs) { finish(); return; }
     }, 100);
   });
@@ -478,30 +512,34 @@ async function speak(cs: any, text: string, heardRef: { current: boolean }, skip
   if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
   const audio = Buffer.concat(frames);
-  console.log("[sip-conv] speak: audio buffer", audio.length, "bytes, first 10:", Array.from(audio.subarray(0, 10)));
-  return new Promise<void>((resolve) => {
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let streamer: any = null;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      try { if (streamer) streamer.stop(); } catch {}
-      try { cs.removeListener("disposed", onDisposed); } catch {}
-      console.log("[sip-conv] speak: finished");
-      resolve();
-    };
-    const onDisposed = () => { console.log("[sip-conv] speak: call disposed"); finish(); };
-    cs.on("disposed", onDisposed);
-    console.log("[sip-conv] speak: calling cs.streamAudio(), cs.disposed=", cs.disposed, "cs.ssrc=", cs.ssrc);
-    streamer = cs.streamAudio(audio);
-    console.log("[sip-conv] speak: streamer created, streamer.finished=", streamer.finished);
-    try { streamer.once("finished", () => { console.log("[sip-conv] speak: streamer.finished event"); finish(); }); } catch {}
-    const dur = Math.max(1000, frames.length * 20);
-    console.log("[sip-conv] speak: safety timeout", dur + 1500, "ms");
-    timer = setTimeout(() => { console.log("[sip-conv] speak: safety timeout fired"); finish(); }, dur + 1500);
-  });
+  console.log("[sip-conv] speak: audio", audio.length, "bytes, cs.disposed=", cs.disposed);
+  if (cs.disposed) return;
+  enqueueAudio(audio);
+  return waitForQueue();
+}
+
+// Stream sentences: speak each sentence as TTS completes, don't wait for all
+async function speakStreaming(cs: any, text: string, heardRef: { current: boolean }): Promise<void> {
+  if (!text || !text.trim()) return;
+  const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+  console.log("[sip-conv] speakStreaming:", sentences.length, "sentences from:", text.slice(0, 60));
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+    if (cs.disposed) break;
+    let frames: Buffer[];
+    try { frames = await textToFramesLocal(trimmed); } catch (e: any) { console.error("[sip-conv] speakStreaming TTS error:", e?.message); continue; }
+    if (!frames || !frames.length) continue;
+    const audio = Buffer.concat(frames);
+    console.log("[sip-conv] speakStreaming: sentence '" + trimmed.slice(0, 30) + "' → " + audio.length + " bytes");
+    if (cs.disposed) break;
+    enqueueAudio(audio);
+    // Don't wait for queue to drain — start TTS for next sentence immediately
+    // But wait if queue is getting too deep (>3 pending)
+    while (pendingAudio.length > 3 && !cs.disposed) await new Promise(r => setTimeout(r, 100));
+  }
+  // Wait for all remaining audio to finish
+  await waitForQueue();
 }
 
 export async function runConversation(
@@ -533,30 +571,34 @@ export async function runConversation(
   console.log("[sip-conv] SIP call connected, steps:", call.steps?.slice(-3));
   const cs = call.callSession;
   const cleanup = call.cleanup;
+  csRef = cs;
+  pendingAudio = [];
+  streamActive = false;
 
-  // Speak immediately - Google TTS only (clean native 8kHz, no downsampling)
+  // Speak greeting immediately
   const greeting = getInitialGreeting(state);
   lines.push(`Agent: ${greeting}`);
   await speak(cs, greeting, heardRef);
 
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
+    if (cs.disposed) break;
     console.log("[sip-conv] turn", turn, "elapsed", Math.round((Date.now() - start) / 1000), "s");
 
-    // Listen for speech and transcribe with Whisper
-    const r = await listenForSpeech(cs, start, heardRef, 4000);
+    // Listen for speech — 1s silence = done speaking
+    const r = await listenForSpeech(cs, start, heardRef, 3000);
     console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });
     if (!r.spoke) {
+      if (cs.disposed) break;
       await speak(cs, "Are you still there?", heardRef);
-      const retry = await listenForSpeech(cs, start, heardRef, 3000);
+      const retry = await listenForSpeech(cs, start, heardRef, 2000);
       if (!retry.spoke) break;
     }
     if (Date.now() - start > maxDurationMs) break;
+    if (cs.disposed) break;
 
-    // Use real Whisper transcript
     let txt = r.transcript;
     if (!txt || txt.trim().length === 0) {
-      // Whisper returned empty but prospect DID speak - use smart fallback to keep conversation alive
       console.log("[sip-conv] Whisper empty but prospect spoke, using smart fallback");
       const fallbackResp = await processProspectInput(state, "");
       let fallbackText = fallbackResp.text || "Sorry, could you repeat that?";
@@ -568,7 +610,6 @@ export async function runConversation(
     console.log("[sip-conv] Prospect said:", txt);
     lines.push(`Prospect: ${txt}`);
     const resp = await processProspectInput(state, txt);
-    // Always speak - use fallback if LLM returned empty
     let responseText = resp.text || "I'm sorry, could you repeat that?";
     const ERROR_PATTERNS = ["budget", "rate limit", "api key", "error", "limit reached"];
     if (ERROR_PATTERNS.some(p => responseText.toLowerCase().includes(p))) {
@@ -576,17 +617,26 @@ export async function runConversation(
       responseText = "I'm sorry, could you repeat that?";
     }
     lines.push(`Agent: ${responseText}`);
-    await speak(cs, responseText, heardRef);
+    // Stream sentences — first sentence plays while rest generates
+    await speakStreaming(cs, responseText, heardRef);
     if (resp.shouldEnd) break;
   }
 
   const data = getCollectedData(state);
   const closing = `Thank${data.name ? " you, " + data.name : " you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!`;
   lines.push(`Agent: ${closing}`);
-  await speak(cs, closing, heardRef);
+  if (!cs.disposed) await speakStreaming(cs, closing, heardRef);
 
+  // Wait for final audio then hangup
+  await waitForQueue();
   const dur = Math.round((Date.now() - start) / 1000);
   try { cs.hangup(); } catch {}
+
+  // Cleanup queue state
+  pendingAudio = [];
+  streamActive = false;
+  csRef = null;
+
   setTimeout(() => { cleanup(); }, 500);
 
   const connected = dur > 5;
