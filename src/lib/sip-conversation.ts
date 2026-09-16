@@ -475,55 +475,24 @@ async function speak(cs: any, text: string, heardRef: { current: boolean }, skip
   try { frames = await textToFramesLocal(text, skipEdge); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
   if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
-
-  const werift = runtimeRequire("werift-rtp");
-  const packetSize = cs.softphone?.codec?.packetSize || 160;
-  const payloadType = cs.softphone?.codec?.id || 0;
-  const tsInterval = cs.softphone?.codec?.timestampInterval || 160;
-
   return new Promise<void>((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let iv: ReturnType<typeof setInterval> | null = null;
-    let idx = 0;
+    let streamer: any = null;
     const finish = () => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (iv) clearInterval(iv);
+      try { if (streamer) streamer.stop(); } catch {}
       try { cs.removeListener("disposed", onDisposed); } catch {}
       resolve();
     };
     const onDisposed = () => finish();
     cs.on("disposed", onDisposed);
-
-    const sendNext = () => {
-      if (idx >= frames.length || cs.disposed) { finish(); return; }
-      try {
-        const chunk = frames[idx];
-        const encoded = cs.encoder.encode(chunk);
-        const rtpPacket = new werift.RtpPacket(new werift.RtpHeader({
-          version: 2, padding: false, paddingSize: 0, extension: false, marker: false,
-          payloadOffset: 12, payloadType,
-          sequenceNumber: cs.sequenceNumber, timestamp: cs.timestamp, ssrc: cs.ssrc,
-          csrcLength: 0, csrc: [], extensionProfile: 48862, extensionLength: void 0, extensions: [],
-        }), encoded);
-        cs.send(cs.srtpSession.encrypt(rtpPacket.payload, rtpPacket.header));
-        cs.sequenceNumber = (cs.sequenceNumber + 1) % 65536;
-        cs.timestamp += tsInterval;
-      } catch (e: any) {
-        console.error("[sip-conv] speak sendPacket error:", e?.message);
-      }
-      idx++;
-      if (idx >= frames.length) finish();
-    };
-
-    console.log("[sip-conv] speak: sending", frames.length, "packets manually");
-    iv = setInterval(sendNext, 20);
-    sendNext();
-
+    streamer = cs.streamAudio(Buffer.concat(frames));
+    try { streamer.once("finished", () => finish()); } catch {}
     const dur = Math.max(1000, frames.length * 20);
-    timer = setTimeout(() => finish(), dur + 2000);
+    timer = setTimeout(() => finish(), dur + 1500);
   });
 }
 
