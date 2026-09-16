@@ -197,7 +197,7 @@ async function dialViaRingCentral(ctx, session, settings) {
     const opts = {
       user,
       pass: sipPass,
-      authId: String(settings.authId || user).trim(),
+      authId: String(settings.authId || settings.authorizationId || user).trim(),
       domain: String(settings.domain || "sip.ringcentral.com"),
       proxy: String(settings.host || settings.server || "sip40.ringcentral.com"),
       port: Number(settings.port || 5096),
@@ -218,10 +218,6 @@ async function dialViaRingCentral(ctx, session, settings) {
           session._sipCleanup = r.cleanup;
 
           const cs = r.callSession;
-          const codec = cs.softphone && cs.softphone.codec
-            ? cs.softphone.codec
-            : { packetSize: 160, id: 0, timestampInterval: 160 };
-          const werift_rtp = require("werift-rtp");
 
           cs.on("audioPacket", (rtpPacket) => {
             try {
@@ -233,27 +229,17 @@ async function dialViaRingCentral(ctx, session, settings) {
           });
 
           session.agentAudioHandler = (audioBuffer) => {
-            if (cs.disposed) return;
+            if (cs.disposed || !audioBuffer || !audioBuffer.length) return;
             try {
-              // speakToBuffer produces mulaw 8kHz. The SDK's PCMU encoder is
-              // a passthrough, so the bytes pass through encoder.encode() unchanged.
-              // For PCMU: audioBuffer is raw mulaw → encoder.encode() returns it as-is
-              // We use sendPacket() which handles RTP framing + SRTP encrypt + UDP send.
-              const { packetSize, id } = codec;
-              for (let offset = 0; offset < audioBuffer.length; offset += packetSize) {
-                const chunk = audioBuffer.subarray(offset, Math.min(offset + packetSize, audioBuffer.length));
-                const pkt = new werift_rtp.RtpPacket(new werift_rtp.RtpHeader({
-                  version: 2, padding: false, paddingSize: 0, extension: false, marker: false,
-                  payloadOffset: 12, payloadType: id,
-                  sequenceNumber: cs.sequenceNumber, timestamp: cs.timestamp, ssrc: cs.ssrc,
-                  csrcLength: 0, csrc: [], extensionProfile: 48862, extensionLength: void 0, extensions: []
-                }), chunk);
-                cs.send(cs.srtpSession.encrypt(pkt.payload, pkt.header));
-                cs.sequenceNumber = (cs.sequenceNumber + 1) % 65536;
-                cs.timestamp += codec.timestampInterval;
-              }
+              const streamer = cs.streamAudio(Buffer.from(audioBuffer));
+              session._activeStreamer = streamer;
+              streamer.once("finished", () => {
+                if (session._activeStreamer === streamer) session._activeStreamer = null;
+              });
               session.mediaBytesOut = (session.mediaBytesOut || 0) + audioBuffer.length;
-            } catch {}
+            } catch (e) {
+              session.audioError = (e && e.message) || String(e);
+            }
           };
 
           cs.once("disposed", () => {
