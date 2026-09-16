@@ -289,7 +289,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
     const stamp = edgeDateString();
     ws.on("open", () => {
       console.log("[sip-conv] edgeTts WS open, sending config...");
-      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"riff-8khz-16bit-mono-pcm"}}}}\r\n`, (err: any) => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"riff-24khz-16bit-mono-pcm"}}}}\r\n`, (err: any) => {
         if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
@@ -481,8 +481,25 @@ function listenForSpeech(
       else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));
     };
     cs.on("audioPacket", on);
+
+    // Keepalive: send silent PCMU frames every 3s so SBC doesn't kill the session
+    const KEEPALIVE_FRAME = Buffer.alloc(160, 0xFF); // 0xFF = silence in PCMU
+    const keepaliveIv = setInterval(() => {
+      if (cs.disposed) { clearInterval(keepaliveIv); return; }
+      try {
+        const rtp = require("werift-rtp");
+        const packet = new rtp.RtpPacket({
+          header: new rtp.RtpHeader({ payloadType: 0, sequenceNumber: (Date.now() / 20) & 0xFFFF, timestamp: (Date.now() / 1000 * 8000) & 0xFFFFFFFF, ssrc: 12345 }),
+          payload: KEEPALIVE_FRAME,
+        });
+        const enc = cs.srtpSession?.encrypt?.(packet) || packet;
+        cs.send(enc.serialize());
+      } catch {}
+    }, 3000);
+
     const finish = async () => {
       clearInterval(iv);
+      clearInterval(keepaliveIv);
       cs.removeListener("audioPacket", on);
       if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
       const dur = Date.now() - first;
