@@ -107,11 +107,13 @@ function pcm16ToWav(pcm: Int16Array, sampleRate: number): Buffer {
 }
 
 async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
-  if (!audioChunks.length) return "";
+  if (!audioChunks.length) { console.log("[sip-conv] Whisper: no audio chunks collected"); return ""; }
   const raw = Buffer.concat(audioChunks);
+  console.log("[sip-conv] Whisper: collected", audioChunks.length, "chunks,", raw.length, "total bytes");
   const pcm = ulawToPcm16(raw);
-  if (pcm.length < 800) return "";
+  if (pcm.length < 800) { console.log("[sip-conv] Whisper: audio too short,", pcm.length, "samples"); return ""; }
   const wav = pcm16ToWav(pcm, RATE);
+  console.log("[sip-conv] Whisper: WAV size", wav.length, "bytes,", pcm.length, "samples,", Math.round(pcm.length / RATE), "seconds");
   try {
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(wav)] as any, { type: "audio/wav" }), "speech.wav");
@@ -422,7 +424,10 @@ function listenForSpeech(
       if (!got) first = Date.now();
       got = true;
       last = Date.now();
-      if (Buffer.isBuffer(d)) audioChunks.push(d);
+      // audioPacket event passes an rtpPacket object; audio data is in .payload
+      const payload = d?.payload || d;
+      if (Buffer.isBuffer(payload)) audioChunks.push(payload);
+      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));
     };
     cs.on("audioPacket", on);
     const finish = async () => {
