@@ -60,14 +60,17 @@ assert(agent.includes("config.companyName"));
 assert(trunk.includes("rtpPacket.payload"));
 assert(softphone.includes("streamAudio"));
 
-// Live RingCentral SIP audio MUST bypass trunk.js's legacy manual RTP sender.
-// media.js owns the active WSS->SIP path and serializes PCMU frames through
-// ringcentral-softphone's supported callSession.streamAudio() implementation.
+// Active live RingCentral audio must use SDK streamAudio only. The WSS path
+// must queue frames before answer instead of dropping the opening greeting.
 assert(media.includes('session.provider === "ringcentral-sip"'));
 assert(media.includes("sendRingCentralSipAudio(session, payload)"));
 assert(media.includes("cs.streamAudio(frame)"));
+assert(media.includes("session._sdkAudioQueue.push(Buffer.from(payload))"));
+assert(media.includes('if (!cs || cs.disposed || typeof cs.streamAudio !== "function")'));
+assert(media.includes("setTimeout(pump, 20)"));
 const sipBranch = media.slice(media.indexOf('session.provider === "ringcentral-sip"'), media.indexOf('session.provider === "ringcentral"'));
 assert(!sipBranch.includes("session.agentAudioHandler(payload)"));
+assert(!sipBranch.includes("session._agentAudio = payload"));
 assert(projectNotes.includes("Each customer's PC acts as a learning node"));
 assert(projectNotes.includes("Each customer gets their own VOIP credentials"));
 
