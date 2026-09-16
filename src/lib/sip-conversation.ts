@@ -7,10 +7,16 @@ import {
   getCollectedData,
   type ConversationState,
 } from "@/lib/free-ai";
+import { GUARD_EDGE_TTS_BROKEN_INIT, GUARD_GOOGLE_TTS_CLIENT, logGuardStatus } from "@/lib/guards";
 
+// GUARD: runtimeRequire hides CJS imports from Turbopack static analysis.
+// DO NOT replace with `import` - it will crash the build.
 const runtimeRequire = createRequire(path.join(process.cwd(), "src", "lib", "sip-conversation.ts"));
 
 const { sipCallBridge } = runtimeRequire("../management/portal/softphone");
+
+// Log guard status at module load
+logGuardStatus();
 
 export interface SIPConfig {
   user: string;
@@ -220,6 +226,11 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
     let mp3: Buffer | null = null;
 
     // 1) Try Edge TTS WebSocket
+    // GUARD: Recovery timer - reset edgeTtsBroken after 5 minutes
+    if (edgeTtsBroken && Date.now() - edgeTtsBrokenSince > EDGE_TTS_RECOVERY_MS) {
+      console.log("[sip-conv] Edge TTS recovery: resetting broken flag after 5 minutes");
+      edgeTtsBroken = false;
+    }
     if (!edgeTtsBroken) {
       try {
         mp3 = await edgeTts(chunk, EDGE_VOICE);
@@ -230,25 +241,36 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
         }
         console.error("[sip-conv] Edge TTS returned null/tiny for:", chunk.slice(0, 40));
         edgeTtsBroken = true;
+        edgeTtsBrokenSince = Date.now();
         console.log("[sip-conv] Edge TTS marked broken, switching to HTTP fallback");
-      } catch { edgeTtsBroken = true; }
+      } catch { edgeTtsBroken = true; edgeTtsBrokenSince = Date.now(); }
     }
 
     // 2) Fallback: Google Translate TTS (plain HTTP)
+    // GUARD: client=dict-chrome-ex is the working endpoint. client=tw-ob returns HTML CAPTCHAs.
     try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=tw-ob&q=${encodeURIComponent(chunk)}`;
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=${GUARD_GOOGLE_TTS_CLIENT}&q=${encodeURIComponent(chunk)}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
       const resp = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win6; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+          "Referer": "https://translate.google.com/",
+        },
+        signal: controller.signal,
       });
-      if (resp.ok) {
+      clearTimeout(timeout);
+      // GUARD: Validate Content-Type is audio, not HTML (CAPTCHA page)
+      const ct = resp.headers.get("content-type") || "";
+      if (resp.ok && ct.includes("audio")) {
         const arr = Buffer.from(await resp.arrayBuffer());
         if (arr.length > 100) {
           allParts.push(arr);
-          console.log("[sip-conv] Google TTS OK:", arr.length, "bytes");
+          console.log("[sip-conv] Google TTS OK:", arr.length, "bytes, type:", ct);
           continue;
         }
       }
-      console.error("[sip-conv] Google TTS failed:", resp.status);
+      console.error("[sip-conv] Google TTS failed:", resp.status, "content-type:", ct);
     } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
 
     // 3) Fallback: pre-recorded silence/tone
@@ -300,7 +322,13 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   return [];
 }
 
-let edgeTtsBroken = true;
+// GUARD: Must start as GUARD_EDGE_TTS_BROKEN_INIT (true). Edge TTS WebSocket is blocked on Suga.
+// Setting this to false causes 20-second timeouts per text chunk, making calls silent.
+let edgeTtsBroken = GUARD_EDGE_TTS_BROKEN_INIT;
+
+// Recovery: Reset edgeTtsBroken after 5 minutes so transient failures don't cause permanent degradation
+let edgeTtsBrokenSince = Date.now();
+const EDGE_TTS_RECOVERY_MS = 5 * 60 * 1000;
 
 function listenForSpeech(
   cs: any,
