@@ -1,0 +1,33 @@
+name: V2 Agent Syntax Repair
+on:
+  push:
+    branches: [build/local-call-engine-v2]
+    paths: [.github/workflows/v2-agent-syntax-repair.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: build/local-call-engine-v2
+      - name: Remove stray brace and verify syntax
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/management/agent/agent.js')
+          s = p.read_text()
+          bad = '''    } // end if (voiceCall)\n    if (opts.callOnce === true) {'''
+          good = '''    if (opts.callOnce === true) {'''
+          if s.count(bad) != 1:
+              raise SystemExit(f'Expected exactly one repair target, found {s.count(bad)}')
+          p.write_text(s.replace(bad, good, 1))
+      - run: node --check src/management/agent/agent.js
+      - name: Commit branch-only repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/management/agent/agent.js
+          git commit -m "Fix restored agent call block syntax"
+          git push origin HEAD:build/local-call-engine-v2
