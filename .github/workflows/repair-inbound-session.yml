@@ -1,0 +1,69 @@
+name: Repair inbound media session
+on:
+  push:
+    branches: [repair/inbound-media-session]
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/inbound-media-session
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Wire active cloud session into agent media channel
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p=Path('src/management/portal/server.js')
+          s=p.read_text()
+          anchor='''    // --- Cloud call gateway: dialer control plane ---\n'''
+          block='''    // Agent bearer-token lookup for the live call it must attach to.\n    // The access token is already the agent credential used by heartbeat; only\n    // the owning token can discover its own active session.\n    if (url.pathname === "/api/agent/active-call" && method === "POST") {\n      const body = await readBody(req);\n      const token = String(body.token || "").trim();\n      const owner = token ? await getCustomerByToken(db, token) : null;\n      if (!owner) return send(401, { error: "Invalid access token" });\n      const sessions = trunk.getSessionsFor(gatewayCtx.portalId)\n        .filter((x) => x && x.token === token && !["error", "completed"].includes(String(x.status || "")))\n        .sort((a, b) => Number(b.startedAt || 0) - Number(a.startedAt || 0));\n      const active = sessions[0] || null;\n      return send(200, { ok: true, sessionId: active ? active.id : null, status: active ? active.status : null });\n    }\n\n'''
+          if '/api/agent/active-call' not in s:
+              if anchor not in s: raise SystemExit('server anchor missing')
+              s=s.replace(anchor,block+anchor,1)
+              p.write_text(s)
+
+          p=Path('src/management/agent/agent.js')
+          s=p.read_text()
+          old='''    if (voiceCall) try {\n      const result = await voiceCall({\n'''
+          new='''    if (voiceCall) try {\n      // Bind this conversation to the cloud SIP session that actually owns the\n      // phone audio. Never let a telephone call silently fall back to the PC mic.\n      let sessionId = null;\n      if (portal && config.token) {\n        try {\n          const active = await post(`${portal}/api/agent/active-call`, { token: config.token });\n          if (active.status === 200 && active.body) sessionId = active.body.sessionId || null;\n        } catch {}\n      }\n      if (!sessionId) throw new Error("No active phone media session found - refusing PC-microphone fallback.");\n      log("Attaching AI to phone media session " + sessionId);\n      const result = await voiceCall({\n        sessionId,\n'''
+          if 'refusing PC-microphone fallback' not in s:
+              if old not in s: raise SystemExit('agent anchor missing')
+              s=s.replace(old,new,1)
+              p.write_text(s)
+
+          p=Path('src/management/agent/call.js')
+          s=p.read_text()
+          s=s.replace('''  contactEmail, token, portal, learning, locale = "en", voiceStyle = "friendly",\n''','''  contactEmail, token, portal, sessionId = null, learning, locale = "en", voiceStyle = "friendly",\n''',1)
+          s=s.replace('''      const sessionId = arguments[0].sessionId || null;\n      if (sessionId) {\n''','''      if (sessionId) {\n''',1)
+          old='''  let say, listen;\n\n  if (channel && channel.open) {\n'''
+          new='''  let say, listen;\n\n  if (portal && token && sessionId && (!channel || !channel.open)) {\n    throw new Error("Phone media channel failed to connect; refusing local microphone fallback.");\n  }\n\n  if (channel && channel.open) {\n'''
+          if 'Phone media channel failed to connect; refusing local microphone fallback.' not in s:
+              if old not in s: raise SystemExit('call anchor missing')
+              s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - name: Verify syntax and media invariants
+        run: |
+          node --check src/management/portal/server.js
+          node --check src/management/agent/agent.js
+          node --check src/management/agent/call.js
+          grep -q '/api/agent/active-call' src/management/portal/server.js
+          grep -q 'sessionId,' src/management/agent/agent.js
+          grep -q 'refusing PC-microphone fallback' src/management/agent/agent.js
+          grep -q 'Phone media channel failed to connect' src/management/agent/call.js
+          node src/management/agent/local-ringcentral-engine.test.js
+      - name: Commit repair
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/management/portal/server.js src/management/agent/agent.js src/management/agent/call.js
+          git diff --cached --quiet && exit 0
+          git commit -m 'Bind agent listening to active phone media session'
+          git push origin HEAD:repair/inbound-media-session
