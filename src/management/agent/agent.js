@@ -479,7 +479,6 @@ async function runAgent(opts = {}) {
       log("Voice call failed: " + e.message);
       ui({ mode: config.mode || "on", line: "Voice call failed - retrying later." });
     }
-    } // end if (voiceCall)
     if (opts.callOnce === true) {
       log("Test call finished. Exiting (heartbeat stays with the main agent).");
       return;
