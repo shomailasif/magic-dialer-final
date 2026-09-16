@@ -57,7 +57,11 @@ assert(agent.includes("config.voip"));
 assert(agent.includes("config.product"));
 assert(agent.includes("config.companyName"));
 assert(trunk.includes("rtpPacket.payload"));
-assert(softphone.includes("streamAudio") || trunk.includes("streamAudio") || projectNotes.includes("customer's PC"));
+assert(trunk.includes("cs.streamAudio"), "RingCentral outbound media must use SDK streamAudio");
+assert(!trunk.includes('require("werift-rtp")'), "portal bridge must not construct RTP manually");
+assert(!trunk.includes("new werift_rtp.RtpPacket"), "manual RTP packet construction is forbidden");
+assert(!trunk.includes("cs.srtpSession.encrypt"), "portal bridge must leave SRTP to RingCentral SDK");
+assert(softphone.includes("streamAudio"));
 assert(projectNotes.includes("Each customer's PC acts as a learning node"));
 assert(projectNotes.includes("Each customer gets their own VOIP credentials"));
 
