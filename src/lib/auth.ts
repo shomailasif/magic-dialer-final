@@ -45,6 +45,90 @@ export type AuthUser = User & {
   subscription: (Subscription & { history?: never }) | null;
 };
 
+/**
+ * Generate a device fingerprint from request headers
+ */
+export function generateDeviceFingerprint(userAgent: string, ip: string): string {
+  const crypto = require("crypto");
+  return crypto.createHash("sha256").update(`${userAgent}:${ip}`).digest("hex").slice(0, 32);
+}
+
+/**
+ * Create a new session and invalidate any existing sessions for this user
+ */
+export async function createDeviceSession(
+  userId: string,
+  deviceFingerprint: string,
+  ipAddress: string,
+  userAgent: string
+): Promise<void> {
+  // Delete any existing sessions for this user (one device at a time)
+  await prisma.session.deleteMany({
+    where: { userId },
+  });
+
+  // Create new session
+  await prisma.session.create({
+    data: {
+      userId,
+      deviceFingerprint,
+      ipAddress,
+      userAgent,
+      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+    },
+  });
+}
+
+/**
+ * Check if a session is active for this device
+ */
+export async function isSessionActive(
+  userId: string,
+  deviceFingerprint: string
+): Promise<boolean> {
+  const session = await prisma.session.findFirst({
+    where: {
+      userId,
+      deviceFingerprint,
+      expiresAt: { gt: new Date() },
+    },
+  });
+  return !!session;
+}
+
+/**
+ * Delete a session (for logout)
+ */
+export async function deleteDeviceSession(
+  userId: string,
+  deviceFingerprint: string
+): Promise<void> {
+  await prisma.session.deleteMany({
+    where: {
+      userId,
+      deviceFingerprint,
+    },
+  });
+}
+
+/**
+ * Touch session to keep it alive
+ */
+export async function touchSession(
+  userId: string,
+  deviceFingerprint: string
+): Promise<void> {
+  await prisma.session.updateMany({
+    where: {
+      userId,
+      deviceFingerprint,
+    },
+    data: {
+      lastActiveAt: new Date(),
+    },
+  });
+}
+
 export async function getCurrentUser(): Promise<AuthUser | null> {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;

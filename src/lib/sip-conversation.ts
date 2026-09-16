@@ -121,7 +121,7 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
   return pcm;
 }
 
-const EDGE_VOICE = "en-US-AvaNeural";
+const EDGE_VOICE = "en-US-JennyNeural";
 const EDGE_HOST = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_GEC_VERSION = "1-143.0.3650.75";
@@ -467,17 +467,19 @@ export async function runConversation(
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
 
-    const r = await listenForSpeech(cs, start, heardRef, 8000);
+    // Listen for 3 seconds max - respond quickly when prospect stops talking
+    const r = await listenForSpeech(cs, start, heardRef, 3000);
     if (!r.spoke) {
       await speak(cs, "Are you still there?", heardRef);
-      const retry = await listenForSpeech(cs, start, heardRef, 5000);
+      const retry = await listenForSpeech(cs, start, heardRef, 2000);
       if (!retry.spoke) break;
     }
     if (Date.now() - start > maxDurationMs) break;
 
+    // Use actual audio data for inference
     const txt = inferProspectText(state, r.durationMs, r.peakEnergy);
     lines.push(`Prospect: ${txt}`);
-    const resp = processProspectInput(state, txt);
+    const resp = await processProspectInput(state, txt);
     if (resp.text) {
       lines.push(`Agent: ${resp.text}`);
       await speak(cs, resp.text, heardRef);

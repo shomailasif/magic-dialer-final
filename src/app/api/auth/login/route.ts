@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { verifyPassword } from "@/lib/password";
-import { signSession, SESSION_COOKIE_NAME } from "@/lib/auth";
+import { signSession, SESSION_COOKIE_NAME, generateDeviceFingerprint, createDeviceSession } from "@/lib/auth";
 
 export async function POST(request: Request) {
   let body: { email?: string; password?: string };
@@ -33,6 +33,14 @@ export async function POST(request: Request) {
   if (!ok) {
     return NextResponse.json({ error: "Invalid credentials." }, { status: 401 });
   }
+
+  // Get device info from request headers
+  const userAgent = request.headers.get("user-agent") || "unknown";
+  const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown";
+  const deviceFingerprint = generateDeviceFingerprint(userAgent, ip);
+
+  // Create device session (invalidates any existing sessions for this user)
+  await createDeviceSession(user.id, deviceFingerprint, ip, userAgent);
 
   const token = signSession(user.id);
   const response = NextResponse.json({

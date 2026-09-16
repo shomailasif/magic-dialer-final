@@ -97,6 +97,7 @@ model User {
   aiGenerations AILeadGeneration[]
   notifications Notification[]
   passwordResets PasswordReset[]
+  sessions      Session[]
 
   @@index([role])
 }
@@ -270,6 +271,21 @@ model PasswordReset {
   createdAt DateTime @default(now())
 
   @@index([token])
+}
+
+model Session {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceFingerprint String
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime @default(now())
+  lastActiveAt      DateTime @default(now())
+  expiresAt         DateTime
+
+  @@index([userId])
+  @@index([deviceFingerprint])
 }
 
 model Notification {

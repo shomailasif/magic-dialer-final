@@ -1,7 +1,7 @@
 /**
- * TTS Regression Guards
+ * TTS & AI Regression Guards
  * 
- * This module protects critical TTS fixes from being accidentally reverted.
+ * This module protects critical TTS and AI fixes from being accidentally reverted.
  * Every guard has a comment explaining WHY it exists and WHAT broke before.
  * 
  * DO NOT REMOVE OR MODIFY THESE GUARDS without reading the history below.
@@ -59,6 +59,39 @@ export const GUARD_AUDIO_CHANNELS = 1;
 export const GUARD_SPEAK_MUST_STREAM = true;
 
 // ============================================================================
+// GUARD 7: Voice must be en-US-JennyNeural
+// ============================================================================
+// WHY: This is the original energetic female voice. Changing to AvaNeural
+// made the voice softer and less engaging. Jenny was the original choice.
+// LAST BROKEN: Changed to AvaNeural → voice lost energy and personality
+export const GUARD_VOICE = "en-US-JennyNeural";
+
+// ============================================================================
+// GUARD 8: LLM must be KeylessAI (free, unlimited)
+// ============================================================================
+// WHY: KeylessAI is the only truly free option with no daily limits.
+// Other providers (Groq, Gemini) have rate limits that block production use.
+// LAST BROKEN: Using paid APIs → costs spiral with high call volume
+export const GUARD_LLM_PROVIDER = "keylessai";
+export const GUARD_LLM_BASE_URL = "https://keylessai.thryx.workers.dev/v1";
+
+// ============================================================================
+// GUARD 9: Silence detection must be under 4 seconds
+// ============================================================================
+// WHY: If listen time is too long (8s+), the prospect waits in silence.
+// 3 seconds is fast enough to detect speech end without missing responses.
+// LAST BROKEN: 8s listen time → prospect waits too long → hangs up
+export const GUARD_SILENCE_DETECT_MS = 3000;
+
+// ============================================================================
+// GUARD 10: Device lock - one user, one PC
+// ============================================================================
+// WHY: Billing model requires one active session per user. Multiple
+// concurrent sessions would allow usage without payment.
+// LAST BROKEN: No device lock → users share accounts → revenue loss
+export const GUARD_DEVICE_LOCK = true;
+
+// ============================================================================
 // Validation functions - call these at startup
 // ============================================================================
 
@@ -69,7 +102,7 @@ export interface GuardResult {
 }
 
 /**
- * Validate all TTS guards at module load time.
+ * Validate all guards at module load time.
  * Returns array of violations (empty = all guards pass).
  */
 export function validateTtsGuards(): GuardResult[] {
@@ -111,6 +144,33 @@ export function validateTtsGuards(): GuardResult[] {
     });
   }
 
+  // Guard 7: Voice
+  if (GUARD_VOICE !== "en-US-JennyNeural") {
+    violations.push({
+      ok: false,
+      guard: "GUARD_VOICE",
+      message: "Voice must be en-US-JennyNeural. Changing loses the energetic personality.",
+    });
+  }
+
+  // Guard 8: LLM provider
+  if (GUARD_LLM_PROVIDER !== "keylessai") {
+    violations.push({
+      ok: false,
+      guard: "GUARD_LLM_PROVIDER",
+      message: "LLM must be KeylessAI. Other providers have rate limits.",
+    });
+  }
+
+  // Guard 9: Silence detection
+  if (GUARD_SILENCE_DETECT_MS > 5000) {
+    violations.push({
+      ok: false,
+      guard: "GUARD_SILENCE_DETECT_MS",
+      message: "Silence detection too slow. Must be under 5s.",
+    });
+  }
+
   return violations;
 }
 
@@ -120,7 +180,7 @@ export function validateTtsGuards(): GuardResult[] {
 export function logGuardStatus(): void {
   const violations = validateTtsGuards();
   if (violations.length === 0) {
-    console.log("[guards] All TTS guards OK");
+    console.log("[guards] All TTS & AI guards OK");
   } else {
     for (const v of violations) {
       console.error(`[guards] VIOLATION: ${v.guard} - ${v.message}`);
