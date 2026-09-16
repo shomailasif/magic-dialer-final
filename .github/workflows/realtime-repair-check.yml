@@ -17,5 +17,6 @@ jobs:
           node --check src/management/agent/vad.js
           node --check src/management/agent/call.js
           node --check src/management/agent/call-runner.js
+          node --check src/management/agent/intelligent-brain.js
       - name: Offline regression checks
         run: node scripts/verify-realtime-repair.js
