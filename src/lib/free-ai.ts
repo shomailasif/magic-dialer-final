@@ -1,5 +1,11 @@
-import { type LLMMessage } from "@/lib/llm";
-import { getIntelligentSalesResponse, type SalesBrainConfig } from "@/lib/intelligent-llm";
+/**
+ * Free AI - Smart Conversation Engine
+ *
+ * Pattern-based fallback that works WITHOUT any LLM.
+ * Tracks state, collects data, handles objections naturally.
+ */
+
+import { getAIResponse, type LLMMessage } from "@/lib/llm";
 
 export interface ConversationState {
   phase: "greeting" | "pitch" | "collect_name" | "collect_company" | "collect_email" | "handling_objection" | "closing" | "done";
@@ -11,106 +17,30 @@ export interface ConversationState {
   lastProspectSaid: string;
   prospectSaidHistory: string[];
   agentSaidHistory: string[];
-  tone: "FRIENDLY" | "PROFESSIONAL" | "DIRECT" | "CONSULTATIVE";
+  tone: "FRIENDLY" | "PROFESSIONAL" | "DIRECT";
   productName: string;
   pitch: string;
   pricing: string | null;
   conversationHistory: LLMMessage[];
   lastAgentSaid: string;
   silenceCount: number;
-  salesBrain: SalesBrainConfig;
 }
 
 export interface AIResponse { text: string; state: ConversationState; shouldEnd: boolean; }
-
-const END_SIGNALS = ["bye", "goodbye", "gotta go", "have to go", "stop calling", "don't call again", "do not call again", "remove me", "take me off your list"];
-
+const BYE = ["bye", "goodbye", "see you", "talk later", "gotta go", "have to go", "hung up", "stop calling", "don't call again", "remove me"];
+const POSITIVE = ["yes", "yeah", "yep", "sure", "okay", "ok", "sounds good", "tell me more", "i'm interested", "go on", "continue", "alright", "what is it"];
+const OBJECTION = ["not interested", "no thanks", "no thank you", "busy", "can't talk", "cannot talk", "in a meeting", "driving", "send me an email", "not now", "later", "maybe", "not the right time", "who is this", "how did you get my number"];
+const QUESTION_WORDS = ["what", "how", "why", "when", "where", "who", "can you", "could you", "tell me", "explain"];
+const INTRODUCE = ["who are you", "what is this", "what company", "what do you do", "what are you selling"];
+const SILENCE_RESPONSES = ["Are you still there?", "Hello?", "I'm still here if you have any questions.", "Just let me know if you'd like to hear more."];
 function matchesAny(text: string, patterns: string[]) { const lower = text.toLowerCase(); return patterns.some((p) => lower.includes(p)); }
-function extractEmail(text: string) { const m = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/); return m ? m[0] : null; }
-function extractName(text: string): string | null {
-  const lower = text.toLowerCase();
-  for (const indicator of ["my name is", "i'm", "i am", "this is", "name's", "call me"]) {
-    const idx = lower.indexOf(indicator); if (idx === -1) continue;
-    let name = text.slice(idx + indicator.length).trim().split(/[.,!?]/)[0].trim();
-    const words = name.split(/\s+/).filter(Boolean); if (words.length > 3) name = words.slice(0, 3).join(" ");
-    if (name.length > 1 && name.length < 40 && !/^\d+$/.test(name)) return name;
-  }
-  return null;
-}
-function extractCompany(text: string): string | null {
-  const lower = text.toLowerCase();
-  for (const indicator of ["i work for", "i work at", "i'm with", "company is", "business is", "organization is"]) {
-    const idx = lower.indexOf(indicator); if (idx === -1) continue;
-    const company = text.slice(idx + indicator.length).trim().split(/[.,!?]/)[0].trim();
-    if (company.length > 1 && company.length < 80) return company;
-  }
-  return null;
-}
-
-function tenantFallback(state: ConversationState): string {
-  const text = state.lastProspectSaid.toLowerCase();
-  if (!text) return "I'm here. Take your time.";
-  if (matchesAny(text, END_SIGNALS)) return "Of course. Thank you for your time. Goodbye.";
-  if (text.includes("busy") || text.includes("meeting") || text.includes("driving")) return "Of course. I don't want to interrupt you. When would be a better time to call?";
-  if (text.includes("email")) return "Absolutely. What's the best email address to use?";
-  if (text.includes("not interested") || text.includes("no thanks")) return "Understood. Thank you for letting me know.";
-  if (text.includes("price") || text.includes("cost") || text.includes("how much")) return state.pricing ? `The pricing information I have is ${state.pricing}. What would you like me to clarify about it?` : "I don't want to guess about pricing. I can note that question for the company.";
-  if (state.pitch) return `I understand. The main reason for my call is ${state.pitch} What would be most useful for you to know?`;
-  if (state.productName) return `I understand. I'm calling about ${state.productName}. What would you like to know about it?`;
-  return "I understand. Could you tell me a little more about what matters most to you?";
-}
-
-function recordAssistant(state: ConversationState, text: string) {
-  state.conversationHistory.push({ role: "assistant", content: text }); state.agentSaidHistory.push(text); state.lastAgentSaid = text;
-}
-
-export function createConversation(config: SalesBrainConfig): ConversationState {
-  return {
-    phase: "greeting", collectedName: null, collectedCompany: null, collectedEmail: null,
-    turnCount: 0, objectionCount: 0, lastProspectSaid: "", prospectSaidHistory: [], agentSaidHistory: [],
-    tone: (config.tone as ConversationState["tone"]) || "PROFESSIONAL", productName: config.productName || "",
-    pitch: config.pitch || "", pricing: config.pricing || null, conversationHistory: [], lastAgentSaid: "", silenceCount: 0,
-    salesBrain: { ...config },
-  };
-}
-
-export async function processProspectInput(state: ConversationState, transcript: string): Promise<AIResponse> {
-  const text = transcript.trim();
-  if (!text) {
-    state.silenceCount++;
-    const response = state.silenceCount === 1 ? "I'm here." : "No problem. Take your time.";
-    recordAssistant(state, response); return { text: response, state, shouldEnd: false };
-  }
-  state.turnCount++; state.silenceCount = 0; state.lastProspectSaid = text; state.prospectSaidHistory.push(text);
-  if (!state.collectedName) state.collectedName = extractName(text);
-  if (!state.collectedCompany) state.collectedCompany = extractCompany(text);
-  if (!state.collectedEmail) state.collectedEmail = extractEmail(text);
-
-  if (matchesAny(text, END_SIGNALS)) {
-    const closing = "Of course. Thank you for your time. Goodbye."; state.phase = "done"; recordAssistant(state, closing);
-    return { text: closing, state, shouldEnd: true };
-  }
-  if (state.turnCount > 30) {
-    const closing = "Thank you for the conversation. I'll let you get back to your day. Goodbye."; state.phase = "done"; recordAssistant(state, closing);
-    return { text: closing, state, shouldEnd: true };
-  }
-
-  state.conversationHistory.push({ role: "user", content: text });
-  let aiText = "";
-  try { aiText = await getIntelligentSalesResponse(state.conversationHistory, state.salesBrain); }
-  catch (e) { console.error("[free-ai] intelligent brain failed, using tenant-neutral fallback", e); }
-  if (!aiText || aiText.trim().length < 5 || aiText === "I'm sorry, could you repeat that?") aiText = tenantFallback(state);
-
-  recordAssistant(state, aiText);
-  const lowerAi = aiText.toLowerCase();
-  const shouldEnd = lowerAi.includes("goodbye") || lowerAi.includes("do not call") || lowerAi.includes("won't call again");
-  if (shouldEnd) state.phase = "done";
-  return { text: aiText, state, shouldEnd };
-}
-
-export function getInitialGreeting(state: ConversationState): string {
-  const greeting = state.productName ? `Hello! Thanks for taking my call. I'm calling about ${state.productName}. How are you today?` : "Hello! Thanks for taking my call. How are you today?";
-  recordAssistant(state, greeting); return greeting;
-}
-
-export function getCollectedData(state: ConversationState) { return { name: state.collectedName, company: state.collectedCompany, email: state.collectedEmail }; }
+function extractEmail(text: string) { const match = text.match(/[\w.+-]+@[\w-]+\.[\w.]+/); return match ? match[0] : null; }
+function extractName(text: string): string | null { const lower=text.toLowerCase(); for(const indicator of ["my name is","i'm","i am","this is","name's","it's","call me"]){const idx=lower.indexOf(indicator);if(idx!==-1){let name=text.slice(idx+indicator.length).trim().split(/[.,!?]/)[0].trim();const words=name.split(/\s+/);if(words.length>3)name=words.slice(0,3).join(" ");if(name.length>1&&name.length<40&&!/^\d+$/.test(name))return name;}} return null; }
+function extractCompany(text:string):string|null{const lower=text.toLowerCase();for(const indicator of ["company","business","organization","firm","corp","inc","llc","work at","from","i'm with","i work for"]){const idx=lower.indexOf(indicator);if(idx!==-1){const company=text.slice(idx+indicator.length).trim().split(/[.,!?]/)[0].trim();if(company.length>1&&company.length<60)return company;}}return null;}
+function randomPick(arr:string[]){return arr[Math.floor(Math.random()*arr.length)];}
+function smartFallback(state:ConversationState):string{const text=state.lastProspectSaid.toLowerCase();const turn=state.turnCount;const name=state.collectedName;const hasName=!!name;if(matchesAny(text,BYE))return hasName?`Thank you ${name}! We'll be in touch. Have a great day!`:"Thank you for your time! We'll be in touch. Have a great day!";if(matchesAny(text,OBJECTION)){state.objectionCount++;if(state.objectionCount>=3)return hasName?`I understand ${name}. I'll let you go. We'll follow up by email instead. Have a great day!`:"I understand. I won't keep you. We'll send you an email instead. Have a great day!";if(text.includes("not interested")||text.includes("no thanks"))return"I completely understand. Most of our clients felt the same way at first. Could I just take 30 seconds to explain what we do?";if(text.includes("busy")||text.includes("meeting")||text.includes("driving"))return"I'm sorry to bother you. When would be a better time to call back?";if(text.includes("who is this")||text.includes("how did you"))return"This is Sarah from Dispatch Solutions. We help businesses like yours save up to 30% on dispatch costs. Can I ask what your current setup looks like?";if(text.includes("email"))return"Absolutely, I can send you an email. What's the best email address for you?";return"I understand. We just help businesses save time and money on dispatch. Can I ask one quick question?";}if(matchesAny(text,INTRODUCE))return"We're Dispatch Solutions. We help businesses streamline their dispatch operations and save money. What does your current dispatch setup look like?";if(matchesAny(text,QUESTION_WORDS))return"Great question! We provide dispatch solutions that help businesses save up to 30% on logistics costs. What's your biggest challenge with your current dispatch process?";if(matchesAny(text,POSITIVE)){if(!state.collectedName&&turn>=2){state.phase="collect_name";return hasName?`Great, ${name}! Let me get your details. What company are you with?`:"Wonderful! Let me get your details. What's your name?";}if(!state.collectedCompany&&state.collectedName){state.phase="collect_company";return`And ${name}, what company are you with?`;}if(!state.collectedEmail){state.phase="collect_email";return"Perfect! And what's the best email to reach you at?";}return"Excellent! We have everything we need. A dispatch manager will call you within 30 minutes. Have a great day!";}if(text===""||text==="silence"){state.silenceCount++;if(state.silenceCount>=3)return"I think we might have a bad connection. We'll follow up by email. Have a great day!";return randomPick(SILENCE_RESPONSES);}if(turn<=2)return`Hi${name?" "+name:""}! I'm calling from Dispatch Solutions. We help businesses save up to 30% on dispatch costs. What does your current dispatch setup look like?`;return randomPick([`I appreciate that${name?", "+name:""}. Could you tell me a bit about your business?`,`That's interesting. What's the biggest challenge you face with dispatch?`,`I see. We've helped businesses like yours save a lot of time and money. Would you like to hear how?`,`Makes sense. Can I ask what your role is at the company?`]);}
+function generateClosing(state:ConversationState){const name=state.collectedName?` ${state.collectedName}`:"";return`Thank${name?" you, "+state.collectedName:" you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes. Have a great day!`;}
+export function createConversation(config:{tone?:string;productName?:string;pitch?:string;pricing?:string;}):ConversationState{return{phase:"greeting",collectedName:null,collectedCompany:null,collectedEmail:null,turnCount:0,objectionCount:0,lastProspectSaid:"",prospectSaidHistory:[],agentSaidHistory:[],tone:(config.tone as ConversationState["tone"])||"PROFESSIONAL",productName:config.productName||"",pitch:config.pitch||"",pricing:config.pricing||null,conversationHistory:[],lastAgentSaid:"",silenceCount:0};}
+export async function processProspectInput(state:ConversationState,transcript:string):Promise<AIResponse>{const text=transcript.trim();if(!text){state.silenceCount++;const response=smartFallback(state);state.agentSaidHistory.push(response);state.conversationHistory.push({role:"assistant",content:response});return{text:response,state,shouldEnd:false};}state.turnCount++;state.lastProspectSaid=text;state.prospectSaidHistory.push(text);state.silenceCount=0;if(matchesAny(text,BYE)){const closing=generateClosing(state);state.phase="done";state.agentSaidHistory.push(closing);return{text:closing,state,shouldEnd:true};}if(state.turnCount>20){const closing=generateClosing(state);state.phase="done";state.agentSaidHistory.push(closing);return{text:closing,state,shouldEnd:true};}state.conversationHistory.push({role:"user",content:text});let aiText:string;try{aiText=await getAIResponse(state.conversationHistory,{productName:state.productName,pitch:state.pitch,tone:state.tone,pricing:state.pricing||undefined});}catch{aiText=smartFallback(state);}if(aiText==="I'm sorry, could you repeat that?"||aiText.length<5)aiText=smartFallback(state);state.conversationHistory.push({role:"assistant",content:aiText});state.agentSaidHistory.push(aiText);state.lastAgentSaid=aiText;if(!state.collectedName){const name=extractName(text);if(name)state.collectedName=name;}if(!state.collectedCompany){const company=extractCompany(text);if(company)state.collectedCompany=company;}if(!state.collectedEmail){const email=extractEmail(text);if(email)state.collectedEmail=email;}const lowerAi=aiText.toLowerCase();const hasCollectedData=state.collectedName||state.collectedEmail;if(hasCollectedData&&(lowerAi.includes("goodbye")||lowerAi.includes("have a great day"))){state.phase="done";return{text:aiText,state,shouldEnd:true};}if(state.collectedEmail)state.phase="closing";else if(state.collectedCompany)state.phase="collect_email";else if(state.collectedName)state.phase="collect_company";else if(state.turnCount>1)state.phase="collect_name";return{text:aiText,state,shouldEnd:false};}
+export function getInitialGreeting(state:ConversationState){const greeting="Hello! Thank you for taking my call. How are you doing today?";state.agentSaidHistory.push(greeting);state.conversationHistory.push({role:"assistant",content:greeting});return greeting;}
+export function getCollectedData(state:ConversationState){return{name:state.collectedName,company:state.collectedCompany,email:state.collectedEmail};}
