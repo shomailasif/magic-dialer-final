@@ -67,13 +67,13 @@ export const GUARD_SPEAK_MUST_STREAM = true;
 export const GUARD_VOICE = "en-US-JennyNeural";
 
 // ============================================================================
-// GUARD 8: LLM must be KeylessAI (free, unlimited)
+// GUARD 8: LLM must be Pollinations AI (free, unlimited)
 // ============================================================================
-// WHY: KeylessAI is the only truly free option with no daily limits.
-// Other providers (Groq, Gemini) have rate limits that block production use.
-// LAST BROKEN: Using paid APIs → costs spiral with high call volume
-export const GUARD_LLM_PROVIDER = "keylessai";
-export const GUARD_LLM_BASE_URL = "https://keylessai.thryx.workers.dev/v1";
+// WHY: Pollinations is the only truly free option with no daily limits.
+// Other providers (KeylessAI, Groq, Gemini) have rate limits or are down.
+// LAST BROKEN: KeylessAI went down → DNS failed → LLM error → silence
+export const GUARD_LLM_PROVIDER = "pollinations";
+export const GUARD_LLM_BASE_URL = "https://text.pollinations.ai/openai";
 
 // ============================================================================
 // GUARD 9: Silence detection must be under 4 seconds
@@ -154,11 +154,11 @@ export function validateTtsGuards(): GuardResult[] {
   }
 
   // Guard 8: LLM provider
-  if (GUARD_LLM_PROVIDER !== "keylessai") {
+  if (GUARD_LLM_PROVIDER !== "pollinations") {
     violations.push({
       ok: false,
       guard: "GUARD_LLM_PROVIDER",
-      message: "LLM must be KeylessAI. Other providers have rate limits.",
+      message: "LLM must be Pollinations AI. Other providers have rate limits or are unreliable.",
     });
   }
 

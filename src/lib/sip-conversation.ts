@@ -480,10 +480,10 @@ export async function runConversation(
     const txt = inferProspectText(state, r.durationMs, r.peakEnergy);
     lines.push(`Prospect: ${txt}`);
     const resp = await processProspectInput(state, txt);
-    if (resp.text) {
-      lines.push(`Agent: ${resp.text}`);
-      await speak(cs, resp.text, heardRef);
-    }
+    // Always speak - use fallback if LLM returned empty
+    const responseText = resp.text || "I'm sorry, could you repeat that?";
+    lines.push(`Agent: ${responseText}`);
+    await speak(cs, responseText, heardRef);
     if (resp.shouldEnd) break;
   }
 

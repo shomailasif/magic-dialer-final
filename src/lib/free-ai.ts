@@ -158,8 +158,11 @@ export async function processProspectInput(
   }
 
   // Check if AI is closing (indicates we should end)
+  // ONLY end if AI explicitly says goodbye AND we have collected data
+  // Do NOT end on "thank you" - that's normal polite conversation
   const lowerAi = aiText.toLowerCase();
-  if (lowerAi.includes("have a great day") || lowerAi.includes("goodbye") || lowerAi.includes("thank you")) {
+  const hasCollectedData = state.collectedName || state.collectedEmail;
+  if (hasCollectedData && (lowerAi.includes("goodbye") || lowerAi.includes("have a great day"))) {
     state.phase = "done";
     return { text: aiText, state, shouldEnd: true };
   }

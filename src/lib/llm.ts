@@ -1,12 +1,12 @@
 /**
- * LLM Client - KeylessAI (Free, Unlimited, No API Key)
+ * LLM Client - Pollinations AI (Free, Unlimited, No API Key)
  * 
- * OpenAI-compatible endpoint: https://keylessai.thryx.workers.dev/v1
- * Routes through Pollinations.ai + ApiAirforce (public, no-auth endpoints)
- * Automatic failover between providers
+ * OpenAI-compatible endpoint: https://text.pollinations.ai/openai
+ * Uses GPT-OSS 20B model (free, no signup, no limits)
+ * Automatic, no API key required
  */
 
-const KEYLESS_BASE_URL = "https://keylessai.thryx.workers.dev/v1";
+const POLLINATIONS_BASE_URL = "https://text.pollinations.ai/openai";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -19,7 +19,7 @@ export interface LLMResponse {
 }
 
 /**
- * Send a chat completion request to KeylessAI
+ * Send a chat completion request to Pollinations AI
  */
 export async function chatCompletion(
   messages: LLMMessage[],
@@ -30,16 +30,16 @@ export async function chatCompletion(
   } = {}
 ): Promise<LLMResponse> {
   const {
-    model = "gpt-4o",
+    model = "openai",
     maxTokens = 300,
     temperature = 0.7,
   } = options;
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), 8000);
 
-    const resp = await fetch(`${KEYLESS_BASE_URL}/chat/completions`, {
+    const resp = await fetch(POLLINATIONS_BASE_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -92,9 +92,10 @@ CRITICAL RULES:
 - Respond IMMEDIATELY to what the prospect says
 - Be warm but professional
 - Handle objections gracefully
-- Extract name, company, and email naturally during conversation
-- If they say goodbye or "not interested", gracefully end the call
+- NEVER say "goodbye" or "have a great day" until the prospect has given their name and email
+- If you need information (name, email, company), ask for it politely
 - Never argue or be pushy
+- You can say "thank you" as a polite acknowledgment, but keep the conversation going
 
 YOUR PRODUCT: ${product}
 YOUR PITCH: ${pitch}
@@ -106,7 +107,7 @@ CONVERSATION FLOW:
 2. Ask how they're doing, then deliver your pitch
 3. Handle any objections or questions naturally
 4. Collect their name, company, and email through natural conversation
-5. End with a clear next step
+5. Only say goodbye AFTER you have their name and email
 
 RESPOND ONLY WITH WHAT YOU WOULD SAY ON THE PHONE. No labels, no prefixes.`;
 }
@@ -131,15 +132,20 @@ export async function getAIResponse(
   ];
 
   const response = await chatCompletion(messages, {
-    model: "gpt-4o",
+    model: "openai",
     maxTokens: 200,
     temperature: 0.7,
   });
 
   if (response.error) {
-    console.error("[llm]", response.error);
-    // Fallback response
-    return "I apologize, could you repeat that?";
+    console.error("[llm] Error:", response.error);
+    // Return a natural-sounding fallback
+    return "I'm sorry, could you repeat that?";
+  }
+
+  if (!response.content || response.content.trim().length === 0) {
+    console.error("[llm] Empty response from LLM");
+    return "I'm sorry, could you repeat that?";
   }
 
   return response.content;
