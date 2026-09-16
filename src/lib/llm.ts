@@ -1,15 +1,13 @@
 /**
- * LLM Client - Pollinations AI (Free, No API Key)
+ * LLM Client - Groq API (Free Tier)
  *
- * Multiple strategies to avoid rate limits:
- * 1. POST without model param (different rate limit bucket)
- * 2. POST with openai-fast model
- * 3. POST with openai model
- * 4. GET endpoint (completely different path)
+ * Uses Groq free tier with Llama 3.1 8B - fast and reliable.
+ * No budget issues, no rate limiting on free tier.
  */
 
-const POLLINATIONS_URL = "https://text.pollinations.ai/openai";
-const POLLINATIONS_GET_URL = "https://text.pollinations.ai";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_KEY = "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";
+const GROQ_MODEL = "llama-3.1-8b-instruct";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -22,8 +20,7 @@ export interface LLMResponse {
 }
 
 /**
- * Send a chat completion request to Pollinations AI
- * Tries multiple strategies to avoid rate limits
+ * Send a chat completion request to Groq API
  */
 export async function chatCompletion(
   messages: LLMMessage[],
@@ -37,78 +34,48 @@ export async function chatCompletion(
     temperature = 0.7,
   } = options;
 
-  const errorPatterns = ["budget", "rate limit", "api key", "limit reached", "quota", "exceeded", "raise the key"];
-
-  // Strategy 1-3: POST with different model params
-  const postConfigs = [
-    { label: "no-model", body: { messages, max_tokens: maxTokens, temperature, stream: false } },
-    { label: "openai-fast", body: { model: "openai-fast", messages, max_tokens: maxTokens, temperature, stream: false } },
-    { label: "openai", body: { model: "openai", messages, max_tokens: maxTokens, temperature, stream: false } },
-  ];
-
-  for (const cfg of postConfigs) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 12000);
-
-      const resp = await fetch(POLLINATIONS_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(cfg.body),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeout);
-
-      if (!resp.ok) {
-        console.error(`[llm] ${cfg.label} HTTP ${resp.status}`);
-        continue;
-      }
-
-      const data = await resp.json();
-      const content = data?.choices?.[0]?.message?.content || "";
-
-      if (!content || content.trim().length === 0) {
-        console.error(`[llm] ${cfg.label} empty content`);
-        continue;
-      }
-
-      if (errorPatterns.some(p => content.toLowerCase().includes(p))) {
-        console.error(`[llm] ${cfg.label} error content:`, content.slice(0, 80));
-        continue;
-      }
-
-      console.log(`[llm] ${cfg.label} OK:`, content.slice(0, 60));
-      return { content };
-    } catch (e: any) {
-      console.error(`[llm] ${cfg.label} error:`, e?.message);
-    }
-  }
-
-  // Strategy 4: GET endpoint (completely different path, may have separate rate limit)
   try {
-    const lastUserMsg = messages.filter(m => m.role === "user").pop()?.content || "Hello";
-    const systemMsg = messages.find(m => m.role === "system")?.content || "";
-    const prompt = systemMsg ? `${systemMsg}\n\nProspect said: ${lastUserMsg}` : lastUserMsg;
-    const getUrl = `${POLLINATIONS_GET_URL}/${encodeURIComponent(prompt.slice(0, 500))}?json=true`;
-
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
-    const resp = await fetch(getUrl, { signal: controller.signal });
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    const resp = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GROQ_KEY}`,
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages,
+        max_tokens: maxTokens,
+        temperature,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
     clearTimeout(timeout);
 
-    const text = await resp.text();
-
-    if (!errorPatterns.some(p => text.toLowerCase().includes(p)) && text.trim().length > 0) {
-      console.log(`[llm] GET OK:`, text.slice(0, 60));
-      return { content: text.trim() };
+    if (!resp.ok) {
+      const errorText = await resp.text().catch(() => "unknown");
+      console.error(`[llm] Groq HTTP ${resp.status}:`, errorText.slice(0, 100));
+      return { content: "", error: `Groq HTTP ${resp.status}` };
     }
-    console.error(`[llm] GET failed:`, text.slice(0, 80));
-  } catch (e: any) {
-    console.error(`[llm] GET error:`, e?.message);
-  }
 
-  return { content: "", error: "All LLM strategies failed" };
+    const data = await resp.json();
+    const content = data?.choices?.[0]?.message?.content || "";
+
+    if (!content || content.trim().length === 0) {
+      console.error(`[llm] Groq returned empty content`);
+      return { content: "", error: "Empty response" };
+    }
+
+    console.log(`[llm] Groq OK:`, content.slice(0, 60));
+    return { content };
+  } catch (e: any) {
+    console.error(`[llm] Groq error:`, e?.message);
+    return { content: "", error: e?.message || "Unknown error" };
+  }
 }
 
 /**

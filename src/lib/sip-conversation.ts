@@ -293,25 +293,10 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
   for (const chunk of chunks) {
     let mp3: Buffer | null = null;
 
-    // 1) Try Edge TTS WebSocket
-    // GUARD: Edge TTS WebSocket is blocked on Suga. It is never retried during
-    // a call because each attempt burns a 20s timeout -> 20s of silence. Only
-    // a fresh process (edgeTtsBroken=false never happens) re-enables it.
-    if (!edgeTtsBroken) {
-      try {
-        mp3 = await edgeTts(chunk, EDGE_VOICE);
-        if (mp3 && mp3.length > 100) {
-          allParts.push(mp3);
-          console.log("[sip-conv] Edge TTS OK:", mp3.length, "bytes");
-          continue;
-        }
-        console.error("[sip-conv] Edge TTS returned null/tiny for:", chunk.slice(0, 40));
-        edgeTtsBroken = true;
-        console.log("[sip-conv] Edge TTS marked broken, switching to HTTP fallback");
-      } catch { edgeTtsBroken = true; }
-    }
+    // SKIP Edge TTS - it outputs 24kHz MP3 which needs downsampling to 8kHz
+    // for SIP, causing voice distortion. Google TTS outputs native 8kHz MP3.
 
-    // 2) Fallback: Google Translate TTS (plain HTTP)
+    // 1) Google Translate TTS (plain HTTP, native 8kHz output)
     // GUARD: client=dict-chrome-ex is the working endpoint. client=tw-ob returns HTML CAPTCHAs.
     try {
       const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=${GUARD_GOOGLE_TTS_CLIENT}&q=${encodeURIComponent(chunk)}`;
@@ -338,7 +323,7 @@ async function textToFramesLocal(text: string): Promise<Buffer[]> {
       console.error("[sip-conv] Google TTS failed:", resp.status, "content-type:", ct);
     } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
 
-    // 3) Fallback: pre-recorded tone (valid 8kHz 16-bit WAV so the decode
+    // 2) Fallback: pre-recorded tone (valid 8kHz 16-bit WAV so the decode
     //    path yields real frames instead of feeding raw ulaw to a decoder).
     console.error("[sip-conv] All TTS failed for chunk, generating tone");
     allParts.push(toneWav(800));

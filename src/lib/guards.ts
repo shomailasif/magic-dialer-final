@@ -67,14 +67,13 @@ export const GUARD_SPEAK_MUST_STREAM = true;
 export const GUARD_VOICE = "en-US-JennyNeural";
 
 // ============================================================================
-// GUARD 8: LLM must use Pollinations AI (free, no API key)
+// GUARD 8: LLM must use Groq API (free tier, reliable)
 // ============================================================================
-// WHY: Pollinations is the only truly free option with no daily limits.
-// Multiple strategies (POST no-model, POST openai-fast, POST openai, GET)
-// to avoid rate limits on specific endpoints.
-// LAST BROKEN: Single model strategy → budget error from Suga IP → silence
-export const GUARD_LLM_PROVIDER = "pollinations";
-export const GUARD_LLM_BASE_URL = "https://text.pollinations.ai";
+// WHY: Groq free tier gives 14,400 requests/day with Llama 3.1 8B.
+// Much faster and more reliable than Pollinations (which is rate-limited).
+// LAST BROKEN: Pollinations budget error → all strategies failed → silence
+export const GUARD_LLM_PROVIDER: "groq" | "pollinations" = "groq";
+export const GUARD_LLM_BASE_URL = "https://api.groq.com";
 
 // ============================================================================
 // GUARD 9: Silence detection must be under 4 seconds
@@ -155,7 +154,7 @@ export function validateTtsGuards(): GuardResult[] {
   }
 
   // Guard 8: LLM provider
-  if (GUARD_LLM_PROVIDER !== "pollinations") {
+  if (GUARD_LLM_PROVIDER !== "groq") {
     violations.push({
       ok: false,
       guard: "GUARD_LLM_PROVIDER",
