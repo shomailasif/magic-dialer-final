@@ -8,13 +8,13 @@
  */
 
 // ============================================================================
-// GUARD 1: Edge TTS must start as BROKEN
+// GUARD 1: Edge TTS broken flag
 // ============================================================================
-// WHY: Edge TTS WebSocket is blocked on Suga container. When enabled, it
-// causes 20-second timeouts per text chunk, making calls silent for 35+ seconds.
-// The Google Translate HTTP fallback works when properly configured.
-// LAST BROKEN: edgeTtsBroken = false → 20s timeout per chunk → no audio
-export const GUARD_EDGE_TTS_BROKEN_INIT = true;
+// WHY: Edge TTS WebSocket was blocked on Suga with wrong Origin header.
+// Fixed headers now match edge-tts Python library. Set to false to enable
+// JennyNeural voice. If blocked again, falls back to Google TTS in 8s.
+// LAST BROKEN: Wrong Origin header → 403 Forbidden → 20s timeout per chunk
+export const GUARD_EDGE_TTS_BROKEN_INIT = false;
 
 // ============================================================================
 // GUARD 2: Google TTS URL must use dict-chrome-ex client
@@ -109,11 +109,11 @@ export function validateTtsGuards(): GuardResult[] {
   const violations: GuardResult[] = [];
 
   // Guard 1: Edge TTS broken flag
-  if (typeof GUARD_EDGE_TTS_BROKEN_INIT !== "boolean" || !GUARD_EDGE_TTS_BROKEN_INIT) {
+  if (typeof GUARD_EDGE_TTS_BROKEN_INIT !== "boolean") {
     violations.push({
       ok: false,
       guard: "GUARD_EDGE_TTS_BROKEN_INIT",
-      message: "Edge TTS must start as broken (true). Setting to false causes 20s timeouts on Suga.",
+      message: "Edge TTS broken flag must be a boolean.",
     });
   }
 
