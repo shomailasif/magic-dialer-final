@@ -1,0 +1,45 @@
+name: Regress repaired real call core
+on:
+  push:
+    branches: [research/exact-ringcentral-streamer-139]
+    paths: ['.github/workflows/regress-real-no-overlap.yml']
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Verify repaired real-source lifecycle
+        shell: python
+        run: |
+          from pathlib import Path
+          s=Path('src/lib/sip-conversation.ts').read_text()
+          assert "settle('watchdog')" not in s
+          assert "clearTimeout(watchdog)" not in s
+          assert "const watchdog = setTimeout" not in s
+          assert "streamer.once('finished', () => settle('finished'));" in s
+          assert "streamer.once('error', (e: any) =>" in s
+          assert "media.streamActive = false;" in s
+          assert "drainAudioQueue(media);" in s
+          print('PASS: real source advances queue only from streamer lifecycle settlement')
+      - name: Verify prior call-core protections survived
+        shell: python
+        run: |
+          from pathlib import Path
+          s=Path('src/lib/sip-conversation.ts').read_text()
+          required=[
+            'Buffer.alloc(FRAME, 0xff)',
+            'const media = createMediaState(cs);',
+            'function drainAudioQueue(media: MediaState)',
+            'const greetingFrames = await textToFramesLocal(greeting);',
+            'listenForSpeech(cs, start, heardRef, 15000)'
+          ]
+          for x in required: assert x in s, x
+          print('PASS: prior validated protections preserved')
+      - run: npm run build
