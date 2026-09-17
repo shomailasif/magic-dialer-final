@@ -1,0 +1,57 @@
+name: Apply validated audio latency repair
+on:
+  push:
+    branches: [repair/audio-latency-live-failure]
+    paths: ['.github/workflows/apply-audio-latency-repair.yml']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: repair/audio-latency-live-failure
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Apply exact validated source transformation
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          f=Path('src/lib/sip-conversation.ts')
+          p=f.read_text()
+          old='''  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }\n  const combined = Buffer.concat(allParts);\n  console.log("[sip-conv] TTS combined:", combined.length, "bytes");\n  const frames = await legacyToFramesFromAudio(combined);\n  console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");\n  return frames;'''
+          new='''  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }\n  const frames: Buffer[] = [];\n  for (const part of allParts) {\n    const partFrames = await legacyToFramesFromAudio(part);\n    frames.push(...partFrames);\n  }\n  console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");\n  return frames;'''
+          assert old in p, 'audio source block drifted'
+          p=p.replace(old,new)
+          assert 'listenForSpeech(cs, start, heardRef, 3000)' in p, 'turn timer source drifted'
+          p=p.replace('listenForSpeech(cs, start, heardRef, 3000)', 'listenForSpeech(cs, start, heardRef, 15000)')
+          assert 'now-lastVoice>=350' in p, 'speech-end source drifted'
+          p=p.replace('now-lastVoice>=350', 'now-lastVoice>=500')
+          f.write_text(p)
+          PY
+      - name: Verify repaired source invariants
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/lib/sip-conversation.ts').read_text()
+          assert 'const combined = Buffer.concat(allParts)' not in p
+          assert 'const partFrames = await legacyToFramesFromAudio(part);' in p
+          assert 'listenForSpeech(cs, start, heardRef, 3000)' not in p
+          assert 'listenForSpeech(cs, start, heardRef, 15000)' in p
+          assert 'now-lastVoice>=500' in p
+          assert 'Buffer.alloc(FRAME, 0xff)' in p
+          assert 'const media = createMediaState(cs)' in p
+          PY
+      - run: npm ci
+      - run: npm run build
+      - name: Commit repaired source only after green build
+        run: |
+          git config user.name wodozone-repair
+          git config user.email actions@users.noreply.github.com
+          git add src/lib/sip-conversation.ts
+          git diff --cached --quiet && exit 0
+          git commit -m "Repair TTS chunk playback and turn latency"
+          git push origin HEAD:repair/audio-latency-live-failure
