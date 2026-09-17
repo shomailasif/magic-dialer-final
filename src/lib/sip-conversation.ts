@@ -394,10 +394,6 @@ async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
         const ratio = Math.round(rate / RATE);
         if (ratio > 1) {
           pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;
-          const outLen = Math.ceil(pcm.length / ratio);
-          const out = new Int16Array(outLen);
-          for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
-          pcm = out;
         }
       }
       console.log("[sip-conv] TTS final pcm:", pcm.length, "samples");
