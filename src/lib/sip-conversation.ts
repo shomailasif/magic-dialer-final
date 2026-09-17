@@ -448,7 +448,7 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
   for (const chunk of chunks) {
     let mp3: Buffer | null = null;
 
-    // 1) Try Edge TTS (JennyNeural voice - human-sounding, 8kHz native)
+    // 1) Try Edge TTS (JennyNeural voice; returned MP3 is decoded/resampled to 8 kHz PCMU below)
     if (!skipEdge) {
       try {
         mp3 = await edgeTts(chunk, EDGE_VOICE);
@@ -598,6 +598,10 @@ export async function runConversation(
   cs.on("busy", () => console.log("[sip-conv] *** CALL BUSY ***"));
 
   // Greeting audio was prepared while the call connected.
+  // Give the remote RTP path a brief settle window after answer before sending
+  // the first packet; this protects the beginning of the greeting from being
+  // transmitted before the far end is actually rendering media.
+  await new Promise(r => setTimeout(r, 300));
   lines.push(`Agent: ${greeting}`);
   if (greetingFrames && greetingFrames.length && !cs.disposed) {
     enqueueAudio(media, Buffer.concat(greetingFrames));
