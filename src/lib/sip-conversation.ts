@@ -627,9 +627,10 @@ export async function runConversation(
 
     let txt = r.transcript;
     if (!txt || txt.trim().length === 0) {
-      console.log("[sip-conv] Whisper empty but prospect spoke, using smart fallback");
-      const fallbackResp = await processProspectInput(state, "");
-      let fallbackText = fallbackResp.text || "Sorry, could you repeat that?";
+      // Speech was detected but STT produced no usable words. Do not mutate
+      // conversation state or let the scripted fallback advance to a new topic.
+      console.log("[sip-conv] Whisper empty after detected speech; requesting exact retry without advancing state");
+      const fallbackText = "Sorry, I didn't catch that. Could you say that again?";
       lines.push(`Agent: ${fallbackText}`);
       await speak(cs, media, fallbackText, heardRef);
       continue;
