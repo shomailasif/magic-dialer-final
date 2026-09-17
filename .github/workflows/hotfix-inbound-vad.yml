@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch stuck stream completion
+      - name: Patch playback freeze and turn latency
         shell: python
         run: |
           from pathlib import Path
@@ -25,10 +25,8 @@ jobs:
   const next = pendingAudio.shift()!;
   const streamer = csRef.streamAudio(next);
   let settled = false;
-  // PCMU/8000 is 8000 bytes/sec. Some SDK streams never emit `finished`;
-  // without this guard waitForQueue() hangs and the AI never listens again.
   const expectedMs = Math.ceil((next.length / RATE) * 1000);
-  const watchdog = setTimeout(() => settle("watchdog"), Math.max(1500, expectedMs + 1500));
+  const watchdog = setTimeout(() => settle("watchdog"), Math.max(1200, expectedMs + 750));
   function settle(reason: string) {
     if (settled) return;
     settled = true;
@@ -41,14 +39,16 @@ jobs:
   streamer.once("error", (e: any) => { console.error("[sip-conv] audio stream error:", e?.message || e); settle("error"); });
 }
 '''
-          p.write_text(s[:a]+n+s[b:])
+          s=s[:a]+n+s[b:]
+          s=s.replace("now-lastVoice>=650", "now-lastVoice>=350")
+          p.write_text(s)
       - name: Verify and commit
         run: |
-          grep -q 'expectedMs = Math.ceil((next.length / RATE) \* 1000)' src/lib/sip-conversation.ts
           grep -q 'settle("watchdog")' src/lib/sip-conversation.ts
           grep -q 'streamer.once("error"' src/lib/sip-conversation.ts
+          grep -q 'now-lastVoice>=350' src/lib/sip-conversation.ts
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
-          git commit -m "Prevent AI response playback queue from hanging"
+          git commit -m "Fix conversation silence and reduce turn gap to 350ms"
           git push origin HEAD:main
