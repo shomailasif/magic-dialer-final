@@ -462,9 +462,11 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
   }
 
   if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
-  const combined = Buffer.concat(allParts);
-  console.log("[sip-conv] TTS combined:", combined.length, "bytes");
-  const frames = await legacyToFramesFromAudio(combined);
+  const frames: Buffer[] = [];
+  for (const part of allParts) {
+    const partFrames = await legacyToFramesFromAudio(part);
+    frames.push(...partFrames);
+  }
   console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");
   return frames;
 }
@@ -506,7 +508,7 @@ function listenForSpeech(
     const iv=setInterval(() => {
       const now=Date.now();
       if (cs.disposed || now-callStart>MAX_CALL_MS) { void finish(); return; }
-      if (got && lastVoice && now-lastVoice>=350) { void finish(); return; }
+      if (got && lastVoice && now-lastVoice>=500) { void finish(); return; }
       if (got && first && now-first>=6000) { void finish(); return; }
       if (!got && now-start>=maxMs) { void finish(); return; }
     },50);
@@ -603,7 +605,7 @@ export async function runConversation(
     console.log("[sip-conv] turn", turn, "elapsed", Math.round((Date.now() - start) / 1000), "s");
 
     // Listen for speech — 1s silence = done speaking
-    let r = await listenForSpeech(cs, start, heardRef, 3000);
+    let r = await listenForSpeech(cs, start, heardRef, 15000);
     console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });
     if (cs.disposed) { console.log("[sip-conv] call disposed during listen, ending"); break; }
     if (!r.spoke) {
