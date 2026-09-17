@@ -12,20 +12,61 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Remove actual remaining double resample
+      - name: Use native PCMU TTS and SDK decoded inbound audio
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p=Path('src/lib/sip-conversation.ts')
           s=p.read_text()
-          old='''          pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;\n          const outLen = Math.ceil(pcm.length / ratio);\n          const out = new Int16Array(outLen);\n          for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;\n          pcm = out;'''
-          if s.count(old) != 1:
-              raise SystemExit(f'Expected exact remaining decoder block once, found {s.count(old)}')
-          s=s.replace(old, '          pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;', 1)
+
+          # Edge Speech can emit exactly the codec RingCentral streamAudio expects.
+          old='"outputFormat":"audio-24khz-48kbitrate-mono-mp3"'
+          new='"outputFormat":"raw-8khz-8bit-mono-mulaw"'
+          if s.count(old) != 1: raise SystemExit(f'Edge format match count {s.count(old)}')
+          s=s.replace(old,new,1)
+
+          # Never decode/resample/re-encode Edge audio. It is already native PCMU/8000.
+          marker='''async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {\n'''
+          inject='''async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {\n  // Edge TTS is requested as raw PCMU/8000: exactly what RingCentral expects.\n  // Bypass MP3 decode, resampling and custom mu-law encoding entirely.\n  const native: Buffer[] = [];\n  for (let off = 0; off < mp3.length; off += FRAME) {\n    const part = mp3.subarray(off, Math.min(off + FRAME, mp3.length));\n    if (part.length === FRAME) native.push(Buffer.from(part));\n    else if (part.length) native.push(Buffer.concat([part, Buffer.alloc(FRAME - part.length, 0xff)]));\n  }\n  return native;\n}\n\nasync function legacyToFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {\n'''
+          if s.count(marker) != 1: raise SystemExit('toFrames marker not unique')
+          s=s.replace(marker,inject,1)
+
+          # Official RingCentral SDK exposes received media on `audio` as codec-matching Buffer.
+          old='''    cs.on("audioPacket", on);'''
+          new='''    cs.on("audio", on);'''
+          if s.count(old) != 1: raise SystemExit(f'audio listener match count {s.count(old)}')
+          s=s.replace(old,new,1)
+          old='''      cs.removeListener("audioPacket", on);'''
+          new='''      cs.removeListener("audio", on);'''
+          if s.count(old) != 1: raise SystemExit(f'audio remove match count {s.count(old)}')
+          s=s.replace(old,new,1)
+
+          # The SDK `audio` event is already the selected PCMU codec Buffer, not an RTP packet object.
+          old='''      // audioPacket event passes an rtpPacket object; audio data is in .payload\n      const payload = d?.payload || d;\n      if (Buffer.isBuffer(payload)) audioChunks.push(payload);\n      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));'''
+          new='''      const payload = d;\n      if (Buffer.isBuffer(payload)) audioChunks.push(payload);\n      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));'''
+          if s.count(old) != 1: raise SystemExit('inbound payload block not found')
+          s=s.replace(old,new,1)
+
+          # No robotic alternate TTS. If Edge is unavailable, fail the utterance rather than changing voice.
+          start=s.index('''    // 2) Fallback: Google Translate TTS (plain HTTP)''')
+          end=s.index('''    // 3) Fallback: pre-recorded tone''', start)
+          s=s[:start]+'''    // Edge is the only production voice. Do not substitute a robotic fallback.\n    console.error("[sip-conv] Edge voice unavailable; refusing alternate voice");\n\n'''+s[end:]
+          start=s.index('''    // 3) Fallback: pre-recorded tone''')
+          end=s.index('''  }\n\n  if (!allParts.length)''', start)
+          s=s[:start]+'''    // No tone/robot fallback in customer calls.\n'''+s[end:]
+
           p.write_text(s)
+
+          # Replace the canned greeting with a short natural opener using customer configuration.
+          q=Path('src/lib/free-ai.ts')
+          t=q.read_text()
+          old='''  const greeting = "Hello! Thank you for taking my call. How are you doing today?";'''
+          new='''  const who = state.productName?.trim();\n  const greeting = who ? `Hi, this is Sarah calling about ${who}. Did I catch you at an okay time?` : "Hi, this is Sarah. Did I catch you at an okay time?";'''
+          if t.count(old) != 1: raise SystemExit('greeting match not unique')
+          q.write_text(t.replace(old,new,1))
           PY
           git config user.name "shomailasif"
           git config user.email "shomailasif@gmail.com"
-          git add src/lib/sip-conversation.ts
-          git commit -m "Fix actual Edge TTS double resampling"
+          git add src/lib/sip-conversation.ts src/lib/free-ai.ts
+          git commit -m "Use native PCMU voice and RingCentral inbound audio API"
           git push
