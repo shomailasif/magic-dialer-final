@@ -10,32 +10,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Fix RTP silence being treated as speech
+      - name: Patch active listener safely
         shell: python
         run: |
           from pathlib import Path
           p=Path('src/lib/sip-conversation.ts')
           s=p.read_text()
-          old='''    const on = (d: any) => {
-      heardRef.current = true;
-      if (!got) first = Date.now();
-      got = true;
-      last = Date.now();
-      // RingCentral audioPacket is an RTP object; Whisper needs only its PCMU payload.
-      const payload = d?.payload || d;
-      if (Buffer.isBuffer(payload)) audioChunks.push(payload);
-      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));
-    };'''
+          start=s.index('    const on = (d: any) => {', s.index('function listenForSpeech'))
+          end=s.index('    };', start)+6
           new='''    const on = (d: any) => {
-      // audioPacket arrives continuously, including carrier silence.  Only real
-      // voice energy may start/extend an utterance; otherwise the old code
-      // waited forever because every silent RTP packet reset `last`.
       const rawPayload = d?.payload || d;
       const payload = Buffer.isBuffer(rawPayload)
         ? rawPayload
         : (rawPayload && typeof rawPayload.length === "number" ? Buffer.from(rawPayload) : null);
       if (!payload || !payload.length) return;
-
       let sum = 0;
       let peak = 0;
       for (let i = 0; i < payload.length; i++) {
@@ -46,35 +34,28 @@ jobs:
       const avg = sum / payload.length;
       const voice = peak >= 1200 && avg >= 180;
       const now = Date.now();
-
       if (voice) {
         heardRef.current = true;
         if (!got) first = now;
         got = true;
         last = now;
       }
-      // Keep media only after speech begins, including trailing silence needed
-      // by Whisper.  Hard cap prevents line noise from stalling a turn.
       if (got) audioChunks.push(payload);
     };'''
-          if s.count(old) != 1:
-              raise SystemExit(f'Expected listener block exactly once, found {s.count(old)}')
-          s=s.replace(old,new,1)
-          old2='''      if (got && Date.now() - last > 1000) { finish(); return; }
+          s=s[:start]+new+s[end:]
+          old='''      if (got && Date.now() - last > 1000) { finish(); return; }
       if (!got && Date.now() - start > maxMs) { finish(); return; }'''
           new2='''      if (got && Date.now() - last > 700) { finish(); return; }
       if (got && first && Date.now() - first > 8000) { finish(); return; }
       if (!got && Date.now() - start > maxMs) { finish(); return; }'''
-          if s.count(old2) != 1:
-              raise SystemExit(f'Expected listen timer block exactly once, found {s.count(old2)}')
-          s=s.replace(old2,new2,1)
+          if old not in s: raise SystemExit('listen timer block not found')
+          s=s.replace(old,new2,1)
           p.write_text(s)
           PY
-      - name: Commit source fix and remove temporary workflow
+      - name: Commit fix
         run: |
           git config user.name "wodozone-hotfix"
           git config user.email "actions@users.noreply.github.com"
-          git rm .github/workflows/hotfix-inbound-vad.yml
           git add src/lib/sip-conversation.ts
-          git commit -m "Fix inbound VAD so caller speech reaches AI"
+          git commit -m "Fix inbound speech detection and response handoff"
           git push origin HEAD:main
