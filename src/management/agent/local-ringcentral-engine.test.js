@@ -36,6 +36,8 @@ assert(engine.includes("Buffer.alloc(FRAME_BYTES - rem, SILENCE)"), "partial PCM
 assert(controller.includes("await engine.connect()"), "local fallback call must connect/answer before conversation starts");
 assert(controller.includes("await engine.sendAudio"), "complete TTS utterance must be awaited before listening");
 assert(controller.includes("createVad"), "inbound speech must pass through VAD");
+assert(controller.includes("state.playing && event.speaking") && controller.includes("engine.interrupt()"), "controller must listen while outbound speech is playing and interrupt on barge-in");
+assert(controller.includes("state && state.ended"), "listen phase must reuse speech captured during playback");
 assert(controller.includes("transcribeAuto"), "captured telephone audio must reach multilingual transcription");
 assert(!controller.includes("mediaConnect("), "local fallback must not route live audio through Suga WSS");
 
