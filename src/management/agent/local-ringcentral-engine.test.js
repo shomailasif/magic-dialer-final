@@ -29,7 +29,7 @@ assert(engine.includes('typeof streamer.stop === "function"') && engine.includes
 assert(engine.includes("generation++") && engine.includes("mine === generation"), "interruption must invalidate queued speech");
 assert(engine.includes("sendChain = Promise.resolve()"), "interruption must reset outbound queue");
 assert(engine.includes("let sendChain = Promise.resolve()"), "outbound utterances must be serialized");
-assert(engine.includes("sendChain = sendChain.then(() => play(audio))"), "outbound audio must not overlap");
+assert(engine.includes("sendChain = sendChain.catch(() => 0).then(() => mine === generation ? play(audio) : 0)"), "outbound audio must not overlap and interrupted queued speech must be discarded");
 assert(engine.includes("const rem = b.length % FRAME_BYTES"), "PCMU must be normalized to 20ms frame boundaries");
 assert(engine.includes("Buffer.alloc(FRAME_BYTES - rem, SILENCE)"), "partial PCMU frame must be padded with mu-law silence");
 
