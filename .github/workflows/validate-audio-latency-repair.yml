@@ -1,0 +1,29 @@
+name: Validate audio latency repair
+on:
+  push:
+    branches: [repair/audio-latency-live-failure]
+    paths: ['.github/workflows/validate-audio-latency-repair.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Verify current production assumptions
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/lib/sip-conversation.ts').read_text()
+          assert 'outputFormat":"audio-24khz-48kbitrate-mono-mp3"' in p
+          assert 'const frames = await legacyToFramesFromAudio(combined);' in p
+          assert 'now-lastVoice>=350' in p
+          assert 'listenForSpeech(cs, start, heardRef, 3000)' in p
+          print('production defect assumptions confirmed')
+          PY
+      - run: npm ci
+      - run: npm run build
