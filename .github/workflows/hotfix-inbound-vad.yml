@@ -10,42 +10,108 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Restore proven RingCentral audioPacket path and keep VAD
+      - name: Install robust inbound turn detector
         shell: python
         run: |
           from pathlib import Path
           p = Path('src/lib/sip-conversation.ts')
           s = p.read_text()
-          start = s.index('    const on = (audio: any) => {', s.index('function listenForSpeech'))
-          end = s.index('  };', start) + 4
-          new = '''    const on = (d: any) => {
-              const rawPayload = d?.payload || d;
-              const payload = Buffer.isBuffer(rawPayload) ? rawPayload : (rawPayload && typeof rawPayload.length === "number" ? Buffer.from(rawPayload) : null);
-              if (!payload || !payload.length) return;
-              let sum = 0, peak = 0;
-              for (let i = 0; i < payload.length; i++) {
-                const amp = Math.abs(ulawDecode(payload[i]));
-                sum += amp;
-                if (amp > peak) peak = amp;
-              }
-              const now = Date.now();
-              const voice = peak >= 900 && (sum / payload.length) >= 120;
-              if (voice) {
-                heardRef.current = true;
-                if (!got) first = now;
-                got = true;
-                last = now;
-              }
-              if (got) audioChunks.push(payload);
-            };'''
-          s = s[:start] + new + s[end:]
-          s = s.replace('cs.on("audio", on);', 'cs.on("audioPacket", on);', 1)
-          s = s.replace('cs.removeListener("audio", on);', 'cs.removeListener("audioPacket", on);', 1)
+          a = s.index('function listenForSpeech(')
+          b = s.index('\nasync function speak(', a)
+          new = r'''function listenForSpeech(
+  cs: any,
+  callStart: number,
+  heardRef: { current: boolean },
+  maxMs: number,
+): Promise<{ spoke: boolean; durationMs: number; transcript: string }> {
+  return new Promise((resolve) => {
+    let got = false;
+    let first = 0;
+    let lastVoice = 0;
+    let finished = false;
+    let baseline = 0;
+    let baselineN = 0;
+    const start = Date.now();
+    const audioChunks: Buffer[] = [];
+    const preRoll: Buffer[] = [];
+
+    const on = (d: any) => {
+      const raw = d?.payload || d;
+      const payload = Buffer.isBuffer(raw) ? raw : (raw && typeof raw.length === "number" ? Buffer.from(raw) : null);
+      if (!payload || !payload.length) return;
+
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < payload.length; i++) {
+        const amp = Math.abs(ulawDecode(payload[i]));
+        sum += amp;
+        if (amp > peak) peak = amp;
+      }
+      const avg = sum / payload.length;
+      const now = Date.now();
+
+      // Learn the line's own comfort-noise floor before deciding that speech began.
+      if (!got && baselineN < 25) {
+        baseline = ((baseline * baselineN) + avg) / (baselineN + 1);
+        baselineN++;
+      }
+      const threshold = Math.max(260, baseline * 3.2);
+      const voice = avg >= threshold && peak >= Math.max(1400, threshold * 3);
+
+      preRoll.push(payload);
+      if (preRoll.length > 15) preRoll.shift();
+
+      if (voice) {
+        heardRef.current = true;
+        if (!got) {
+          got = true;
+          first = now;
+          audioChunks.push(...preRoll);
+        }
+        lastVoice = now;
+      }
+      if (got) audioChunks.push(payload);
+    };
+    cs.on("audioPacket", on);
+
+    const finish = async () => {
+      if (finished) return;
+      finished = true;
+      clearInterval(iv);
+      cs.removeListener("audioPacket", on);
+      if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
+      const dur = Date.now() - first;
+      const transcript = await transcribeWithWhisper(audioChunks);
+      resolve({ spoke: true, durationMs: dur, transcript });
+    };
+
+    const iv = setInterval(() => {
+      const now = Date.now();
+      if (cs.disposed || now - callStart > MAX_CALL_MS) { void finish(); return; }
+      // End naturally after 650 ms of real post-speech silence.
+      if (got && lastVoice && now - lastVoice >= 650) { void finish(); return; }
+      // Safety cap prevents carrier noise from ever hanging a turn indefinitely.
+      if (got && first && now - first >= 6000) { void finish(); return; }
+      if (!got && now - start >= maxMs) { void finish(); return; }
+    }, 50);
+  });
+}
+'''
+          s = s[:a] + new + s[b:]
           p.write_text(s)
+      - name: Verify repair shape
+        shell: python
+        run: |
+          from pathlib import Path
+          s=Path('src/lib/sip-conversation.ts').read_text()
+          assert 'cs.on("audioPacket", on)' in s
+          assert 'baseline * 3.2' in s
+          assert 'now - lastVoice >= 650' in s
+          assert 'now - first >= 6000' in s
       - name: Commit source repair
         run: |
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
-          git commit -m "Restore proven inbound audioPacket path with VAD"
+          git commit -m "Fix inbound turns with adaptive noise-floor VAD"
           git push origin HEAD:main
