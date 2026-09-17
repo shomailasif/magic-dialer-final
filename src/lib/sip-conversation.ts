@@ -63,16 +63,13 @@ function drainAudioQueue(media: MediaState) {
   const next = media.pendingAudio.shift()!;
   let settled = false;
   let streamer: any;
-  const expectedMs = Math.ceil((next.length / RATE) * 1000);
   const settle = (reason: string) => {
     if (settled) return;
     settled = true;
-    clearTimeout(watchdog);
     media.streamActive = false;
     console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes');
     drainAudioQueue(media);
   };
-  const watchdog = setTimeout(() => settle('watchdog'), Math.max(1200, expectedMs + 750));
   try {
     streamer = media.csRef.streamAudio(next);
     streamer.once('finished', () => settle('finished'));
