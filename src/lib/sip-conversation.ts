@@ -327,7 +327,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
         const hl = buf.readUInt16BE(0);
         const head = buf.toString("ascii", 2, 2 + hl);
         if (!head.includes("Path:audio")) return;
-        chunks.push(buf.subarray(2 + hl + 2));
+        chunks.push(buf.subarray(2 + hl));
       } catch { finish(null); }
     });
     ws.on("error", (e: any) => { console.error("[sip-conv] TTS WS error:", e?.code, e?.message); finish(null); });
