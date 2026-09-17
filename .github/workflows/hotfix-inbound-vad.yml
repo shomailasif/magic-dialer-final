@@ -20,30 +20,30 @@ jobs:
           p=Path('src/lib/sip-conversation.ts')
           s=p.read_text()
           old='''  const call = await sipCallBridge(sipConfig);
-          if (!call.ok) {'''
-          new='''  // Start dialing and TTS at the same time. The greeting is ready when the prospect answers.
-          const greeting = getInitialGreeting(state);
-          const greetingFramesPromise = textToFramesLocal(greeting);
-          const callPromise = sipCallBridge(sipConfig);
-          const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);
-          if (!call.ok) {'''
+  if (!call.ok) {'''
+          new='''  // Start dialing and greeting TTS together so answered calls do not wait on synthesis.
+  const greeting = getInitialGreeting(state);
+  const greetingFramesPromise = textToFramesLocal(greeting);
+  const callPromise = sipCallBridge(sipConfig);
+  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);
+  if (!call.ok) {'''
           if old not in s: raise SystemExit('call anchor missing')
           s=s.replace(old,new,1)
           old2='''  // Speak greeting immediately
-          const greeting = getInitialGreeting(state);
-          lines.push(`Agent: ${greeting}`);
-          await speak(cs, greeting, heardRef);'''
-          new2='''  // Greeting TTS was generated during ringing; start playback immediately on answer.
-          lines.push(`Agent: ${greeting}`);
-          if (greetingFrames && greetingFrames.length && !cs.disposed) {
-            const greetingAudio = Buffer.concat(greetingFrames);
-            console.log("[sip-conv] pre-generated greeting ready:", greetingAudio.length, "bytes");
-            enqueueAudio(greetingAudio);
-            await waitForQueue();
-          } else {
-            console.error("[sip-conv] pre-generated greeting unavailable; using normal TTS path");
-            await speak(cs, greeting, heardRef);
-          }'''
+  const greeting = getInitialGreeting(state);
+  lines.push(`Agent: ${greeting}`);
+  await speak(cs, greeting, heardRef);'''
+          new2='''  // Greeting TTS was generated during ringing; play it immediately after media connects.
+  lines.push(`Agent: ${greeting}`);
+  if (greetingFrames && greetingFrames.length && !cs.disposed) {
+    const greetingAudio = Buffer.concat(greetingFrames);
+    console.log("[sip-conv] pre-generated greeting ready:", greetingAudio.length, "bytes");
+    enqueueAudio(greetingAudio);
+    await waitForQueue();
+  } else {
+    console.error("[sip-conv] pre-generated greeting unavailable; using normal TTS path");
+    await speak(cs, greeting, heardRef);
+  }'''
           if old2 not in s: raise SystemExit('greeting anchor missing')
           s=s.replace(old2,new2,1)
           p.write_text(s)
