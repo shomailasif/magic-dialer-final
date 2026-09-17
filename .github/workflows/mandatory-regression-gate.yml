@@ -1,0 +1,28 @@
+name: Mandatory Regression Gate
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/management/**"
+      - ".github/workflows/mandatory-regression-gate.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/management/**"
+      - ".github/workflows/mandatory-regression-gate.yml"
+  workflow_dispatch:
+
+jobs:
+  regression:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install management dependencies
+        working-directory: src/management
+        run: npm install
+      - name: Run complete regression suite
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File src/management/build/run-all-tests.ps1
