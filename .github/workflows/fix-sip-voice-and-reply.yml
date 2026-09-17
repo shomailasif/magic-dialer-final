@@ -12,29 +12,20 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Fix remaining audio resampling and retry transcript handling
+      - name: Remove actual remaining double resample
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p=Path('src/lib/sip-conversation.ts')
           s=p.read_text()
-          old='''      pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;\n      const outLen = Math.ceil(pcm.length / ratio);\n      const out = new Int16Array(outLen);\n      for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;\n      pcm = out;'''
-          n=s.count(old)
-          if n != 1:
-              raise SystemExit(f'Expected 1 remaining double-downsample block, found {n}')
-          s=s.replace(old, '      pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;', 1)
-          old2='''    const r = await listenForSpeech(cs, start, heardRef, 3000);\n    console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });'''
-          new2='''    let r = await listenForSpeech(cs, start, heardRef, 3000);\n    console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });'''
-          if old2 not in s: raise SystemExit('listen declaration not found')
-          s=s.replace(old2,new2,1)
-          old3='''      const retry = await listenForSpeech(cs, start, heardRef, 2000);\n      if (!retry.spoke) break;'''
-          new3='''      const retry = await listenForSpeech(cs, start, heardRef, 4000);\n      if (!retry.spoke) break;\n      r = retry;'''
-          if old3 not in s: raise SystemExit('retry block not found')
-          s=s.replace(old3,new3,1)
+          old='''          pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;\n          const outLen = Math.ceil(pcm.length / ratio);\n          const out = new Int16Array(outLen);\n          for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;\n          pcm = out;'''
+          if s.count(old) != 1:
+              raise SystemExit(f'Expected exact remaining decoder block once, found {s.count(old)}')
+          s=s.replace(old, '          pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;', 1)
           p.write_text(s)
           PY
           git config user.name "shomailasif"
           git config user.email "shomailasif@gmail.com"
           git add src/lib/sip-conversation.ts
-          git commit -m "Fix SIP voice pitch and reply handling"
+          git commit -m "Fix actual Edge TTS double resampling"
           git push
