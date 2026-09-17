@@ -12,6 +12,7 @@ function normalizePcmu(input) {
 function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {} }) {
   let bridge, session, streamer, closed = false, bytesIn = 0, bytesOut = 0;
   let sendChain = Promise.resolve();
+  let generation = 0;
   async function connect() {
     bridge = await sipCallBridge({ ...sip, number });
     if (!bridge || !bridge.ok || !bridge.callSession) throw new Error((bridge && bridge.last) || "RingCentral call bridge failed");
@@ -44,12 +45,15 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   function sendAudio(input) {
     const audio = normalizePcmu(input);
     if (!audio.length) return Promise.resolve(0);
-    sendChain = sendChain.then(() => play(audio));
+    const mine = generation;
+    sendChain = sendChain.catch(() => 0).then(() => mine === generation ? play(audio) : 0);
     return sendChain;
   }
   function interrupt() {
+    generation++;
     try { if (streamer && typeof streamer.stop === "function") streamer.stop(); } catch {}
     streamer = null;
+    sendChain = Promise.resolve();
     onLog("[local-media-v2] outbound playback interrupted");
   }
   function status() { return { connected: !!session && !closed, bytesIn, bytesOut, frameBytes: FRAME_BYTES, codec: "PCMU/8000" }; }
