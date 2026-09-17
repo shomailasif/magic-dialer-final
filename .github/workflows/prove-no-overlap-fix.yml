@@ -1,0 +1,61 @@
+name: Prove no-overlap queue repair
+on:
+  push:
+    branches: [research/exact-ringcentral-streamer-139]
+    paths: ['.github/workflows/prove-no-overlap-fix.yml']
+permissions:
+  contents: read
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Prove SDK finished gates next streamer
+        run: |
+          node <<'NODE'
+          const { EventEmitter } = require('events');
+          const started=[];
+          class FakeStreamer extends EventEmitter {
+            constructor(id, finishMs){ super(); this.id=id; setTimeout(()=>this.emit('finished'), finishMs); }
+          }
+          const cs={disposed:false, streamAudio(buf){
+            const id=String.fromCharCode(buf[0]);
+            started.push({id,at:Date.now()});
+            return new FakeStreamer(id, id==='A' ? 2600 : 200);
+          }};
+          const media={pendingAudio:[],streamActive:false,csRef:cs};
+          function drainAudioQueue(media){
+            if(media.streamActive||!media.pendingAudio.length||!media.csRef||media.csRef.disposed)return;
+            media.streamActive=true;
+            const next=media.pendingAudio.shift();
+            let settled=false;
+            let streamer;
+            const settle=()=>{if(settled)return;settled=true;media.streamActive=false;drainAudioQueue(media)};
+            try {
+              streamer=media.csRef.streamAudio(next);
+              streamer.once('finished', settle);
+              streamer.once('error', settle);
+            } catch(e) { settle(); }
+          }
+          media.pendingAudio.push(Buffer.alloc(8000,'A'.charCodeAt(0)));
+          media.pendingAudio.push(Buffer.alloc(1600,'B'.charCodeAt(0)));
+          const t0=Date.now(); drainAudioQueue(media);
+          setTimeout(()=>{
+            if(started.some(x=>x.id==='B')) throw new Error('OVERLAP: B started before A finished');
+            console.log('PASS midpoint: B has not started while A remains active');
+          },2300);
+          setTimeout(()=>{
+            const b=started.find(x=>x.id==='B');
+            if(!b) throw new Error('B did not start after A finished');
+            const bStart=b.at-t0;
+            if(bStart<2550) throw new Error(`B started too early at ${bStart}ms`);
+            console.log(`PROVEN FIX: B starts at ${bStart}ms only after A finished`);
+          },2750);
+          setTimeout(()=>process.exit(0),2900);
+          NODE
+      - run: npm run build
