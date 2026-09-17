@@ -257,6 +257,35 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       return send(200, { ok: true, sessionId: active ? active.id : null, status: active ? active.status : null });
     }
 
+    // Agent-only outbound dial: the customer PC starts its own cloud phone session.
+    if (url.pathname === "/api/agent/dial" && method === "POST") {
+      const body = await readBody(req);
+      const token = String(body.token || "").trim();
+      const c = token ? await getCustomerByToken(db, token) : null;
+      if (!c) return send(401, { error: "Invalid access token" });
+      try {
+        const s = await trunk.placeCall(dialCtx, { customer: c, destination: body.number });
+        return send(200, { ok: true, id: s.id, status: s.status, provider: s.provider, providerLabel: s.providerLabel, destination: s.destination, mediaPath: s.mediaPath, error: s.error || null });
+      } catch (e) {
+        const code = e.code === "BAD_NUMBER" || e.code === "NO_DIALER" ? 400 : 500;
+        return send(code, { error: e.message });
+      }
+    }
+
+    // Agent-only status: token ownership is checked before exposing session state.
+    if (url.pathname === "/api/agent/dial-status" && method === "POST") {
+      const body = await readBody(req);
+      const token = String(body.token || "").trim();
+      const c = token ? await getCustomerByToken(db, token) : null;
+      if (!c) return send(401, { error: "Invalid access token" });
+      const sessionId = String(body.sessionId || "").trim();
+      if (!sessionId) return send(400, { error: "Missing session id" });
+      const s = trunk.getSessionsFor(gatewayCtx.portalId).find((x) => x && x.id === sessionId);
+      if (!s) return send(404, { error: "Call session not found" });
+      if (s.token !== token) return send(403, { error: "You can only read your own call session" });
+      return send(200, { ok: true, id: s.id, status: s.status, provider: s.provider, providerLabel: s.providerLabel, destination: s.destination, startedAt: s.startedAt, mediaPath: s.mediaPath, mediaActive: !!s.mediaActive, mediaBytesIn: s.mediaBytesIn || 0, mediaBytesOut: s.mediaBytesOut || 0, error: s.error || null });
+    }
+
     // --- Cloud call gateway: dialer control plane ---
     // All outbound calls are placed FROM THE CLOUD over 443 (no customer PC
     // ever needs SIP ports). The customer drops a number on their line.
