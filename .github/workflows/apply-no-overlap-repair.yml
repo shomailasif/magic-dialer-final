@@ -1,0 +1,47 @@
+name: Apply proven no-overlap repair
+on:
+  push:
+    branches: [research/exact-ringcentral-streamer-139]
+    paths: ['.github/workflows/apply-no-overlap-repair.yml']
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: research/exact-ringcentral-streamer-139
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Remove only premature watchdog queue advance
+        shell: python
+        run: |
+          from pathlib import Path
+          p=Path('src/lib/sip-conversation.ts')
+          s=p.read_text()
+          old='''  const expectedMs = Math.ceil((next.length / RATE) * 1000);\n  const settle = (reason: string) => {\n    if (settled) return;\n    settled = true;\n    clearTimeout(watchdog);\n    media.streamActive = false;\n    console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes');\n    drainAudioQueue(media);\n  };\n  const watchdog = setTimeout(() => settle('watchdog'), Math.max(1200, expectedMs + 750));'''
+          new='''  const settle = (reason: string) => {\n    if (settled) return;\n    settled = true;\n    media.streamActive = false;\n    console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes');\n    drainAudioQueue(media);\n  };'''
+          assert old in s, 'validated watchdog anchor missing; refusing mutation'
+          s=s.replace(old,new,1)
+          assert "settle('watchdog')" not in s
+          assert "streamer.once('finished', () => settle('finished'));" in s
+          assert "streamer.once('error', (e: any) =>" in s
+          p.write_text(s)
+      - run: npm ci
+      - run: npm run build
+      - name: Verify exact repair invariants
+        run: |
+          ! grep -F "settle('watchdog')" src/lib/sip-conversation.ts
+          grep -F "streamer.once('finished', () => settle('finished'));" src/lib/sip-conversation.ts
+          grep -F "streamer.once('error', (e: any) =>" src/lib/sip-conversation.ts
+      - name: Commit repaired source after green build
+        run: |
+          git config user.name wodozone-repair
+          git config user.email actions@users.noreply.github.com
+          git add src/lib/sip-conversation.ts
+          git diff --cached --exit-code && exit 0
+          git commit -m 'Prevent overlapping RingCentral audio streamers'
+          git push origin HEAD:research/exact-ringcentral-streamer-139
