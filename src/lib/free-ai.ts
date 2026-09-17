@@ -88,6 +88,20 @@ function randomPick(arr: string[]): string {
 /**
  * Smart pattern-based response when LLM is unavailable
  */
+function normalizeQuestion(text: string): string {
+  const q = String(text || "").match(/[^.!?]*\?/g)?.pop() || "";
+  return q.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function avoidRepeatedQuestion(state: ConversationState, candidate: string): string {
+  const q = normalizeQuestion(candidate);
+  if (!q) return candidate;
+  const previous = state.agentSaidHistory.map(normalizeQuestion).filter(Boolean);
+  if (!previous.includes(q)) return candidate;
+  console.warn("[free-ai] blocked repeated question:", q);
+  return "Thanks, I have that. Tell me what would be most useful for you to know next.";
+}
+
 function smartFallback(state: ConversationState): string {
   const text = state.lastProspectSaid.toLowerCase();
   const turn = state.turnCount;
@@ -294,6 +308,9 @@ export async function processProspectInput(
     console.log("[free-ai] Using smart pattern fallback (LLM unavailable)");
     aiText = smartFallback(state);
   }
+
+  // Never re-ask an identical question already asked earlier in this call.
+  aiText = avoidRepeatedQuestion(state, aiText);
 
   state.conversationHistory.push({ role: "assistant", content: aiText });
   state.agentSaidHistory.push(aiText);
