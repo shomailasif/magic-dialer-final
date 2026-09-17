@@ -1,0 +1,36 @@
+name: Validate call core repair
+
+on:
+  push:
+    branches: [repair-call-core]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Apply researched candidate in runner only
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/lib/sip-conversation.ts')
+          s = p.read_text()
+          old = 'const b = Buffer.alloc(FRAME);'
+          assert old in s, 'mu-law frame allocation anchor missing'
+          s = s.replace(old, 'const b = Buffer.alloc(FRAME, 0xff);', 1)
+          old = '''  const greeting = getInitialGreeting(state);\n  const greetingFramesPromise = textToFramesLocal(greeting);\n  const callPromise = sipCallBridge(sipConfig);\n  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);'''
+          new = '''  const greeting = getInitialGreeting(state);\n  // Opening audio must be ready before dialing so answer never waits on TTS.\n  const greetingFrames = await textToFramesLocal(greeting);\n  const call = await sipCallBridge(sipConfig);'''
+          assert old in s, 'greeting concurrency anchor missing'
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+      - name: Verify candidate invariants
+        run: |
+          grep -F 'Buffer.alloc(FRAME, 0xff)' src/lib/sip-conversation.ts
+          grep -F 'const greetingFrames = await textToFramesLocal(greeting);' src/lib/sip-conversation.ts
+          ! grep -F 'Promise.all([callPromise, greetingFramesPromise])' src/lib/sip-conversation.ts
+      - run: npm ci
+      - run: npm run build
