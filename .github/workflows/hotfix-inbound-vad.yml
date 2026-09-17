@@ -1,54 +1,69 @@
 name: Repair conversation playback
+
 on:
   push:
     paths:
-      - .github/workflows/hotfix-inbound-vad.yml
+      - '.github/workflows/hotfix-inbound-vad.yml'
+
 permissions:
   contents: write
+
 jobs:
   repair:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch playback freeze and turn latency
-        shell: python
+      - name: Apply verified playback and latency repair
         run: |
+          python3 <<'PY'
           from pathlib import Path
-          p=Path("src/lib/sip-conversation.ts")
-          s=p.read_text()
-          a=s.index("function drainAudioQueue()")
-          b=s.index("\nfunction enqueueAudio",a)
-          n='''function drainAudioQueue() {
-  if (streamActive || pendingAudio.length === 0 || !csRef) return;
-  if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }
-  streamActive = true;
-  const next = pendingAudio.shift()!;
-  const streamer = csRef.streamAudio(next);
-  let settled = false;
-  const expectedMs = Math.ceil((next.length / RATE) * 1000);
-  const watchdog = setTimeout(() => settle("watchdog"), Math.max(1200, expectedMs + 750));
-  function settle(reason: string) {
-    if (settled) return;
-    settled = true;
-    clearTimeout(watchdog);
-    streamActive = false;
-    console.log("[sip-conv] audio stream complete:", reason, next.length, "bytes");
-    drainAudioQueue();
-  }
-  streamer.once("finished", () => settle("finished"));
-  streamer.once("error", (e: any) => { console.error("[sip-conv] audio stream error:", e?.message || e); settle("error"); });
-}
-'''
-          s=s[:a]+n+s[b:]
-          s=s.replace("now-lastVoice>=650", "now-lastVoice>=350")
+          p = Path('src/lib/sip-conversation.ts')
+          s = p.read_text()
+          a = s.index('function drainAudioQueue()')
+          b = s.index('\nfunction enqueueAudio', a)
+          replacement = '''function drainAudioQueue() {
+            if (streamActive || pendingAudio.length === 0 || !csRef) return;
+            if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }
+            streamActive = true;
+            const next = pendingAudio.shift()!;
+            let settled = false;
+            let streamer: any;
+            const expectedMs = Math.ceil((next.length / RATE) * 1000);
+            const settle = (reason: string) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(watchdog);
+              streamActive = false;
+              console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes');
+              drainAudioQueue();
+            };
+            const watchdog = setTimeout(() => settle('watchdog'), Math.max(1200, expectedMs + 750));
+            try {
+              streamer = csRef.streamAudio(next);
+              streamer.once('finished', () => settle('finished'));
+              streamer.once('error', (e: any) => {
+                console.error('[sip-conv] audio stream error:', e?.message || e);
+                settle('error');
+              });
+            } catch (e: any) {
+              console.error('[sip-conv] streamAudio threw:', e?.message || e);
+              settle('throw');
+            }
+          }
+          '''
+          s = s[:a] + replacement + s[b:]
+          s = s.replace('now-lastVoice>=650', 'now-lastVoice>=350')
+          s = s.replace('now - lastVoice >= 650', 'now - lastVoice >= 350')
           p.write_text(s)
-      - name: Verify and commit
+          PY
+          grep -q "settle('watchdog')" src/lib/sip-conversation.ts
+          grep -q "streamAudio threw" src/lib/sip-conversation.ts
+          grep -Eq 'lastVoice *>= *350' src/lib/sip-conversation.ts
+      - name: Commit source repair
         run: |
-          grep -q 'settle("watchdog")' src/lib/sip-conversation.ts
-          grep -q 'streamer.once("error"' src/lib/sip-conversation.ts
-          grep -q 'now-lastVoice>=350' src/lib/sip-conversation.ts
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
-          git commit -m "Fix conversation silence and reduce turn gap to 350ms"
+          git diff --cached --quiet && exit 1
+          git commit -m "Fix AI playback freeze and set 350ms turn gap"
           git push origin HEAD:main
