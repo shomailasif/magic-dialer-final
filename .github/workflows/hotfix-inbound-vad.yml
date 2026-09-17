@@ -1,8 +1,8 @@
-name: Inbound listener repair
+name: Repair inbound audio
 on:
   push:
     paths:
-      - .github/workflows/hotfix-inbound-vad.yml
+      - '.github/workflows/hotfix-inbound-vad.yml'
 permissions:
   contents: write
 jobs:
@@ -10,48 +10,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: main
-      - name: Repair listener
+      - name: Patch current RingCentral audio listener
+        shell: python
         run: |
-          node <<'NODE'
-          const fs=require('fs');
-          const p='src/lib/sip-conversation.ts';
-          let s=fs.readFileSync(p,'utf8');
-          const a=s.indexOf('    const on = (d: any) => {',s.indexOf('function listenForSpeech'));
-          const b=s.indexOf('    };',a)+6;
-          if(a<0||b<6) throw new Error('listener not found');
-          const n=`    const on = (d: any) => {
-      const rawPayload = d?.payload || d;
-      const payload = Buffer.isBuffer(rawPayload) ? rawPayload : (rawPayload && typeof rawPayload.length === "number" ? Buffer.from(rawPayload) : null);
-      if (!payload || !payload.length) return;
-      let sum = 0, peak = 0;
-      for (let i = 0; i < payload.length; i++) {
-        const amp = Math.abs(ulawDecode(payload[i]));
-        sum += amp;
-        if (amp > peak) peak = amp;
-      }
-      const voice = peak >= 900 && (sum / payload.length) >= 120;
-      const now = Date.now();
-      if (voice) {
-        heardRef.current = true;
-        if (!got) first = now;
-        got = true;
-        last = now;
-      }
-      if (got) audioChunks.push(payload);
-    };`;
-          s=s.slice(0,a)+n+s.slice(b);
-          const old='      if (got && Date.now() - last > 1000) { finish(); return; }\n      if (!got && Date.now() - start > maxMs) { finish(); return; }';
-          const rep='      if (got && Date.now() - last > 800) { finish(); return; }\n      if (got && first && Date.now() - first > 10000) { finish(); return; }\n      if (!got && Date.now() - start > maxMs) { finish(); return; }';
-          if(!s.includes(old)) throw new Error('timer block not found');
-          s=s.replace(old,rep);
-          fs.writeFileSync(p,s);
-          NODE
-      - name: Commit repair
+          from pathlib import Path
+          p = Path('src/lib/sip-conversation.ts')
+          s = p.read_text()
+          start = s.index('    const on = (d: any) => {', s.index('function listenForSpeech'))
+          end = s.index('    };', start) + 6
+          new = '''    const on = (audio: any) => {
+              const payload = Buffer.isBuffer(audio) ? audio : (audio && typeof audio.length === "number" ? Buffer.from(audio) : null);
+              if (!payload || !payload.length) return;
+              let sum = 0, peak = 0;
+              for (let i = 0; i < payload.length; i++) {
+                const amp = Math.abs(ulawDecode(payload[i]));
+                sum += amp;
+                if (amp > peak) peak = amp;
+              }
+              const now = Date.now();
+              const voice = peak >= 900 && (sum / payload.length) >= 120;
+              if (voice) {
+                heardRef.current = true;
+                if (!got) first = now;
+                got = true;
+                last = now;
+              }
+              if (got) audioChunks.push(payload);
+            };'''
+          s = s[:start] + new + s[end:]
+          s = s.replace('cs.on("audioPacket", on);', 'cs.on("audio", on);', 1)
+          s = s.replace('cs.removeListener("audioPacket", on);', 'cs.removeListener("audio", on);', 1)
+          s = s.replace('if (got && Date.now() - last > 1000) { finish(); return; }', 'if (got && Date.now() - last > 800) { finish(); return; }\n      if (got && first && Date.now() - first > 10000) { finish(); return; }', 1)
+          p.write_text(s)
+      - name: Commit source repair
         run: |
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
-          git commit -m "Fix inbound speech detection and AI response"
+          git commit -m "Fix inbound audio using current RingCentral SDK event"
           git push origin HEAD:main
