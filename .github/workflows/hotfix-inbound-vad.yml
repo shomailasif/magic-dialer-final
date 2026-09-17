@@ -1,9 +1,10 @@
 name: Deploy immediate greeting
 
 on:
+  workflow_dispatch:
   push:
     paths:
-      - '.github/workflows/hotfix-inbound-vad.yml'
+      - ".github/workflows/hotfix-inbound-vad.yml"
 
 permissions:
   contents: write
@@ -13,49 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Pre-generate greeting while SIP call connects
+      - name: Patch greeting startup
+        shell: bash
         run: |
-          python3 <<'PY'
-          from pathlib import Path
-          p=Path('src/lib/sip-conversation.ts')
-          s=p.read_text()
-          old='''  const call = await sipCallBridge(sipConfig);
-  if (!call.ok) {'''
-          new='''  // Start dialing and greeting TTS together so answered calls do not wait on synthesis.
-  const greeting = getInitialGreeting(state);
-  const greetingFramesPromise = textToFramesLocal(greeting);
-  const callPromise = sipCallBridge(sipConfig);
-  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);
-  if (!call.ok) {'''
-          if old not in s: raise SystemExit('call anchor missing')
-          s=s.replace(old,new,1)
-          old2='''  // Speak greeting immediately
-  const greeting = getInitialGreeting(state);
-  lines.push(`Agent: ${greeting}`);
-  await speak(cs, greeting, heardRef);'''
-          new2='''  // Greeting TTS was generated during ringing; play it immediately after media connects.
-  lines.push(`Agent: ${greeting}`);
-  if (greetingFrames && greetingFrames.length && !cs.disposed) {
-    const greetingAudio = Buffer.concat(greetingFrames);
-    console.log("[sip-conv] pre-generated greeting ready:", greetingAudio.length, "bytes");
-    enqueueAudio(greetingAudio);
-    await waitForQueue();
-  } else {
-    console.error("[sip-conv] pre-generated greeting unavailable; using normal TTS path");
-    await speak(cs, greeting, heardRef);
-  }'''
-          if old2 not in s: raise SystemExit('greeting anchor missing')
-          s=s.replace(old2,new2,1)
-          p.write_text(s)
-          PY
-          grep -q "const greetingFramesPromise = textToFramesLocal(greeting)" src/lib/sip-conversation.ts
-          grep -q "Promise.all(\[callPromise, greetingFramesPromise\])" src/lib/sip-conversation.ts
-          grep -q "pre-generated greeting ready" src/lib/sip-conversation.ts
-      - name: Commit immediate greeting fix
+          python3 -c 'from pathlib import Path; p=Path("src/lib/sip-conversation.ts"); s=p.read_text(); a="  const call = await sipCallBridge(sipConfig);\n  if (!call.ok) {"; b="  const greeting = getInitialGreeting(state);\n  const greetingFramesPromise = textToFramesLocal(greeting);\n  const callPromise = sipCallBridge(sipConfig);\n  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);\n  if (!call.ok) {"; c="  // Speak greeting immediately\n  const greeting = getInitialGreeting(state);\n  lines.push(`Agent: ${greeting}`);\n  await speak(cs, greeting, heardRef);"; d="  // Greeting audio was prepared while the call connected.\n  lines.push(`Agent: ${greeting}`);\n  if (greetingFrames && greetingFrames.length && !cs.disposed) {\n    enqueueAudio(Buffer.concat(greetingFrames));\n    await waitForQueue();\n  } else {\n    await speak(cs, greeting, heardRef);\n  }"; assert a in s, "call anchor missing"; assert c in s, "greeting anchor missing"; p.write_text(s.replace(a,b,1).replace(c,d,1))'
+          grep -Fq "const greetingFramesPromise = textToFramesLocal(greeting);" src/lib/sip-conversation.ts
+          grep -Fq "Promise.all([callPromise, greetingFramesPromise])" src/lib/sip-conversation.ts
+      - name: Commit patch
+        shell: bash
         run: |
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
-          git diff --cached --quiet && exit 1
-          git commit -m "Pre-generate greeting while call is ringing"
+          git diff --cached --check
+          git commit -m "Pre-generate greeting while call connects"
           git push origin HEAD:main
