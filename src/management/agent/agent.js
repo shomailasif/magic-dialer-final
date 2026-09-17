@@ -10,6 +10,7 @@ const { startWebUi, writeDashboardUrl, dashboardUrlPath } = require("./webui");
 const localDb = require("./local-db");
 const sync = require("./sync");
 const { emailQualifiedLead } = require("./email");
+const { ensurePhoneSession } = require("./call-start");
 
 /**
  * Customer PC agent.
@@ -452,7 +453,19 @@ async function runAgent(opts = {}) {
     let voiceCall;
     try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + err.message); }
     if (voiceCall) try {
+      // Bind this conversation to the cloud SIP session that actually owns the
+      // phone audio. Never let a telephone call silently fall back to the PC mic.
+      const phoneSession = await ensurePhoneSession({
+        portal,
+        token: config.token,
+        callList: config.callList,
+        post,
+        log,
+      });
+      const sessionId = phoneSession.sessionId;
+      log("Attaching AI to phone media session " + sessionId);
       const result = await voiceCall({
+        sessionId,
         product: config.product,
         leadFields: config.leadFields || [],
         persona: config.persona,
@@ -479,7 +492,6 @@ async function runAgent(opts = {}) {
       log("Voice call failed: " + e.message);
       ui({ mode: config.mode || "on", line: "Voice call failed - retrying later." });
     }
-    } // end if (voiceCall)
     if (opts.callOnce === true) {
       log("Test call finished. Exiting (heartbeat stays with the main agent).");
       return;

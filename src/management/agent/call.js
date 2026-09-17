@@ -1,5 +1,7 @@
 const { speak, speakToBuffer } = require("./voice");
-const { hear, hearFromBuffer } = require("./hear");
+const { hear } = require("./hear");
+const { transcribeAuto } = require("./multilingual-stt");
+const { normalizeLanguage } = require("./language");
 const { runCall } = require("./call-runner");
 const { mediaConnect } = require("./media-client");
 const { createVad } = require("./vad");
@@ -10,14 +12,13 @@ const FRAME_MS = 20;
 
 async function voiceCall({
   product, leadFields, persona, companyName, callbackNumber, callbackIn,
-  contactEmail, token, portal, learning, locale = "en", voiceStyle = "friendly",
+  contactEmail, token, portal, sessionId = null, learning, locale = "en", voiceStyle = "friendly",
   onLog = () => {}, onMode = () => {}, speakFn, listenFn,
 }) {
   let channel = null;
   if (portal && token) {
     try {
       onLog("Connecting to media channel…");
-      const sessionId = arguments[0].sessionId || null;
       if (sessionId) {
         channel = await mediaConnect({ portal, sessionId, token, onLog });
         onLog("Media channel connected ✓");
@@ -28,6 +29,10 @@ async function voiceCall({
   }
 
   let say, listen;
+
+  if (portal && token && sessionId && (!channel || !channel.open)) {
+    throw new Error("Phone media channel failed to connect; refusing local microphone fallback.");
+  }
 
   if (channel && channel.open) {
     let listenState = null;
@@ -57,10 +62,11 @@ async function voiceCall({
       }
     });
 
-    say = async (text) => {
+    say = async (text, turn = {}) => {
+      const turnLocale = normalizeLanguage(turn.locale || locale, "en");
       onMode("speaking");
       onLog("AGENT: " + text);
-      const result = await speakToBuffer(text, { locale, style: voiceStyle });
+      const result = await speakToBuffer(text, { locale: turnLocale, style: voiceStyle });
       if (!result || !result.buffer) {
         onLog("[media] TTS buffer generation failed");
         return;
@@ -73,7 +79,7 @@ async function voiceCall({
       onLog(`[media] sent ${result.buffer.length} bytes TTS (${result.engine})`);
     };
 
-    listen = async () => {
+    listen = async (turn = {}) => {
       onMode("listening");
       onLog("(listening for speech…)");
       const vad = createVad({ minSpeechMs: 160, endSilenceMs: 620 });
@@ -94,20 +100,28 @@ async function voiceCall({
       }
       const fullAudio = Buffer.concat(state.chunks);
       onLog(`[media] speech turn ${fullAudio.length} bytes, ${Math.round(fullAudio.length / 8)}ms`);
-      const text = hearFromBuffer(fullAudio, { locale, sampleRate: AUDIO_SAMPLE_RATE });
-      if (text) { onLog("LEAD:  " + text); return text; }
+      const requestedLocale = normalizeLanguage(turn.locale || locale, "en");
+      const result = await transcribeAuto(fullAudio, {
+        hint: turn.autoLanguage ? "auto" : requestedLocale,
+        sampleRate: AUDIO_SAMPLE_RATE,
+      });
+      const text = result && result.text ? String(result.text).trim() : "";
+      const language = result && result.language ? normalizeLanguage(result.language, requestedLocale) : requestedLocale;
+      if (text) { onLog("LEAD:  " + text); return { text, language }; }
       onLog("(speech detected but nothing transcribed)");
       return null;
     };
   } else {
-    say = speakFn || (async (text) => {
+    say = speakFn || (async (text, turn = {}) => {
+      const turnLocale = normalizeLanguage(turn.locale || locale, "en");
       onMode("speaking"); onLog("AGENT: " + text);
-      return speak(text, { locale, style: voiceStyle });
+      return speak(text, { locale: turnLocale, style: voiceStyle });
     });
-    listen = listenFn || (async () => {
+    listen = listenFn || (async (turn = {}) => {
+      const turnLocale = normalizeLanguage(turn.locale || locale, "en");
       onMode("listening"); onLog("(listening…)");
       // Local-mic capture remains the offline fallback. The real phone/media path above is VAD-driven.
-      const t = await hear({ timeoutMs: 4500, locale });
+      const t = await hear({ timeoutMs: 4500, locale: turnLocale });
       if (t) onLog("LEAD:  " + t); else onLog("(nothing heard)");
       return t;
     });

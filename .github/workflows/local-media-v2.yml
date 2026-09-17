@@ -1,0 +1,56 @@
+name: Local Media V2 Verification
+on:
+  push:
+    branches: ["build/local-call-engine-v2"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax check V2 runtime
+        run: |
+          node --check src/management/agent/local-ringcentral-engine.js
+          node --check src/management/agent/local-ringcentral-engine.test.js
+          node --check src/management/agent/local-call-controller.js
+          node --check src/management/agent/multilingual-stt.js
+          node --check src/management/agent/language.js
+          node --check src/management/agent/call-runner.js
+          node --check src/management/agent/call.js
+          node --check src/management/agent/agent.js
+          node --check src/management/portal/trunk.js
+      - name: Local media regression checks
+        run: node src/management/agent/local-ringcentral-engine.test.js
+      - name: Enforce no manual RTP in V2 engine
+        shell: bash
+        run: |
+          ! grep -E 'werift-rtp|srtpSession\.encrypt|RtpPacket|sendPacket\(' src/management/agent/local-ringcentral-engine.js
+          grep -q 'session.streamAudio(audio)' src/management/agent/local-ringcentral-engine.js
+          grep -q 'audioPacket' src/management/agent/local-ringcentral-engine.js
+      - name: Enforce restored production agent structure
+        shell: bash
+        run: |
+          grep -q 'runWatchdog' src/management/agent/agent.js
+          grep -q 'takeAgentLock' src/management/agent/agent.js
+          grep -q 'localDb.open' src/management/agent/agent.js
+          grep -q 'topStrategy' src/management/agent/agent.js
+          grep -q 'emailQualifiedLead' src/management/agent/agent.js
+          grep -q 'onSetup' src/management/agent/agent.js
+          grep -q '\-\-watchdog' src/management/agent/agent.js
+      - name: Enforce shared production media integration
+        shell: bash
+        run: |
+          grep -q 'require("./call")' src/management/agent/agent.js
+          grep -q 'voiceCall' src/management/agent/agent.js
+          grep -q 'cs.streamAudio(Buffer.from(audioBuffer))' src/management/portal/trunk.js
+          grep -q 'rtpPacket.payload' src/management/portal/trunk.js
+          ! grep -E 'werift-rtp|werift_rtp|srtpSession\.encrypt|RtpPacket' src/management/portal/trunk.js
+          grep -q 'createLocalRingCentralEngine' src/management/agent/local-call-controller.js
+          grep -q 'engine.sendAudio' src/management/agent/local-call-controller.js
+          grep -q 'transcribeAuto' src/management/agent/local-call-controller.js
+          grep -q 'normalizeLanguage' src/management/agent/local-call-controller.js
