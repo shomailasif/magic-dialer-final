@@ -10,16 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch current RingCentral audio listener
+      - name: Restore proven RingCentral audioPacket path and keep VAD
         shell: python
         run: |
           from pathlib import Path
           p = Path('src/lib/sip-conversation.ts')
           s = p.read_text()
-          start = s.index('    const on = (d: any) => {', s.index('function listenForSpeech'))
-          end = s.index('    };', start) + 6
-          new = '''    const on = (audio: any) => {
-              const payload = Buffer.isBuffer(audio) ? audio : (audio && typeof audio.length === "number" ? Buffer.from(audio) : null);
+          start = s.index('    const on = (audio: any) => {', s.index('function listenForSpeech'))
+          end = s.index('  };', start) + 4
+          new = '''    const on = (d: any) => {
+              const rawPayload = d?.payload || d;
+              const payload = Buffer.isBuffer(rawPayload) ? rawPayload : (rawPayload && typeof rawPayload.length === "number" ? Buffer.from(rawPayload) : null);
               if (!payload || !payload.length) return;
               let sum = 0, peak = 0;
               for (let i = 0; i < payload.length; i++) {
@@ -38,14 +39,13 @@ jobs:
               if (got) audioChunks.push(payload);
             };'''
           s = s[:start] + new + s[end:]
-          s = s.replace('cs.on("audioPacket", on);', 'cs.on("audio", on);', 1)
-          s = s.replace('cs.removeListener("audioPacket", on);', 'cs.removeListener("audio", on);', 1)
-          s = s.replace('if (got && Date.now() - last > 1000) { finish(); return; }', 'if (got && Date.now() - last > 800) { finish(); return; }\n      if (got && first && Date.now() - first > 10000) { finish(); return; }', 1)
+          s = s.replace('cs.on("audio", on);', 'cs.on("audioPacket", on);', 1)
+          s = s.replace('cs.removeListener("audio", on);', 'cs.removeListener("audioPacket", on);', 1)
           p.write_text(s)
       - name: Commit source repair
         run: |
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
-          git commit -m "Fix inbound audio using current RingCentral SDK event"
+          git commit -m "Restore proven inbound audioPacket path with VAD"
           git push origin HEAD:main
