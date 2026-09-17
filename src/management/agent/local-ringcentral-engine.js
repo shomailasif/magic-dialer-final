@@ -47,6 +47,11 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     sendChain = sendChain.then(() => play(audio));
     return sendChain;
   }
+  function interrupt() {
+    try { if (streamer && typeof streamer.stop === "function") streamer.stop(); } catch {}
+    streamer = null;
+    onLog("[local-media-v2] outbound playback interrupted");
+  }
   function status() { return { connected: !!session && !closed, bytesIn, bytesOut, frameBytes: FRAME_BYTES, codec: "PCMU/8000" }; }
   function close() {
     if (closed) return;
@@ -55,6 +60,6 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     try { if (bridge && bridge.cleanup) bridge.cleanup(); } catch {}
     session = null;
   }
-  return { connect, sendAudio, status, close };
+  return { connect, sendAudio, interrupt, status, close };
 }
 module.exports = { createLocalRingCentralEngine, normalizePcmu, FRAME_BYTES };
