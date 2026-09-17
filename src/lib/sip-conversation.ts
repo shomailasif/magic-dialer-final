@@ -240,10 +240,6 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
     const ratio = Math.round(fmt.sampleRate / RATE);
     if (ratio > 1) {
       pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;
-      const outLen = Math.ceil(pcm.length / ratio);
-      const out = new Int16Array(outLen);
-      for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
-      pcm = out;
     }
   }
   return pcm;
@@ -609,14 +605,15 @@ export async function runConversation(
     console.log("[sip-conv] turn", turn, "elapsed", Math.round((Date.now() - start) / 1000), "s");
 
     // Listen for speech — 1s silence = done speaking
-    const r = await listenForSpeech(cs, start, heardRef, 3000);
+    let r = await listenForSpeech(cs, start, heardRef, 3000);
     console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });
     if (cs.disposed) { console.log("[sip-conv] call disposed during listen, ending"); break; }
     if (!r.spoke) {
       if (cs.disposed) break;
       await speak(cs, "Are you still there?", heardRef);
-      const retry = await listenForSpeech(cs, start, heardRef, 2000);
+      const retry = await listenForSpeech(cs, start, heardRef, 4000);
       if (!retry.spoke) break;
+      r = retry;
     }
     if (Date.now() - start > maxDurationMs) break;
     if (cs.disposed) break;
