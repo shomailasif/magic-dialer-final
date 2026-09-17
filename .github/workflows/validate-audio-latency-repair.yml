@@ -14,16 +14,39 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Verify current production assumptions
+      - name: Apply candidate in runner only
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          f=Path('src/lib/sip-conversation.ts')
+          p=f.read_text()
+          # Keep Edge's documented MP3 output, but decode each independently-created MP3 stream
+          # before joining PCMU frames. Concatenating MP3 files before one decoder pass can break playback.
+          old='''  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }\n  const combined = Buffer.concat(allParts);\n  console.log("[sip-conv] TTS combined:", combined.length, "bytes");\n  const frames = await legacyToFramesFromAudio(combined);\n  console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");\n  return frames;'''
+          new='''  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }\n  const frames: Buffer[] = [];\n  for (const part of allParts) {\n    const partFrames = await legacyToFramesFromAudio(part);\n    frames.push(...partFrames);\n  }\n  console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");\n  return frames;'''
+          assert old in p
+          p=p.replace(old,new)
+          # Remove the artificial three-second conversational nag. Keep a passive bounded listen window;
+          # MAX_CALL_MS remains the hard overall safety bound.
+          p=p.replace('listenForSpeech(cs, start, heardRef, 3000)', 'listenForSpeech(cs, start, heardRef, 15000)')
+          # Give natural speech a little more end-of-utterance tolerance; this prevents chopping short pauses.
+          p=p.replace('now-lastVoice>=350', 'now-lastVoice>=500')
+          f.write_text(p)
+          PY
+      - name: Verify candidate invariants
         run: |
           python - <<'PY'
           from pathlib import Path
           p=Path('src/lib/sip-conversation.ts').read_text()
           assert 'outputFormat":"audio-24khz-48kbitrate-mono-mp3"' in p
-          assert 'const frames = await legacyToFramesFromAudio(combined);' in p
-          assert 'now-lastVoice>=350' in p
-          assert 'listenForSpeech(cs, start, heardRef, 3000)' in p
-          print('production defect assumptions confirmed')
+          assert 'const combined = Buffer.concat(allParts)' not in p
+          assert 'const partFrames = await legacyToFramesFromAudio(part);' in p
+          assert 'listenForSpeech(cs, start, heardRef, 3000)' not in p
+          assert 'listenForSpeech(cs, start, heardRef, 15000)' in p
+          assert 'now-lastVoice>=500' in p
+          assert 'Buffer.alloc(FRAME, 0xff)' in p
+          assert 'const media = createMediaState(cs)' in p
+          print('candidate invariants passed')
           PY
       - run: npm ci
       - run: npm run build
