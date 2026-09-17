@@ -466,8 +466,9 @@ function listenForSpeech(
     let first = 0;
     const start = Date.now();
     const audioChunks: Buffer[] = [];
-    const on = (audio: any) => {
-    const payload = Buffer.isBuffer(audio) ? audio : (audio && typeof audio.length === "number" ? Buffer.from(audio) : null);
+    const on = (d: any) => {
+    const rawPayload = d?.payload || d;
+    const payload = Buffer.isBuffer(rawPayload) ? rawPayload : (rawPayload && typeof rawPayload.length === "number" ? Buffer.from(rawPayload) : null);
     if (!payload || !payload.length) return;
     let sum = 0, peak = 0;
     for (let i = 0; i < payload.length; i++) {
@@ -485,7 +486,7 @@ function listenForSpeech(
     }
     if (got) audioChunks.push(payload);
   };
-    cs.on("audio", on);
+    cs.on("audioPacket", on);
 
     // Keepalive: enqueue silent PCMU audio every 3s so SBC doesn't kill the session
     // Uses the queue mechanism (correct RTP via SDK) instead of manual packet construction
@@ -498,7 +499,7 @@ function listenForSpeech(
     const finish = async () => {
       clearInterval(iv);
       clearInterval(keepaliveIv);
-      cs.removeListener("audio", on);
+      cs.removeListener("audioPacket", on);
       if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
       const dur = Date.now() - first;
       if (dur < 500) { resolve({ spoke: true, durationMs: dur, transcript: "" }); return; }
