@@ -466,17 +466,26 @@ function listenForSpeech(
     let first = 0;
     const start = Date.now();
     const audioChunks: Buffer[] = [];
-    const on = (d: any) => {
+    const on = (audio: any) => {
+    const payload = Buffer.isBuffer(audio) ? audio : (audio && typeof audio.length === "number" ? Buffer.from(audio) : null);
+    if (!payload || !payload.length) return;
+    let sum = 0, peak = 0;
+    for (let i = 0; i < payload.length; i++) {
+      const amp = Math.abs(ulawDecode(payload[i]));
+      sum += amp;
+      if (amp > peak) peak = amp;
+    }
+    const now = Date.now();
+    const voice = peak >= 900 && (sum / payload.length) >= 120;
+    if (voice) {
       heardRef.current = true;
-      if (!got) first = Date.now();
+      if (!got) first = now;
       got = true;
-      last = Date.now();
-      // RingCentral audioPacket is an RTP object; Whisper needs only its PCMU payload.
-      const payload = d?.payload || d;
-      if (Buffer.isBuffer(payload)) audioChunks.push(payload);
-      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));
-    };
-    cs.on("audioPacket", on);
+      last = now;
+    }
+    if (got) audioChunks.push(payload);
+  };
+    cs.on("audio", on);
 
     // Keepalive: enqueue silent PCMU audio every 3s so SBC doesn't kill the session
     // Uses the queue mechanism (correct RTP via SDK) instead of manual packet construction
@@ -489,7 +498,7 @@ function listenForSpeech(
     const finish = async () => {
       clearInterval(iv);
       clearInterval(keepaliveIv);
-      cs.removeListener("audioPacket", on);
+      cs.removeListener("audio", on);
       if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
       const dur = Date.now() - first;
       if (dur < 500) { resolve({ spoke: true, durationMs: dur, transcript: "" }); return; }
@@ -498,7 +507,8 @@ function listenForSpeech(
     };
     const iv = setInterval(() => {
       if (Date.now() - callStart > MAX_CALL_MS) { finish(); return; }
-      if (got && Date.now() - last > 1000) { finish(); return; }
+      if (got && Date.now() - last > 800) { finish(); return; }
+      if (got && first && Date.now() - first > 10000) { finish(); return; }
       if (!got && Date.now() - start > maxMs) { finish(); return; }
     }, 100);
   });
