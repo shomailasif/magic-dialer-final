@@ -6,7 +6,7 @@ on:
     paths:
       - ".github/workflows/hotfix-inbound-vad.yml"
 
-# Deployment trigger: validated conversation repairs 899cf2b
+# Deployment trigger: brain + opening-media repair 6909720
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -20,6 +20,8 @@ jobs:
         run: |
           grep -F 'Buffer.alloc(FRAME, 0xff)' src/lib/sip-conversation.ts
           grep -F 'const greetingFrames = await textToFramesLocal(greeting);' src/lib/sip-conversation.ts
+          grep -F 'const GROQ_API_KEY = process.env.GROQ_API_KEY || "";' src/lib/sip-conversation.ts
+          grep -F 'await new Promise(r => setTimeout(r, 300));' src/lib/sip-conversation.ts
           grep -F 'const media = createMediaState(cs);' src/lib/sip-conversation.ts
           grep -F 'function drainAudioQueue(media: MediaState)' src/lib/sip-conversation.ts
           grep -F 'const partFrames = await legacyToFramesFromAudio(part);' src/lib/sip-conversation.ts
