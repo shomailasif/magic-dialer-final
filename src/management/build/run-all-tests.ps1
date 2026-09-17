@@ -14,7 +14,8 @@ $tests = @(
   "test-portal-lang.js",
   "test-voice-style.js",
   "test-learning.js",
-  "test-gateway.js"
+  "test-gateway.js",
+  "agent\\local-ringcentral-engine.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {
