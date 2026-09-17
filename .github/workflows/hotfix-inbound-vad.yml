@@ -23,7 +23,7 @@ jobs:
           grep -F 'const media = createMediaState(cs);' src/lib/sip-conversation.ts
           grep -F 'function drainAudioQueue(media: MediaState)' src/lib/sip-conversation.ts
           grep -F 'const partFrames = await legacyToFramesFromAudio(part);' src/lib/sip-conversation.ts
-          grep -F 'listenForSpeech(cs, start, heardRef, 15000)' src/lib/sip-conversation.ts
+          grep -F 'listenForSpeech(cs, start, heardRef, 15000, media)' src/lib/sip-conversation.ts
           grep -F 'now-lastVoice>=500' src/lib/sip-conversation.ts
           ! grep -F 'let pendingAudio: Buffer[] = []' src/lib/sip-conversation.ts
           ! grep -F 'Promise.all([callPromise, greetingFramesPromise])' src/lib/sip-conversation.ts
