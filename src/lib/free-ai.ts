@@ -299,14 +299,14 @@ export async function processProspectInput(
       pricing: state.pricing || undefined,
     });
   } catch (e) {
-    console.error("[free-ai] LLM threw error, using smart fallback");
-    aiText = smartFallback(state);
+    console.error("[free-ai] LLM threw error; scripted fallback is disabled");
+    aiText = "I'm having a technical issue on my side, so I don't want to waste your time. I'll end the call here.";
   }
 
-  // If LLM returned the generic fallback, use our smart pattern instead
+  // Never masquerade a scripted pattern engine as the conversational brain.
   if (aiText === "I'm sorry, could you repeat that?" || aiText.length < 5) {
-    console.log("[free-ai] Using smart pattern fallback (LLM unavailable)");
-    aiText = smartFallback(state);
+    console.error("[free-ai] LLM unavailable; scripted fallback is disabled");
+    aiText = "I'm having a technical issue on my side, so I don't want to waste your time. I'll end the call here.";
   }
 
   // Never re-ask an identical question already asked earlier in this call.
