@@ -105,7 +105,7 @@ function waitForQueue(media: MediaState): Promise<void> {
 
 const ULAW_SEG_END = [0x0ff, 0x1ff, 0x3ff, 0x7ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff];
 
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 
 function ulawEncode(sample: number): number {
   let s = sample | 0;
