@@ -1,54 +1,12 @@
 name: Fix SIP voice and reply
+# Media repair already applied. This workflow is retained only as recovery history.
 on:
-  push:
-    paths:
-      - '.github/workflows/fix-sip-voice-and-reply.yml'
+  workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 jobs:
-  hotfix:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Restore last proven voice and inbound media paths
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('src/lib/sip-conversation.ts')
-          s=p.read_text()
-
-          # Restore the TTS format/path that previously produced clear human speech.
-          old='"outputFormat":"raw-8khz-8bit-mono-mulaw"'
-          new='"outputFormat":"audio-24khz-48kbitrate-mono-mp3"'
-          if s.count(old) != 1: raise SystemExit(f'raw format count {s.count(old)}')
-          s=s.replace(old,new,1)
-
-          # Keep the corrected single-resample legacy decoder; bypass the unproven raw-PCMU shortcut.
-          old='''  const frames = await toFramesFromAudio(combined);'''
-          new='''  const frames = await legacyToFramesFromAudio(combined);'''
-          if s.count(old) != 1: raise SystemExit(f'decoder call count {s.count(old)}')
-          s=s.replace(old,new,1)
-
-          # Restore the exact inbound RTP event that already proved Whisper could hear/transcribe the caller.
-          old='''    cs.on("audio", on);'''
-          new='''    cs.on("audioPacket", on);'''
-          if s.count(old) != 1: raise SystemExit(f'audio listener count {s.count(old)}')
-          s=s.replace(old,new,1)
-          old='''      cs.removeListener("audio", on);'''
-          new='''      cs.removeListener("audioPacket", on);'''
-          if s.count(old) != 1: raise SystemExit(f'audio remove count {s.count(old)}')
-          s=s.replace(old,new,1)
-          old='''      const payload = d;\n      if (Buffer.isBuffer(payload)) audioChunks.push(payload);\n      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));'''
-          new='''      // RingCentral audioPacket is an RTP object; Whisper needs only its PCMU payload.\n      const payload = d?.payload || d;\n      if (Buffer.isBuffer(payload)) audioChunks.push(payload);\n      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));'''
-          if s.count(old) != 1: raise SystemExit(f'payload block count {s.count(old)}')
-          s=s.replace(old,new,1)
-
-          p.write_text(s)
-          PY
-          git config user.name "shomailasif"
-          git config user.email "shomailasif@gmail.com"
-          git add src/lib/sip-conversation.ts
-          git commit -m "Restore proven clear TTS and inbound RTP listening"
-          git push
+      - run: echo "Media repair is already on main; no source mutation."
