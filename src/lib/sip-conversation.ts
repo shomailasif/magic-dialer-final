@@ -455,63 +455,42 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
 let edgeTtsBroken = GUARD_EDGE_TTS_BROKEN_INIT;
 
 function listenForSpeech(
-  cs: any,
-  callStart: number,
-  heardRef: { current: boolean },
-  maxMs: number,
+  cs: any, callStart: number, heardRef: { current: boolean }, maxMs: number,
 ): Promise<{ spoke: boolean; durationMs: number; transcript: string }> {
   return new Promise((resolve) => {
-    let got = false;
-    let last = 0;
-    let first = 0;
-    const start = Date.now();
-    const audioChunks: Buffer[] = [];
-    const on = (d: any) => {
-    const rawPayload = d?.payload || d;
-    const payload = Buffer.isBuffer(rawPayload) ? rawPayload : (rawPayload && typeof rawPayload.length === "number" ? Buffer.from(rawPayload) : null);
-    if (!payload || !payload.length) return;
-    let sum = 0, peak = 0;
-    for (let i = 0; i < payload.length; i++) {
-      const amp = Math.abs(ulawDecode(payload[i]));
-      sum += amp;
-      if (amp > peak) peak = amp;
-    }
-    const now = Date.now();
-    const voice = peak >= 900 && (sum / payload.length) >= 120;
-    if (voice) {
-      heardRef.current = true;
-      if (!got) first = now;
-      got = true;
-      last = now;
-    }
-    if (got) audioChunks.push(payload);
-  };
-    cs.on("audioPacket", on);
-
-    // Keepalive: enqueue silent PCMU audio every 3s so SBC doesn't kill the session
-    // Uses the queue mechanism (correct RTP via SDK) instead of manual packet construction
-    const SILENT_FRAME = Buffer.alloc(160, 0xFF); // 0xFF = silence in PCMU
-    const keepaliveIv = setInterval(() => {
-      if (cs.disposed) { clearInterval(keepaliveIv); return; }
-      try { enqueueAudio(SILENT_FRAME); } catch {}
-    }, 3000);
-
-    const finish = async () => {
-      clearInterval(iv);
-      clearInterval(keepaliveIv);
-      cs.removeListener("audioPacket", on);
-      if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
-      const dur = Date.now() - first;
-      if (dur < 500) { resolve({ spoke: true, durationMs: dur, transcript: "" }); return; }
-      const transcript = await transcribeWithWhisper(audioChunks);
-      resolve({ spoke: true, durationMs: dur, transcript });
+    let got=false, first=0, lastVoice=0, baseline=0, baselineN=0, finished=false;
+    const start=Date.now();
+    const audioChunks: Buffer[]=[];
+    const preRoll: Buffer[]=[];
+    const on=(d:any) => {
+      const raw=d?.payload || d;
+      const payload=Buffer.isBuffer(raw) ? raw : (raw && typeof raw.length === "number" ? Buffer.from(raw) : null);
+      if (!payload || !payload.length) return;
+      let sum=0, peak=0;
+      for (let i=0;i<payload.length;i++) { const amp=Math.abs(ulawDecode(payload[i])); sum+=amp; if (amp>peak) peak=amp; }
+      const avg=sum/payload.length;
+      const now=Date.now();
+      if (!got && baselineN<25) { baseline=((baseline*baselineN)+avg)/(baselineN+1); baselineN++; }
+      const threshold=Math.max(260,baseline*3.2);
+      const voice=avg>=threshold && peak>=Math.max(1400,threshold*3);
+      preRoll.push(payload); if (preRoll.length>15) preRoll.shift();
+      if (voice) { heardRef.current=true; if (!got) { got=true; first=now; audioChunks.push(...preRoll); } lastVoice=now; }
+      if (got) audioChunks.push(payload);
     };
-    const iv = setInterval(() => {
-      if (Date.now() - callStart > MAX_CALL_MS) { finish(); return; }
-      if (got && Date.now() - last > 800) { finish(); return; }
-      if (got && first && Date.now() - first > 10000) { finish(); return; }
-      if (!got && Date.now() - start > maxMs) { finish(); return; }
-    }, 100);
+    cs.on("audioPacket",on);
+    const finish=async () => {
+      if (finished) return; finished=true; clearInterval(iv); cs.removeListener("audioPacket",on);
+      if (!got) { resolve({spoke:false,durationMs:0,transcript:""}); return; }
+      const transcript=await transcribeWithWhisper(audioChunks);
+      resolve({spoke:true,durationMs:Date.now()-first,transcript});
+    };
+    const iv=setInterval(() => {
+      const now=Date.now();
+      if (cs.disposed || now-callStart>MAX_CALL_MS) { void finish(); return; }
+      if (got && lastVoice && now-lastVoice>=650) { void finish(); return; }
+      if (got && first && now-first>=6000) { void finish(); return; }
+      if (!got && now-start>=maxMs) { void finish(); return; }
+    },50);
   });
 }
 
