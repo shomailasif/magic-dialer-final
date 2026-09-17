@@ -1,4 +1,4 @@
-name: Repair conversation playback
+name: Deploy immediate greeting
 
 on:
   push:
@@ -13,57 +13,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply verified playback and latency repair
+      - name: Pre-generate greeting while SIP call connects
         run: |
           python3 <<'PY'
           from pathlib import Path
-          p = Path('src/lib/sip-conversation.ts')
-          s = p.read_text()
-          a = s.index('function drainAudioQueue()')
-          b = s.index('\nfunction enqueueAudio', a)
-          replacement = '''function drainAudioQueue() {
-            if (streamActive || pendingAudio.length === 0 || !csRef) return;
-            if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }
-            streamActive = true;
-            const next = pendingAudio.shift()!;
-            let settled = false;
-            let streamer: any;
-            const expectedMs = Math.ceil((next.length / RATE) * 1000);
-            const settle = (reason: string) => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(watchdog);
-              streamActive = false;
-              console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes');
-              drainAudioQueue();
-            };
-            const watchdog = setTimeout(() => settle('watchdog'), Math.max(1200, expectedMs + 750));
-            try {
-              streamer = csRef.streamAudio(next);
-              streamer.once('finished', () => settle('finished'));
-              streamer.once('error', (e: any) => {
-                console.error('[sip-conv] audio stream error:', e?.message || e);
-                settle('error');
-              });
-            } catch (e: any) {
-              console.error('[sip-conv] streamAudio threw:', e?.message || e);
-              settle('throw');
-            }
-          }
-          '''
-          s = s[:a] + replacement + s[b:]
-          s = s.replace('now-lastVoice>=650', 'now-lastVoice>=350')
-          s = s.replace('now - lastVoice >= 650', 'now - lastVoice >= 350')
+          p=Path('src/lib/sip-conversation.ts')
+          s=p.read_text()
+          old='''  const call = await sipCallBridge(sipConfig);
+          if (!call.ok) {'''
+          new='''  // Start dialing and TTS at the same time. The greeting is ready when the prospect answers.
+          const greeting = getInitialGreeting(state);
+          const greetingFramesPromise = textToFramesLocal(greeting);
+          const callPromise = sipCallBridge(sipConfig);
+          const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);
+          if (!call.ok) {'''
+          if old not in s: raise SystemExit('call anchor missing')
+          s=s.replace(old,new,1)
+          old2='''  // Speak greeting immediately
+          const greeting = getInitialGreeting(state);
+          lines.push(`Agent: ${greeting}`);
+          await speak(cs, greeting, heardRef);'''
+          new2='''  // Greeting TTS was generated during ringing; start playback immediately on answer.
+          lines.push(`Agent: ${greeting}`);
+          if (greetingFrames && greetingFrames.length && !cs.disposed) {
+            const greetingAudio = Buffer.concat(greetingFrames);
+            console.log("[sip-conv] pre-generated greeting ready:", greetingAudio.length, "bytes");
+            enqueueAudio(greetingAudio);
+            await waitForQueue();
+          } else {
+            console.error("[sip-conv] pre-generated greeting unavailable; using normal TTS path");
+            await speak(cs, greeting, heardRef);
+          }'''
+          if old2 not in s: raise SystemExit('greeting anchor missing')
+          s=s.replace(old2,new2,1)
           p.write_text(s)
           PY
-          grep -q "settle('watchdog')" src/lib/sip-conversation.ts
-          grep -q "streamAudio threw" src/lib/sip-conversation.ts
-          grep -Eq 'lastVoice *>= *350' src/lib/sip-conversation.ts
-      - name: Commit source repair
+          grep -q "const greetingFramesPromise = textToFramesLocal(greeting)" src/lib/sip-conversation.ts
+          grep -q "Promise.all(\[callPromise, greetingFramesPromise\])" src/lib/sip-conversation.ts
+          grep -q "pre-generated greeting ready" src/lib/sip-conversation.ts
+      - name: Commit immediate greeting fix
         run: |
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
           git diff --cached --quiet && exit 1
-          git commit -m "Fix AI playback freeze and set 350ms turn gap"
+          git commit -m "Pre-generate greeting while call is ringing"
           git push origin HEAD:main
