@@ -10,7 +10,7 @@ on:
     paths:
       - "src/management/**"
       - ".github/workflows/mandatory-regression-gate.yml"
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   regression:
