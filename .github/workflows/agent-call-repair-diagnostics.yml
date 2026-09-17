@@ -1,0 +1,32 @@
+name: Agent Call Repair Diagnostics
+on:
+  push:
+    branches: [repair/agent-call-start-merged]
+permissions:
+  contents: write
+jobs:
+  inspect-and-patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect call path
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('src/management/agent/agent.js')
+          s=p.read_text()
+          needle='No active phone media session found - refusing PC-microphone fallback.'
+          i=s.find(needle)
+          print('ERROR_POS=',i)
+          if i>=0:
+            a=max(0,i-1800); b=min(len(s),i+1800)
+            print(s[a:b])
+          else:
+            print('target error not present')
+          print('CALL_ONCE_POS=',s.find('--call-once'))
+          PY
+      - name: Validate current sources
+        run: |
+          node --check src/management/agent/agent.js
+          node --check src/management/agent/call-start.js
+          node --check src/management/portal/server.js
