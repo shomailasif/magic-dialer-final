@@ -1,4 +1,4 @@
-name: Deploy immediate greeting
+name: Deploy validated call core
 
 on:
   workflow_dispatch:
@@ -6,26 +6,22 @@ on:
     paths:
       - ".github/workflows/hotfix-inbound-vad.yml"
 
-permissions:
-  contents: write
-
 jobs:
-  repair:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch greeting startup
-        shell: bash
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Verify repaired call core
         run: |
-          python3 -c 'from pathlib import Path; p=Path("src/lib/sip-conversation.ts"); s=p.read_text(); a="  const call = await sipCallBridge(sipConfig);\n  if (!call.ok) {"; b="  const greeting = getInitialGreeting(state);\n  const greetingFramesPromise = textToFramesLocal(greeting);\n  const callPromise = sipCallBridge(sipConfig);\n  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);\n  if (!call.ok) {"; c="  // Speak greeting immediately\n  const greeting = getInitialGreeting(state);\n  lines.push(`Agent: ${greeting}`);\n  await speak(cs, greeting, heardRef);"; d="  // Greeting audio was prepared while the call connected.\n  lines.push(`Agent: ${greeting}`);\n  if (greetingFrames && greetingFrames.length && !cs.disposed) {\n    enqueueAudio(Buffer.concat(greetingFrames));\n    await waitForQueue();\n  } else {\n    await speak(cs, greeting, heardRef);\n  }"; assert a in s, "call anchor missing"; assert c in s, "greeting anchor missing"; p.write_text(s.replace(a,b,1).replace(c,d,1))'
-          grep -Fq "const greetingFramesPromise = textToFramesLocal(greeting);" src/lib/sip-conversation.ts
-          grep -Fq "Promise.all([callPromise, greetingFramesPromise])" src/lib/sip-conversation.ts
-      - name: Commit patch
-        shell: bash
-        run: |
-          git config user.name wodozone-hotfix
-          git config user.email actions@users.noreply.github.com
-          git add src/lib/sip-conversation.ts
-          git diff --cached --check
-          git commit -m "Pre-generate greeting while call connects"
-          git push origin HEAD:main
+          grep -F 'Buffer.alloc(FRAME, 0xff)' src/lib/sip-conversation.ts
+          grep -F 'const greetingFrames = await textToFramesLocal(greeting);' src/lib/sip-conversation.ts
+          grep -F 'const media = createMediaState(cs);' src/lib/sip-conversation.ts
+          grep -F 'function drainAudioQueue(media: MediaState)' src/lib/sip-conversation.ts
+          ! grep -F 'let pendingAudio: Buffer[] = []' src/lib/sip-conversation.ts
+          ! grep -F 'Promise.all([callPromise, greetingFramesPromise])' src/lib/sip-conversation.ts
+      - run: npm ci
+      - run: npm run build
