@@ -1,0 +1,56 @@
+name: Prove streamer overlap
+on:
+  push:
+    branches: [research/exact-ringcentral-streamer-139]
+    paths: ['.github/workflows/prove-streamer-overlap.yml']
+permissions:
+  contents: read
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Deterministically reproduce current watchdog overlap
+        run: |
+          node <<'NODE'
+          const { EventEmitter } = require('events');
+          const started=[];
+          class FakeStreamer extends EventEmitter {
+            constructor(id, finishMs){ super(); this.id=id; setTimeout(()=>this.emit('finished'), finishMs); }
+          }
+          const cs={disposed:false, streamAudio(buf){
+            const id=String.fromCharCode(buf[0]);
+            const at=Date.now(); started.push({id,at});
+            return new FakeStreamer(id, id==='A' ? 2600 : 200);
+          }};
+          const media={pendingAudio:[],streamActive:false,csRef:cs};
+          function drainAudioQueue(media){
+            if(media.streamActive||!media.pendingAudio.length||!media.csRef)return;
+            media.streamActive=true;
+            const next=media.pendingAudio.shift();
+            let settled=false;
+            let streamer;
+            const expectedMs=Math.ceil((next.length/8000)*1000);
+            const settle=()=>{if(settled)return;settled=true;clearTimeout(watchdog);media.streamActive=false;drainAudioQueue(media)};
+            const watchdog=setTimeout(()=>settle(),Math.max(1200,expectedMs+750));
+            streamer=media.csRef.streamAudio(next);
+            streamer.once('finished',()=>settle());
+            streamer.once('error',()=>settle());
+          }
+          media.pendingAudio.push(Buffer.alloc(8000,'A'.charCodeAt(0)));
+          media.pendingAudio.push(Buffer.alloc(1600,'B'.charCodeAt(0)));
+          const t0=Date.now(); drainAudioQueue(media);
+          setTimeout(()=>{
+            if(started.length<2) throw new Error('B never started');
+            const bStart=started.find(x=>x.id==='B').at-t0;
+            // A is deliberately still active until 2600ms. Current watchdog settles A at ~1750ms.
+            if(bStart>=2500) throw new Error(`No overlap reproduced: B started at ${bStart}ms`);
+            console.log(`PROVEN: B started at ${bStart}ms while A remains active until ~2600ms`);
+          },2300);
+          setTimeout(()=>process.exit(0),2400);
+          NODE
