@@ -9,24 +9,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect call path
+      - name: Patch agent call-start path
         run: |
           python - <<'PY'
           from pathlib import Path
           p=Path('src/management/agent/agent.js')
           s=p.read_text()
-          needle='No active phone media session found - refusing PC-microphone fallback.'
-          i=s.find(needle)
-          print('ERROR_POS=',i)
-          if i>=0:
-            a=max(0,i-1800); b=min(len(s),i+1800)
-            print(s[a:b])
-          else:
-            print('target error not present')
-          print('CALL_ONCE_POS=',s.find('--call-once'))
+          imp='const { ensurePhoneSession } = require("./call-start");'
+          if imp not in s:
+            marker='const { emailQualifiedLead } = require("./email");'
+            s=s.replace(marker, marker+'\n'+imp, 1)
+          old='''      let sessionId = null;\n      if (portal && config.token) {\n        try {\n          const active = await post(`${portal}/api/agent/active-call`, { token: config.token });\n          if (active.status === 200 && active.body) sessionId = active.body.sessionId || null;\n        } catch {}\n      }\n      if (!sessionId) throw new Error("No active phone media session found - refusing PC-microphone fallback.");'''
+          new='''      const phoneSession = await ensurePhoneSession({\n        portal,\n        token: config.token,\n        callList: config.callList,\n        post,\n        log,\n      });\n      const sessionId = phoneSession.sessionId;'''
+          if old not in s:
+            raise SystemExit('agent call-start target block not found')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          print('agent patched:', imp in s, 'fallback removed:', 'No active phone media session found - refusing PC-microphone fallback.' not in s)
+          sp=Path('src/management/portal/server.js').read_text()
+          print('server active-call route:', '/api/agent/active-call' in sp)
+          print('server agent-dial route:', '/api/agent/dial' in sp)
+          print('server dial-status route:', '/api/agent/dial-status' in sp)
+          print('server getSession usage:', 'trunk.getSession' in sp)
           PY
       - name: Validate current sources
         run: |
           node --check src/management/agent/agent.js
           node --check src/management/agent/call-start.js
           node --check src/management/portal/server.js
+      - name: Commit repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/management/agent/agent.js
+          if git diff --cached --quiet; then echo "No agent changes"; else git commit -m "Wire authenticated phone session into agent" && git push; fi
