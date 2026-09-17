@@ -336,7 +336,8 @@ export async function processProspectInput(
 }
 
 export function getInitialGreeting(state: ConversationState): string {
-  const greeting = "Hello! Thank you for taking my call. How are you doing today?";
+  const who = state.productName?.trim();
+  const greeting = who ? `Hi, this is Sarah calling about ${who}. Did I catch you at an okay time?` : "Hi, this is Sarah. Did I catch you at an okay time?";
   state.agentSaidHistory.push(greeting);
   state.conversationHistory.push({ role: "assistant", content: greeting });
   return greeting;

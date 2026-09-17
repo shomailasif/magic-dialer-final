@@ -301,7 +301,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
     const stamp = edgeDateString();
     ws.on("open", () => {
       console.log("[sip-conv] edgeTts WS open, sending config...");
-      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"raw-8khz-8bit-mono-mulaw"}}}}\r\n`, (err: any) => {
         if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
@@ -369,6 +369,18 @@ function toneWav(ms = 1000): Buffer {
 }
 
 async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
+  // Edge TTS is requested as raw PCMU/8000: exactly what RingCentral expects.
+  // Bypass MP3 decode, resampling and custom mu-law encoding entirely.
+  const native: Buffer[] = [];
+  for (let off = 0; off < mp3.length; off += FRAME) {
+    const part = mp3.subarray(off, Math.min(off + FRAME, mp3.length));
+    if (part.length === FRAME) native.push(Buffer.from(part));
+    else if (part.length) native.push(Buffer.concat([part, Buffer.alloc(FRAME - part.length, 0xff)]));
+  }
+  return native;
+}
+
+async function legacyToFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
   const wav = wavToPcm16(mp3);
   if (wav && wav.length > 0) {
     console.log("[sip-conv] decoded as WAV:", wav.length, "samples");
@@ -424,34 +436,10 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
       } catch (e: any) { console.error("[sip-conv] Edge TTS error:", e?.message); }
     }
 
-    // 2) Fallback: Google Translate TTS (plain HTTP)
-    try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=${GUARD_GOOGLE_TTS_CLIENT}&q=${encodeURIComponent(chunk)}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      const resp = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win6; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-          "Referer": "https://translate.google.com/",
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      const ct = resp.headers.get("content-type") || "";
-      if (resp.ok && ct.includes("audio")) {
-        const arr = Buffer.from(await resp.arrayBuffer());
-        if (arr.length > 100) {
-          allParts.push(arr);
-          console.log("[sip-conv] Google TTS OK:", arr.length, "bytes, type:", ct);
-          continue;
-        }
-      }
-      console.error("[sip-conv] Google TTS failed:", resp.status, "content-type:", ct);
-    } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
+    // Edge is the only production voice. Do not substitute a robotic fallback.
+    console.error("[sip-conv] Edge voice unavailable; refusing alternate voice");
 
-    // 3) Fallback: pre-recorded tone
-    console.error("[sip-conv] All TTS failed for chunk, generating tone");
-    allParts.push(toneWav(800));
+    // No tone/robot fallback in customer calls.
   }
 
   if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
@@ -483,12 +471,11 @@ function listenForSpeech(
       if (!got) first = Date.now();
       got = true;
       last = Date.now();
-      // audioPacket event passes an rtpPacket object; audio data is in .payload
-      const payload = d?.payload || d;
+      const payload = d;
       if (Buffer.isBuffer(payload)) audioChunks.push(payload);
       else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));
     };
-    cs.on("audioPacket", on);
+    cs.on("audio", on);
 
     // Keepalive: enqueue silent PCMU audio every 3s so SBC doesn't kill the session
     // Uses the queue mechanism (correct RTP via SDK) instead of manual packet construction
@@ -501,7 +488,7 @@ function listenForSpeech(
     const finish = async () => {
       clearInterval(iv);
       clearInterval(keepaliveIv);
-      cs.removeListener("audioPacket", on);
+      cs.removeListener("audio", on);
       if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
       const dur = Date.now() - first;
       if (dur < 500) { resolve({ spoke: true, durationMs: dur, transcript: "" }); return; }
