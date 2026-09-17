@@ -1,75 +1,39 @@
 /**
- * LLM Client - Groq API (Free Tier)
- *
- * Uses Groq free tier with Llama 3.1 8B - fast and reliable.
- * No budget issues, no rate limiting on free tier.
+ * LLM Client - Groq API
  */
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_KEY = "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";
-const GROQ_MODEL = "qwen/qwen3.8-27b";
+const GROQ_KEY = process.env.GROQ_API_KEY || "";
+const GROQ_MODEL = process.env.GROQ_MODEL || "qwen/qwen3.8-27b";
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
   content: string;
 }
 
-export interface LLMResponse {
-  content: string;
-  error?: string;
-}
+export interface LLMResponse { content: string; error?: string; }
 
-/**
- * Send a chat completion request to Groq API
- */
-export async function chatCompletion(
-  messages: LLMMessage[],
-  options: {
-    maxTokens?: number;
-    temperature?: number;
-  } = {}
-): Promise<LLMResponse> {
-  const {
-    maxTokens = 300,
-    temperature = 0.7,
-  } = options;
-
+export async function chatCompletion(messages: LLMMessage[], options: { maxTokens?: number; temperature?: number } = {}): Promise<LLMResponse> {
+  const { maxTokens = 300, temperature = 0.55 } = options;
+  if (!GROQ_KEY) return { content: "", error: "GROQ_API_KEY missing" };
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
+    const timeout = setTimeout(() => controller.abort(), 6000);
     const resp = await fetch(GROQ_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${GROQ_KEY}`,
-      },
-      body: JSON.stringify({
-        model: GROQ_MODEL,
-        messages,
-        max_tokens: maxTokens,
-        temperature,
-        stream: false,
-      }),
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
+      body: JSON.stringify({ model: GROQ_MODEL, messages, max_tokens: maxTokens, temperature, stream: false }),
       signal: controller.signal,
     });
-
     clearTimeout(timeout);
-
     if (!resp.ok) {
       const errorText = await resp.text().catch(() => "unknown");
       console.error(`[llm] Groq HTTP ${resp.status}:`, errorText.slice(0, 100));
       return { content: "", error: `Groq HTTP ${resp.status}` };
     }
-
     const data = await resp.json();
     const content = data?.choices?.[0]?.message?.content || "";
-
-    if (!content || content.trim().length === 0) {
-      console.error(`[llm] Groq returned empty content`);
-      return { content: "", error: "Empty response" };
-    }
-
+    if (!content.trim()) return { content: "", error: "Empty response" };
     console.log(`[llm] Groq OK:`, content.slice(0, 60));
     return { content };
   } catch (e: any) {
@@ -78,83 +42,46 @@ export async function chatCompletion(
   }
 }
 
-/**
- * Build system prompt for phone conversation
- */
-export function buildSystemPrompt(config: {
-  productName?: string;
-  pitch?: string;
-  tone?: string;
-  pricing?: string;
-}): string {
-  const product = config.productName || "dispatch and logistics solutions";
-  const pitch = config.pitch || `We provide ${product} that helps businesses save time and money.`;
+export function buildSystemPrompt(config: { productName?: string; pitch?: string; tone?: string; pricing?: string }): string {
+  const product = config.productName || "the configured service";
+  const pitch = config.pitch || "Explain the configured service accurately and discover whether it solves the prospect's problem.";
   const tone = config.tone || "PROFESSIONAL";
-  
-  return `You are a professional phone sales agent having a REAL conversation with a prospect.
+  return `You are the live sales conversation brain on a real phone call. Think about the prospect's latest words and the entire conversation before deciding what to say.
 
-CRITICAL RULES:
-- Keep responses SHORT (1-2 sentences max, under 50 words)
-- Sound natural and conversational, like a real person
-- NEVER say you are AI or a robot
-- NEVER use emojis or special characters
-- Respond IMMEDIATELY to what the prospect says
-- Be warm but professional
-- Handle objections gracefully
-- NEVER say "goodbye" or "have a great day" until the prospect has given their name and email
-- If you need information (name, email, company), ask for it politely
-- Never argue or be pushy
-- You can say "thank you" as a polite acknowledgment, but keep the conversation going
+NON-NEGOTIABLE BEHAVIOR:
+- Respond to what the prospect ACTUALLY said. Do not follow a rigid questionnaire or predetermined script.
+- Never invent facts, prices, promises, savings, company details, features, or policies that are not present in the supplied product/pitch/pricing context.
+- Use earlier turns as memory. Do not repeat a question already answered.
+- Ask at most ONE relevant question at a time, and only when a question naturally advances this specific conversation.
+- If the prospect asks a question, answer it first before asking anything else.
+- If they object, address that exact objection rather than returning to a script.
+- If they sound confused, clarify briefly. If they ask you to wait, wait; do not manufacture another question.
+- If they say stop calling/remove me/don't call again, acknowledge immediately and end without persuasion.
+- If directly asked whether you are AI/automated, answer truthfully.
+- Do not claim the prospect agreed, showed interest, or supplied information unless they actually did.
+- Keep each response short enough for a natural phone turn: normally one sentence, maximum two short sentences.
+- Do not fill silence. Silence is handled by the call controller, not by you.
+- Sound warm, alert and conversational; avoid sales-script phrases unless they fit the actual turn.
+- Collect useful lead details naturally when appropriate, not as a forced sequence.
 
-YOUR PRODUCT: ${product}
-YOUR PITCH: ${pitch}
+CUSTOMER CONFIGURATION:
+PRODUCT/SERVICE: ${product}
+SALES PLAN / PITCH / KNOWLEDGE: ${pitch}
 TONE: ${tone}
-${config.pricing ? `PRICING: ${config.pricing}` : ""}
+${config.pricing ? `PRICING / COMMERCIAL CONTEXT: ${config.pricing}` : "PRICING: not supplied; do not invent it."}
 
-CONVERSATION FLOW:
-1. Greet warmly and introduce yourself briefly
-2. Ask how they're doing, then deliver your pitch
-3. Handle any objections or questions naturally
-4. Collect their name, company, and email through natural conversation
-5. Only say goodbye AFTER you have their name and email
-
-RESPOND ONLY WITH WHAT YOU WOULD SAY ON THE PHONE. No labels, no prefixes.`;
+Your goal is to intelligently pursue the configured sales objective while adapting to the human in real time. Output ONLY the exact words to speak on the phone.`;
 }
 
-/**
- * Get AI response for a conversation turn
- */
-export async function getAIResponse(
-  conversationHistory: LLMMessage[],
-  config: {
-    productName?: string;
-    pitch?: string;
-    tone?: string;
-    pricing?: string;
-  }
-): Promise<string> {
-  const systemPrompt = buildSystemPrompt(config);
-  
+export async function getAIResponse(conversationHistory: LLMMessage[], config: { productName?: string; pitch?: string; tone?: string; pricing?: string }): Promise<string> {
   const messages: LLMMessage[] = [
-    { role: "system", content: systemPrompt },
-    ...conversationHistory.slice(-10), // Keep last 10 messages for context
+    { role: "system", content: buildSystemPrompt(config) },
+    ...conversationHistory.slice(-24),
   ];
-
-  const response = await chatCompletion(messages, {
-    maxTokens: 200,
-    temperature: 0.7,
-  });
-
-  if (response.error) {
-    console.error("[llm] Error:", response.error);
-    // Return a natural-sounding fallback
+  const response = await chatCompletion(messages, { maxTokens: 120, temperature: 0.55 });
+  if (response.error || !response.content?.trim()) {
+    console.error("[llm] unavailable:", response.error || "empty");
     return "I'm sorry, could you repeat that?";
   }
-
-  if (!response.content || response.content.trim().length === 0) {
-    console.error("[llm] Empty response from LLM");
-    return "I'm sorry, could you repeat that?";
-  }
-
-  return response.content;
+  return response.content.trim();
 }
