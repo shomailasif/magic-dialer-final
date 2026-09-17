@@ -71,10 +71,14 @@ async function voiceCall({
         onLog("[media] TTS buffer generation failed");
         return;
       }
-      for (let i = 0; i < result.buffer.length; i += FRAME_BYTES) {
-        if (!channel.open) break;
-        channel.sendAudio(result.buffer.subarray(i, Math.min(i + FRAME_BYTES, result.buffer.length)));
-        await new Promise((r) => setTimeout(r, FRAME_MS));
+      // The media channel carries raw PCMU/8000 bytes. Send the complete
+      // utterance as ONE binary message so the cloud trunk can hand the whole
+      // buffer to RingCentral's streamAudio() exactly once. Do not split an
+      // utterance into 20ms WebSocket messages: streamAudio() already owns RTP
+      // framing/pacing, and repeatedly creating one-frame streamers causes
+      // audible gaps/clicks/noise.
+      if (channel.open) {
+        channel.sendAudio(result.buffer);
       }
       onLog(`[media] sent ${result.buffer.length} bytes TTS (${result.engine})`);
     };
@@ -122,7 +126,7 @@ async function voiceCall({
       onMode("listening"); onLog("(listening…)");
       // Local-mic capture remains the offline fallback. The real phone/media path above is VAD-driven.
       const t = await hear({ timeoutMs: 4500, locale: turnLocale });
-      if (t) onLog("LEAD:  " + t); else onLog("(nothing heard)");
+      if (t) onLog("LEAD: " + t); else onLog("(nothing heard)");
       return t;
     });
   }
