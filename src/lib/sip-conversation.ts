@@ -569,7 +569,10 @@ export async function runConversation(
     pricing: agentConfig.pricing,
   });
 
-  const call = await sipCallBridge(sipConfig);
+  const greeting = getInitialGreeting(state);
+  const greetingFramesPromise = textToFramesLocal(greeting);
+  const callPromise = sipCallBridge(sipConfig);
+  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);
   if (!call.ok) {
     console.error("[sip-conv] SIP call failed:", call.last);
     return { ok: false, durationSecs: 0, connected: false, interested: false, disposition: "FAILED", transcript: [], collectedName: null, collectedCompany: null, collectedEmail: null };
@@ -586,10 +589,14 @@ export async function runConversation(
   cs.on("disposed", () => console.log("[sip-conv] *** CALL DISPOSED ***"));
   cs.on("busy", () => console.log("[sip-conv] *** CALL BUSY ***"));
 
-  // Speak greeting immediately
-  const greeting = getInitialGreeting(state);
+  // Greeting audio was prepared while the call connected.
   lines.push(`Agent: ${greeting}`);
-  await speak(cs, greeting, heardRef);
+  if (greetingFrames && greetingFrames.length && !cs.disposed) {
+    enqueueAudio(Buffer.concat(greetingFrames));
+    await waitForQueue();
+  } else {
+    await speak(cs, greeting, heardRef);
+  }
 
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
