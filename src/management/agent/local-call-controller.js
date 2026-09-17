@@ -32,6 +32,11 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
         const frame = b.subarray(i, i + 160);
         if (frame.length < 160) continue;
         const event = state.vad.push(frame, 20);
+        if (state.playing && event.speaking && !state.interrupted) {
+          state.interrupted = true;
+          engine.interrupt();
+          onLog("[local-media-v2] barge-in detected; outbound playback stopped");
+        }
         if (!state.started) {
           state.pre.push(frame);
           if (state.pre.length > 10) state.pre.shift();
@@ -50,14 +55,29 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     activeLocale = locale;
     const out = await speakToBuffer(text, { locale, style: config.voiceStyle || "friendly" });
     if (!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) throw new Error("TTS produced no valid PCMU/8000 telephone audio");
+    if (!state) {
+      let release;
+      const ended = new Promise((resolve) => { release = resolve; });
+      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, ended };
+    } else {
+      state.playing = true;
+      state.interrupted = false;
+    }
     const n = await engine.sendAudio(out.buffer);
+    if (state) state.playing = false;
     onLog(`[local-media-v2] outbound ${n} bytes PCMU/8000 ${locale} playback finished`);
   };
 
   const listenFn = async (turn = {}) => {
-    let release;
-    const ended = new Promise((resolve) => { release = resolve; });
-    state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release };
+    let ended;
+    if (state && state.ended) {
+      ended = state.ended;
+      state.playing = false;
+    } else {
+      let release;
+      ended = new Promise((resolve) => { release = resolve; });
+      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, ended };
+    }
     const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, 15000);
     await ended;
     clearTimeout(timer);
