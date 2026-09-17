@@ -51,15 +51,16 @@ export interface ConversationResult {
 const MAX_CALL_MS = 120000;
 const RATE = 8000;
 const FRAME = 160;
-let pendingAudio: Buffer[] = [];
-let streamActive = false;
-let csRef: any = null;
+type MediaState = { pendingAudio: Buffer[]; streamActive: boolean; csRef: any };
+function createMediaState(csRef: any = null): MediaState {
+  return { pendingAudio: [], streamActive: false, csRef };
+}
 
-function drainAudioQueue() {
-  if (streamActive || pendingAudio.length === 0 || !csRef) return;
-  if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }
-  streamActive = true;
-  const next = pendingAudio.shift()!;
+function drainAudioQueue(media: MediaState) {
+  if (media.streamActive || media.pendingAudio.length === 0 || !media.csRef) return;
+  if (media.csRef.disposed) { media.pendingAudio = []; media.streamActive = false; return; }
+  media.streamActive = true;
+  const next = media.pendingAudio.shift()!;
   let settled = false;
   let streamer: any;
   const expectedMs = Math.ceil((next.length / RATE) * 1000);
@@ -67,13 +68,13 @@ function drainAudioQueue() {
     if (settled) return;
     settled = true;
     clearTimeout(watchdog);
-    streamActive = false;
+    media.streamActive = false;
     console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes');
-    drainAudioQueue();
+    drainAudioQueue(media);
   };
   const watchdog = setTimeout(() => settle('watchdog'), Math.max(1200, expectedMs + 750));
   try {
-    streamer = csRef.streamAudio(next);
+    streamer = media.csRef.streamAudio(next);
     streamer.once('finished', () => settle('finished'));
     streamer.once('error', (e: any) => {
       console.error('[sip-conv] audio stream error:', e?.message || e);
@@ -85,15 +86,15 @@ function drainAudioQueue() {
   }
 }
 
-function enqueueAudio(audio: Buffer) {
-  pendingAudio.push(audio);
-  drainAudioQueue();
+function enqueueAudio(media: MediaState, audio: Buffer) {
+  media.pendingAudio.push(audio);
+  drainAudioQueue(media);
 }
 
-function waitForQueue(): Promise<void> {
+function waitForQueue(media: MediaState): Promise<void> {
   return new Promise((resolve) => {
     const check = setInterval(() => {
-      if (!streamActive && pendingAudio.length === 0) { clearInterval(check); resolve(); }
+      if (!media.streamActive && media.pendingAudio.length === 0) { clearInterval(check); resolve(); }
     }, 50);
   });
 }
@@ -188,7 +189,7 @@ function toUlawFrames(pcm16: Int16Array): Buffer[] {
   const n = pcm16.length;
   for (let off = 0; off < n; off += FRAME) {
     const end = Math.min(off + FRAME, n);
-    const b = Buffer.alloc(FRAME);
+    const b = Buffer.alloc(FRAME, 0xff);
     for (let i = off; i < end; i++) b[i - off] = ulawEncode(pcm16[i]);
     frames.push(b);
   }
@@ -512,7 +513,7 @@ function listenForSpeech(
   });
 }
 
-async function speak(cs: any, text: string, heardRef: { current: boolean }, skipEdge = false): Promise<void> {
+async function speak(cs: any, media: MediaState, text: string, heardRef: { current: boolean }, skipEdge = false): Promise<void> {
   console.log("[sip-conv] speak:", text.slice(0, 80));
   let frames: Buffer[];
   try { frames = await textToFramesLocal(text, skipEdge); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
@@ -521,12 +522,12 @@ async function speak(cs: any, text: string, heardRef: { current: boolean }, skip
   const audio = Buffer.concat(frames);
   console.log("[sip-conv] speak: audio", audio.length, "bytes, cs.disposed=", cs.disposed);
   if (cs.disposed) return;
-  enqueueAudio(audio);
-  return waitForQueue();
+  enqueueAudio(media, audio);
+  return waitForQueue(media);
 }
 
 // Stream sentences: speak each sentence as TTS completes, don't wait for all
-async function speakStreaming(cs: any, text: string, heardRef: { current: boolean }): Promise<void> {
+async function speakStreaming(cs: any, media: MediaState, text: string, heardRef: { current: boolean }): Promise<void> {
   if (!text || !text.trim()) return;
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
   console.log("[sip-conv] speakStreaming:", sentences.length, "sentences from:", text.slice(0, 60));
@@ -540,13 +541,13 @@ async function speakStreaming(cs: any, text: string, heardRef: { current: boolea
     const audio = Buffer.concat(frames);
     console.log("[sip-conv] speakStreaming: sentence '" + trimmed.slice(0, 30) + "' → " + audio.length + " bytes");
     if (cs.disposed) break;
-    enqueueAudio(audio);
+    enqueueAudio(media, audio);
     // Don't wait for queue to drain — start TTS for next sentence immediately
     // But wait if queue is getting too deep (>3 pending)
-    while (pendingAudio.length > 3 && !cs.disposed) await new Promise(r => setTimeout(r, 100));
+    while (media.pendingAudio.length > 3 && !cs.disposed) await new Promise(r => setTimeout(r, 100));
   }
   // Wait for all remaining audio to finish
-  await waitForQueue();
+  await waitForQueue(media);
 }
 
 export async function runConversation(
@@ -570,9 +571,9 @@ export async function runConversation(
   });
 
   const greeting = getInitialGreeting(state);
-  const greetingFramesPromise = textToFramesLocal(greeting);
-  const callPromise = sipCallBridge(sipConfig);
-  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);
+  // Opening audio must be ready before dialing so answer never waits on TTS.
+  const greetingFrames = await textToFramesLocal(greeting);
+  const call = await sipCallBridge(sipConfig);
   if (!call.ok) {
     console.error("[sip-conv] SIP call failed:", call.last);
     return { ok: false, durationSecs: 0, connected: false, interested: false, disposition: "FAILED", transcript: [], collectedName: null, collectedCompany: null, collectedEmail: null };
@@ -581,9 +582,7 @@ export async function runConversation(
   console.log("[sip-conv] SIP call connected, steps:", call.steps?.slice(-3));
   const cs = call.callSession;
   const cleanup = call.cleanup;
-  csRef = cs;
-  pendingAudio = [];
-  streamActive = false;
+  const media = createMediaState(cs);
 
   // Log when call is disposed so we know WHY
   cs.on("disposed", () => console.log("[sip-conv] *** CALL DISPOSED ***"));
@@ -592,10 +591,10 @@ export async function runConversation(
   // Greeting audio was prepared while the call connected.
   lines.push(`Agent: ${greeting}`);
   if (greetingFrames && greetingFrames.length && !cs.disposed) {
-    enqueueAudio(Buffer.concat(greetingFrames));
-    await waitForQueue();
+    enqueueAudio(media, Buffer.concat(greetingFrames));
+    await waitForQueue(media);
   } else {
-    await speak(cs, greeting, heardRef);
+    await speak(cs, media, greeting, heardRef);
   }
 
   for (let turn = 0; turn < 20; turn++) {
@@ -609,7 +608,7 @@ export async function runConversation(
     if (cs.disposed) { console.log("[sip-conv] call disposed during listen, ending"); break; }
     if (!r.spoke) {
       if (cs.disposed) break;
-      await speak(cs, "Are you still there?", heardRef);
+      await speak(cs, media, "Are you still there?", heardRef);
       const retry = await listenForSpeech(cs, start, heardRef, 4000);
       if (!retry.spoke) break;
       r = retry;
@@ -623,7 +622,7 @@ export async function runConversation(
       const fallbackResp = await processProspectInput(state, "");
       let fallbackText = fallbackResp.text || "Sorry, could you repeat that?";
       lines.push(`Agent: ${fallbackText}`);
-      await speak(cs, fallbackText, heardRef);
+      await speak(cs, media, fallbackText, heardRef);
       continue;
     }
     txt = txt.trim();
@@ -638,24 +637,24 @@ export async function runConversation(
     }
     lines.push(`Agent: ${responseText}`);
     // Stream sentences — first sentence plays while rest generates
-    await speakStreaming(cs, responseText, heardRef);
+    await speakStreaming(cs, media, responseText, heardRef);
     if (resp.shouldEnd) break;
   }
 
   const data = getCollectedData(state);
   const closing = `Thank${data.name ? " you, " + data.name : " you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!`;
   lines.push(`Agent: ${closing}`);
-  if (!cs.disposed) await speakStreaming(cs, closing, heardRef);
+  if (!cs.disposed) await speakStreaming(cs, media, closing, heardRef);
 
   // Wait for final audio then hangup
-  await waitForQueue();
+  await waitForQueue(media);
   const dur = Math.round((Date.now() - start) / 1000);
   try { cs.hangup(); } catch {}
 
-  // Cleanup queue state
-  pendingAudio = [];
-  streamActive = false;
-  csRef = null;
+  // Cleanup only this call's media state.
+  media.pendingAudio = [];
+  media.streamActive = false;
+  media.csRef = null;
 
   setTimeout(() => { cleanup(); }, 500);
 
