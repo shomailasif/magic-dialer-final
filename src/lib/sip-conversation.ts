@@ -51,9 +51,15 @@ export interface ConversationResult {
 const MAX_CALL_MS = 120000;
 const RATE = 8000;
 const FRAME = 160;
-type MediaState = { pendingAudio: Buffer[]; streamActive: boolean; csRef: any };
+type MediaState = { pendingAudio: Buffer[]; streamActive: boolean; csRef: any; turnSpeechEndedAt: number; firstAudioAt: number };
+function latencyMark(media: MediaState, stage: string, startedAt?: number) {
+  const now = Date.now();
+  const fromSpeech = media.turnSpeechEndedAt ? now - media.turnSpeechEndedAt : null;
+  const stageMs = startedAt ? now - startedAt : null;
+  console.log("[sip-latency]", stage, { fromSpeechEndMs: fromSpeech, stageMs });
+}
 function createMediaState(csRef: any = null): MediaState {
-  return { pendingAudio: [], streamActive: false, csRef };
+  return { pendingAudio: [], streamActive: false, csRef, turnSpeechEndedAt: 0, firstAudioAt: 0 };
 }
 
 function drainAudioQueue(media: MediaState) {
@@ -84,6 +90,7 @@ function drainAudioQueue(media: MediaState) {
 }
 
 function enqueueAudio(media: MediaState, audio: Buffer) {
+  if (media.turnSpeechEndedAt && !media.firstAudioAt) { media.firstAudioAt = Date.now(); latencyMark(media, "first-audio-enqueued"); }
   media.pendingAudio.push(audio);
   drainAudioQueue(media);
 }
@@ -151,7 +158,7 @@ function pcm16ToWav(pcm: Int16Array, sampleRate: number): Buffer {
   return buf;
 }
 
-async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
+async function transcribeWithWhisper(audioChunks: Buffer[], media?: MediaState): Promise<string> {
   if (!audioChunks.length) { console.log("[sip-conv] Whisper: no audio chunks collected"); return ""; }
   const raw = Buffer.concat(audioChunks);
   console.log("[sip-conv] Whisper: collected", audioChunks.length, "chunks,", raw.length, "total bytes");
@@ -165,6 +172,7 @@ async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
     form.append("model", "whisper-large-v3-turbo");
     form.append("language", "en");
     form.append("temperature", "0");
+    const sttStartedAt = Date.now();
     const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
@@ -174,6 +182,7 @@ async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
     const d = await r.json();
     const text = (d?.text || "").trim();
     console.log("[sip-conv] Whisper STT:", text || "(empty)");
+    if (media) latencyMark(media, "stt-complete", sttStartedAt);
     return text;
   } catch (e: any) {
     console.error("[sip-conv] Whisper error:", e?.message);
@@ -473,7 +482,7 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
 let edgeTtsBroken = GUARD_EDGE_TTS_BROKEN_INIT;
 
 function listenForSpeech(
-  cs: any, callStart: number, heardRef: { current: boolean }, maxMs: number,
+  cs: any, callStart: number, heardRef: { current: boolean }, maxMs: number, media?: MediaState,
 ): Promise<{ spoke: boolean; durationMs: number; transcript: string }> {
   return new Promise((resolve) => {
     let got=false, first=0, lastVoice=0, baseline=0, baselineN=0, finished=false;
@@ -499,7 +508,8 @@ function listenForSpeech(
     const finish=async () => {
       if (finished) return; finished=true; clearInterval(iv); cs.removeListener("audioPacket",on);
       if (!got) { resolve({spoke:false,durationMs:0,transcript:""}); return; }
-      const transcript=await transcribeWithWhisper(audioChunks);
+      if (media) { media.turnSpeechEndedAt = Date.now(); media.firstAudioAt = 0; latencyMark(media, "speech-end"); }
+      const transcript=await transcribeWithWhisper(audioChunks, media);
       resolve({spoke:true,durationMs:Date.now()-first,transcript});
     };
     const iv=setInterval(() => {
@@ -602,13 +612,13 @@ export async function runConversation(
     console.log("[sip-conv] turn", turn, "elapsed", Math.round((Date.now() - start) / 1000), "s");
 
     // Listen for speech — 1s silence = done speaking
-    let r = await listenForSpeech(cs, start, heardRef, 15000);
+    let r = await listenForSpeech(cs, start, heardRef, 15000, media);
     console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });
     if (cs.disposed) { console.log("[sip-conv] call disposed during listen, ending"); break; }
     if (!r.spoke) {
       if (cs.disposed) break;
       await speak(cs, media, "Are you still there?", heardRef);
-      const retry = await listenForSpeech(cs, start, heardRef, 4000);
+      const retry = await listenForSpeech(cs, start, heardRef, 4000, media);
       if (!retry.spoke) break;
       r = retry;
     }
@@ -617,9 +627,10 @@ export async function runConversation(
 
     let txt = r.transcript;
     if (!txt || txt.trim().length === 0) {
-      console.log("[sip-conv] Whisper empty but prospect spoke, using smart fallback");
-      const fallbackResp = await processProspectInput(state, "");
-      let fallbackText = fallbackResp.text || "Sorry, could you repeat that?";
+      // Speech was detected but STT produced no usable words. Do not mutate
+      // conversation state or let the scripted fallback advance to a new topic.
+      console.log("[sip-conv] Whisper empty after detected speech; requesting exact retry without advancing state");
+      const fallbackText = "Sorry, I didn't catch that. Could you say that again?";
       lines.push(`Agent: ${fallbackText}`);
       await speak(cs, media, fallbackText, heardRef);
       continue;
