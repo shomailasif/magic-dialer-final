@@ -1,0 +1,35 @@
+name: Edge audio parser hotfix
+on:
+  push:
+    paths:
+      - '.github/workflows/hotfix-edge-audio-parser.yml'
+permissions:
+  contents: write
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Fix Edge binary audio extraction
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/lib/sip-conversation.ts')
+          s = p.read_text()
+          old = 'chunks.push(buf.subarray(2 + hl + 2));'
+          new = 'chunks.push(buf.subarray(2 + hl));'
+          if old not in s:
+              raise SystemExit('Expected parser bug not found; refusing unsafe edit')
+          if s.count(old) != 1:
+              raise SystemExit('Unexpected match count; refusing unsafe edit')
+          p.write_text(s.replace(old, new, 1))
+      - name: Commit hotfix and remove temporary workflow
+        run: |
+          git config user.name "wodozone-hotfix"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/hotfix-edge-audio-parser.yml
+          git add src/lib/sip-conversation.ts
+          git commit -m "Fix Edge TTS binary audio extraction"
+          git push origin HEAD:main
