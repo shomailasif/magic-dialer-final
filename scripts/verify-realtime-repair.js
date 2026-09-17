@@ -61,13 +61,13 @@ assert(trunk.includes("rtpPacket.payload"));
 assert(softphone.includes("streamAudio"));
 
 // Active live RingCentral audio must use SDK streamAudio only. The WSS path
-// must queue frames before answer instead of dropping the opening greeting.
+// must queue PCMU frames before answer instead of dropping the opening greeting.
 assert(media.includes('session.provider === "ringcentral-sip"'));
-assert(media.includes("sendRingCentralSipAudio(session, payload)"));
+assert(media.includes("sendRingCentralSipAudio(session, Buffer.concat(frames))"));
 assert(media.includes("cs.streamAudio(frame)"));
-assert(media.includes("session._sdkAudioQueue.push(Buffer.from(payload))"));
+assert(media.includes("session._sdkAudioQueue.push(Buffer.from(frame))"));
 assert(media.includes('if (!cs || cs.disposed || typeof cs.streamAudio !== "function")'));
-assert(media.includes("setTimeout(pump, 20)"));
+assert(media.includes("setTimeout(pump, PCMU_FRAME_MS)"));
 const sipBranch = media.slice(media.indexOf('session.provider === "ringcentral-sip"'), media.indexOf('session.provider === "ringcentral"'));
 assert(!sipBranch.includes("session.agentAudioHandler(payload)"));
 assert(!sipBranch.includes("session._agentAudio = payload"));
