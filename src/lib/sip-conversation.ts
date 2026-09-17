@@ -60,11 +60,29 @@ function drainAudioQueue() {
   if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }
   streamActive = true;
   const next = pendingAudio.shift()!;
-  const streamer = csRef.streamAudio(next);
-  streamer.once("finished", () => {
+  let settled = false;
+  let streamer: any;
+  const expectedMs = Math.ceil((next.length / RATE) * 1000);
+  const settle = (reason: string) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(watchdog);
     streamActive = false;
+    console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes');
     drainAudioQueue();
-  });
+  };
+  const watchdog = setTimeout(() => settle('watchdog'), Math.max(1200, expectedMs + 750));
+  try {
+    streamer = csRef.streamAudio(next);
+    streamer.once('finished', () => settle('finished'));
+    streamer.once('error', (e: any) => {
+      console.error('[sip-conv] audio stream error:', e?.message || e);
+      settle('error');
+    });
+  } catch (e: any) {
+    console.error('[sip-conv] streamAudio threw:', e?.message || e);
+    settle('throw');
+  }
 }
 
 function enqueueAudio(audio: Buffer) {
@@ -487,7 +505,7 @@ function listenForSpeech(
     const iv=setInterval(() => {
       const now=Date.now();
       if (cs.disposed || now-callStart>MAX_CALL_MS) { void finish(); return; }
-      if (got && lastVoice && now-lastVoice>=650) { void finish(); return; }
+      if (got && lastVoice && now-lastVoice>=350) { void finish(); return; }
       if (got && first && now-first>=6000) { void finish(); return; }
       if (!got && now-start>=maxMs) { void finish(); return; }
     },50);
