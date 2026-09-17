@@ -1,4 +1,4 @@
-name: Repair inbound audio
+name: Repair conversation playback
 on:
   push:
     paths:
@@ -10,22 +10,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch listener
+      - name: Patch stuck stream completion
         shell: python
         run: |
           from pathlib import Path
           p=Path("src/lib/sip-conversation.ts")
           s=p.read_text()
-          a=s.index("function listenForSpeech(")
-          b=s.index("\nasync function speak(",a)
-          n='''function listenForSpeech(\n  cs: any, callStart: number, heardRef: { current: boolean }, maxMs: number,\n): Promise<{ spoke: boolean; durationMs: number; transcript: string }> {\n  return new Promise((resolve) => {\n    let got=false, first=0, lastVoice=0, baseline=0, baselineN=0, finished=false;\n    const start=Date.now();\n    const audioChunks: Buffer[]=[];\n    const preRoll: Buffer[]=[];\n    const on=(d:any) => {\n      const raw=d?.payload || d;\n      const payload=Buffer.isBuffer(raw) ? raw : (raw && typeof raw.length === "number" ? Buffer.from(raw) : null);\n      if (!payload || !payload.length) return;\n      let sum=0, peak=0;\n      for (let i=0;i<payload.length;i++) { const amp=Math.abs(ulawDecode(payload[i])); sum+=amp; if (amp>peak) peak=amp; }\n      const avg=sum/payload.length;\n      const now=Date.now();\n      if (!got && baselineN<25) { baseline=((baseline*baselineN)+avg)/(baselineN+1); baselineN++; }\n      const threshold=Math.max(260,baseline*3.2);\n      const voice=avg>=threshold && peak>=Math.max(1400,threshold*3);\n      preRoll.push(payload); if (preRoll.length>15) preRoll.shift();\n      if (voice) { heardRef.current=true; if (!got) { got=true; first=now; audioChunks.push(...preRoll); } lastVoice=now; }\n      if (got) audioChunks.push(payload);\n    };\n    cs.on("audioPacket",on);\n    const finish=async () => {\n      if (finished) return; finished=true; clearInterval(iv); cs.removeListener("audioPacket",on);\n      if (!got) { resolve({spoke:false,durationMs:0,transcript:""}); return; }\n      const transcript=await transcribeWithWhisper(audioChunks);\n      resolve({spoke:true,durationMs:Date.now()-first,transcript});\n    };\n    const iv=setInterval(() => {\n      const now=Date.now();\n      if (cs.disposed || now-callStart>MAX_CALL_MS) { void finish(); return; }\n      if (got && lastVoice && now-lastVoice>=650) { void finish(); return; }\n      if (got && first && now-first>=6000) { void finish(); return; }\n      if (!got && now-start>=maxMs) { void finish(); return; }\n    },50);\n  });\n}\n'''
+          a=s.index("function drainAudioQueue()")
+          b=s.index("\nfunction enqueueAudio",a)
+          n='''function drainAudioQueue() {
+  if (streamActive || pendingAudio.length === 0 || !csRef) return;
+  if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }
+  streamActive = true;
+  const next = pendingAudio.shift()!;
+  const streamer = csRef.streamAudio(next);
+  let settled = false;
+  // PCMU/8000 is 8000 bytes/sec. Some SDK streams never emit `finished`;
+  // without this guard waitForQueue() hangs and the AI never listens again.
+  const expectedMs = Math.ceil((next.length / RATE) * 1000);
+  const watchdog = setTimeout(() => settle("watchdog"), Math.max(1500, expectedMs + 1500));
+  function settle(reason: string) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(watchdog);
+    streamActive = false;
+    console.log("[sip-conv] audio stream complete:", reason, next.length, "bytes");
+    drainAudioQueue();
+  }
+  streamer.once("finished", () => settle("finished"));
+  streamer.once("error", (e: any) => { console.error("[sip-conv] audio stream error:", e?.message || e); settle("error"); });
+}
+'''
           p.write_text(s[:a]+n+s[b:])
       - name: Verify and commit
         run: |
-          grep -q 'baseline\*3.2' src/lib/sip-conversation.ts
-          grep -q 'cs.on("audioPacket",on)' src/lib/sip-conversation.ts
+          grep -q 'expectedMs = Math.ceil((next.length / RATE) \* 1000)' src/lib/sip-conversation.ts
+          grep -q 'settle("watchdog")' src/lib/sip-conversation.ts
+          grep -q 'streamer.once("error"' src/lib/sip-conversation.ts
           git config user.name wodozone-hotfix
           git config user.email actions@users.noreply.github.com
           git add src/lib/sip-conversation.ts
-          git commit -m "Fix inbound turns with adaptive noise floor"
+          git commit -m "Prevent AI response playback queue from hanging"
           git push origin HEAD:main
