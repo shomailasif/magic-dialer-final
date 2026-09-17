@@ -301,7 +301,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
     const stamp = edgeDateString();
     ws.on("open", () => {
       console.log("[sip-conv] edgeTts WS open, sending config...");
-      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"raw-8khz-8bit-mono-mulaw"}}}}\r\n`, (err: any) => {
+      ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
         if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
@@ -445,7 +445,7 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
   if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
   const combined = Buffer.concat(allParts);
   console.log("[sip-conv] TTS combined:", combined.length, "bytes");
-  const frames = await toFramesFromAudio(combined);
+  const frames = await legacyToFramesFromAudio(combined);
   console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");
   return frames;
 }
@@ -471,11 +471,12 @@ function listenForSpeech(
       if (!got) first = Date.now();
       got = true;
       last = Date.now();
-      const payload = d;
+      // RingCentral audioPacket is an RTP object; Whisper needs only its PCMU payload.
+      const payload = d?.payload || d;
       if (Buffer.isBuffer(payload)) audioChunks.push(payload);
       else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));
     };
-    cs.on("audio", on);
+    cs.on("audioPacket", on);
 
     // Keepalive: enqueue silent PCMU audio every 3s so SBC doesn't kill the session
     // Uses the queue mechanism (correct RTP via SDK) instead of manual packet construction
@@ -488,7 +489,7 @@ function listenForSpeech(
     const finish = async () => {
       clearInterval(iv);
       clearInterval(keepaliveIv);
-      cs.removeListener("audio", on);
+      cs.removeListener("audioPacket", on);
       if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
       const dur = Date.now() - first;
       if (dur < 500) { resolve({ spoke: true, durationMs: dur, transcript: "" }); return; }
