@@ -25,6 +25,7 @@ assert(engine.includes("session.streamAudio(audio)"), "outbound must use RingCen
 assert(engine.includes('session.on("audioPacket"'), "inbound must use RingCentral SDK audioPacket");
 assert(engine.includes("packet && packet.payload"), "inbound must consume RTP payload, not RTP object");
 assert(engine.includes('streamer.once("finished"'), "sendAudio must wait for SDK playback completion");
+assert(engine.includes('typeof streamer.stop === "function"') && engine.includes("interrupt"), "playback interruption primitive missing");
 assert(engine.includes("let sendChain = Promise.resolve()"), "outbound utterances must be serialized");
 assert(engine.includes("sendChain = sendChain.then(() => play(audio))"), "outbound audio must not overlap");
 assert(engine.includes("const rem = b.length % FRAME_BYTES"), "PCMU must be normalized to 20ms frame boundaries");
