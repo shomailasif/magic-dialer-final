@@ -12,16 +12,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Fix audio resampling and retry transcript handling
+      - name: Fix remaining audio resampling and retry transcript handling
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p=Path('src/lib/sip-conversation.ts')
           s=p.read_text()
           old='''      pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;\n      const outLen = Math.ceil(pcm.length / ratio);\n      const out = new Int16Array(outLen);\n      for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;\n      pcm = out;'''
-          if s.count(old) != 2:
-              raise SystemExit(f'Expected 2 double-downsample blocks, found {s.count(old)}')
-          s=s.replace(old, '      pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;')
+          n=s.count(old)
+          if n != 1:
+              raise SystemExit(f'Expected 1 remaining double-downsample block, found {n}')
+          s=s.replace(old, '      pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;', 1)
           old2='''    const r = await listenForSpeech(cs, start, heardRef, 3000);\n    console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });'''
           new2='''    let r = await listenForSpeech(cs, start, heardRef, 3000);\n    console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });'''
           if old2 not in s: raise SystemExit('listen declaration not found')
