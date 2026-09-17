@@ -10,6 +10,7 @@ const { startWebUi, writeDashboardUrl, dashboardUrlPath } = require("./webui");
 const localDb = require("./local-db");
 const sync = require("./sync");
 const { emailQualifiedLead } = require("./email");
+const { ensurePhoneSession } = require("./call-start");
 
 /**
  * Customer PC agent.
@@ -454,14 +455,14 @@ async function runAgent(opts = {}) {
     if (voiceCall) try {
       // Bind this conversation to the cloud SIP session that actually owns the
       // phone audio. Never let a telephone call silently fall back to the PC mic.
-      let sessionId = null;
-      if (portal && config.token) {
-        try {
-          const active = await post(`${portal}/api/agent/active-call`, { token: config.token });
-          if (active.status === 200 && active.body) sessionId = active.body.sessionId || null;
-        } catch {}
-      }
-      if (!sessionId) throw new Error("No active phone media session found - refusing PC-microphone fallback.");
+      const phoneSession = await ensurePhoneSession({
+        portal,
+        token: config.token,
+        callList: config.callList,
+        post,
+        log,
+      });
+      const sessionId = phoneSession.sessionId;
       log("Attaching AI to phone media session " + sessionId);
       const result = await voiceCall({
         sessionId,
