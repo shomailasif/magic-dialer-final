@@ -6,7 +6,7 @@ on:
     paths:
       - ".github/workflows/hotfix-inbound-vad.yml"
 
-# Deployment trigger: validated RingCentral audio repair f6bae10
+# Deployment trigger: validated conversation repairs 899cf2b
 jobs:
   verify:
     runs-on: ubuntu-latest
