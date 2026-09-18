@@ -14,7 +14,7 @@ async function sha256(file){return await new Promise((resolve,reject)=>{const h=
 async function download(url,dest){const r=await fetch(url,{redirect:"follow",cache:"no-store"});if(!r.ok)throw new Error("update download HTTP "+r.status);fs.writeFileSync(dest,Buffer.from(await r.arrayBuffer()))}
 function stateDir(){return path.join(process.env.LOCALAPPDATA||os.homedir(),"Magic Dialer","updates")}
 function readState(){try{return JSON.parse(fs.readFileSync(path.join(stateDir(),"state.json"),"utf8"))}catch{return{}}}
-function writeState(s){fs.mkdirSync(stateDir(),{recursive:true});fs.writeFileSync(path.join(stateDir(),"state.json"),JSON.stringify(s,null,2))}
+function writeState(s){fs.mkdirSync(stateDir(),{recursive:true});fs.writeFileSync(path.join(stateDir(),"state.json"),JSON.stringify(s,null,2))}\nfunction seededInstaller(version){const p=path.join(stateDir(),"known-good-"+version+".exe");return fs.existsSync(p)?p:null}
 async function healthy(expectedVersion,timeoutMs=45000){const end=Date.now()+timeoutMs;while(Date.now()<end){try{const r=await fetch(HEALTH_URL,{cache:"no-store"});const j=await r.json();if(r.ok&&j.ok&&(!expectedVersion||j.version===expectedVersion))return true}catch{}await new Promise(r=>setTimeout(r,1000))}return false}
 function launchInstaller(file){const c=spawn(file,["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"],{detached:true,stdio:"ignore",windowsHide:true});c.unref()}
 async function checkForUpdate(currentVersion){
@@ -22,7 +22,7 @@ async function checkForUpdate(currentVersion){
  const mr=await fetch(MANIFEST_URL,{redirect:"follow",cache:"no-store"});if(!mr.ok)throw new Error("manifest HTTP "+mr.status);
  const m=await mr.json();if(!validManifest(m))throw new Error("invalid or untrusted update manifest");
  if(!newer(m.version,currentVersion))return{updated:false,reason:"current"};
- const s=readState();if(s.blockedVersion===m.version)return{updated:false,reason:"blocked-after-failure"};
+ let s=readState();if(s.blockedVersion===m.version)return{updated:false,reason:"blocked-after-failure"};\n const seed=!s.lastGoodInstaller&&seededInstaller(currentVersion);if(seed)s={...s,lastGoodVersion:currentVersion,lastGoodInstaller:seed};
  const dir=stateDir();fs.mkdirSync(dir,{recursive:true});const installer=path.join(dir,"candidate-"+m.version+".exe");
  await download(m.url,installer);const got=await sha256(installer);if(got.toLowerCase()!==m.sha256.toLowerCase()){try{fs.unlinkSync(installer)}catch{};throw new Error("update SHA-256 mismatch")}
  writeState({...s,pendingVersion:m.version,pendingInstaller:installer,previousVersion:currentVersion});launchInstaller(installer);
@@ -36,4 +36,4 @@ async function validatePendingUpdate(currentVersion){
  if(prior&&fs.existsSync(prior)){launchInstaller(prior);return{pending:true,healthy:false,rollback:true}}
  return{pending:true,healthy:false,rollback:false};
 }
-module.exports={MANIFEST_URL,RELEASE_PREFIX,HEALTH_URL,newer,validManifest,sha256,healthy,checkForUpdate,validatePendingUpdate,_test:{readState,writeState,stateDir}};
+module.exports={MANIFEST_URL,RELEASE_PREFIX,HEALTH_URL,newer,validManifest,sha256,healthy,checkForUpdate,validatePendingUpdate,_test:{readState,writeState,stateDir,seededInstaller}};
