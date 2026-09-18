@@ -41,9 +41,21 @@ Name: "{commondesktop}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFil
 Name: "{group}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 
 [Code]
+procedure StopRunningMagicDialer();
+var ResultCode: Integer;
+begin
+  { Upgrades must stop the watchdog/agent before replacing agent.exe. }
+  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM MagicDialer.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM agent.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(750);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var CacheDir, CacheFile: string;
 begin
+  if CurStep = ssInstall then
+    StopRunningMagicDialer();
+
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
