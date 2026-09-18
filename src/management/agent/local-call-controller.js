@@ -7,7 +7,12 @@ const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
 const { transcribeAuto } = require("./multilingual-stt");
 const { normalizeLanguage } = require("./language");
 
-async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {} }) {
+async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {}, deps = {} }) {
+  const makeEngine = deps.createLocalRingCentralEngine || createLocalRingCentralEngine;
+  const makeVad = deps.createVad || createVad;
+  const tts = deps.speakToBuffer || speakToBuffer;
+  const sttAuto = deps.transcribeAuto || transcribeAuto;
+  const callBrain = deps.voiceCall || voiceCall;
   const v = config.voip || {};
   if (!v.ready || !v.username || !v.sipPassword || !v.number) throw new Error("VOIP configuration incomplete");
   const target = String(number || config.testNumber || (config.callList || [])[0] || "").trim();
@@ -15,7 +20,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
 
   let state = null;
   let activeLocale = config.lang && config.lang !== "auto" ? normalizeLanguage(config.lang) : "en";
-  const engine = createLocalRingCentralEngine({
+  const engine = makeEngine({
     number: target,
     sip: {
       user: v.username,
@@ -54,12 +59,12 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
   const speakFn = async (text, turn = {}) => {
     const locale = normalizeLanguage(turn.locale || activeLocale);
     activeLocale = locale;
-    const out = await speakToBuffer(text, { locale, style: config.voiceStyle || "friendly" });
+    const out = await tts(text, { locale, style: config.voiceStyle || "friendly" });
     if (!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) throw new Error("TTS produced no valid PCMU/8000 telephone audio");
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -78,7 +83,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
     }
     const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, 15000);
     await ended;
@@ -88,14 +93,14 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     if (!captured.started || !captured.chunks.length) return null;
     const audio = Buffer.concat(captured.chunks);
     onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
-    const stt = await transcribeAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale) });
+    const stt = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale) });
     if (stt.language) { activeLocale = stt.language; onLog(`[local-media-v2] detected language ${activeLocale}`); }
     if (stt.error) onLog(`[local-media-v2] STT ${stt.error}`);
     return stt.text ? { text: stt.text, language: stt.language || activeLocale } : null;
   };
 
   try {
-    return await voiceCall({
+    return await callBrain({
       product: config.product,
       leadFields: config.leadFields || [],
       persona: config.persona,
