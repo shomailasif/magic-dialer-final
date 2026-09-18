@@ -9,6 +9,9 @@ on:
       - "src/management/package.json"
       - ".github/workflows/build-windows-engine.yml"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
