@@ -1,0 +1,1 @@
+const assert=require("node:assert");const u=require("./auto-update");assert.equal(u.newer("1.3.1","1.3.0"),true);assert.equal(u.newer("1.3.0","1.3.0"),false);assert.equal(u.newer("1.2.9","1.3.0"),false);assert.ok(u.MANIFEST_URL.startsWith("https://"));console.log("auto-update behavior: PASS");
