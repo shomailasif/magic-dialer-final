@@ -94,6 +94,20 @@ jobs:
           if ($seedHash -ne $installerHash) { throw "Seeded rollback installer differs from installed release bytes" }
           Write-Host "Rollback seed verified byte-for-byte: $seedHash"
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
+      - name: Microsoft Defender security gate
+        shell: powershell
+        run: |
+          $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
+          $mp = Join-Path $env:ProgramFiles "Windows Defender\\MpCmdRun.exe"
+          if (-not (Test-Path $mp)) { throw "Microsoft Defender CLI unavailable on release runner" }
+          & $mp -SignatureUpdate
+          & $mp -Scan -ScanType 3 -File $installer -DisableRemediation
+          if ($LASTEXITCODE -ne 0) { throw "Microsoft Defender flagged the installer; release blocked" }
+          $agent = Join-Path $env:LOCALAPPDATA "Magic Dialer\\agent.exe"
+          if (Test-Path $agent) {
+            & $mp -Scan -ScanType 3 -File $agent -DisableRemediation
+            if ($LASTEXITCODE -ne 0) { throw "Microsoft Defender flagged agent.exe; release blocked" }
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: magic-dialer-engine-windows
