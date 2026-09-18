@@ -2,7 +2,8 @@
 # Missing required tests are failures, never silent skips.
 $node = Join-Path $env:ProgramFiles "nodejs\node.exe"
 $tests = @(
-  "agent\local-ringcentral-engine.test.js"
+  "agent\local-ringcentral-engine.test.js",
+  "agent\local-ringcentral-engine.behavior.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {
