@@ -9,12 +9,12 @@ function normalizePcmu(input) {
   const rem = b.length % FRAME_BYTES;
   return rem ? Buffer.concat([b, Buffer.alloc(FRAME_BYTES - rem, SILENCE)]) : b;
 }
-function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {} }) {
+function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {}, bridgeFactory = sipCallBridge }) {
   let bridge, session, streamer, activePlayback, closed = false, bytesIn = 0, bytesOut = 0;
   let sendChain = Promise.resolve();
   let generation = 0;
   async function connect() {
-    bridge = await sipCallBridge({ ...sip, number });
+    bridge = await bridgeFactory({ ...sip, number });
     if (!bridge || !bridge.ok || !bridge.callSession) throw new Error((bridge && bridge.last) || "RingCentral call bridge failed");
     session = bridge.callSession;
     session.on("audioPacket", packet => {
