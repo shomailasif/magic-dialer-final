@@ -171,7 +171,13 @@ async function runWatchdog(args) {
 /** Agent version surfaced in dashboard + status. */
 const VERSION = "1.3.0";
 
-function scheduleAutoUpdate() {\n  const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + e.message));\n  setTimeout(run, 15000);\n  const timer = setInterval(run, 6 * 60 * 60 * 1000);\n  if (timer.unref) timer.unref();\n}\n
+function scheduleAutoUpdate() {
+  const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + e.message));
+  setTimeout(run, 15000);
+  const timer = setInterval(run, 6 * 60 * 60 * 1000);
+  if (timer.unref) timer.unref();
+}
+
 
 /**
  * Roll a call result into the customer's lifetime + daily stats, persisted in
