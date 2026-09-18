@@ -432,6 +432,7 @@ function readJson(req) {
  *   statusPath : string|null (path to status.json the dashboard should read)
  *   onSetup    : (fields) -> void   (persist onboarding, called once)
  *   onMode     : (mode) -> void     ("on"|"off")
+ *   onCall     : (number) -> Promise<any>
  *   serviceName: string (title/version seed)
  * Returns { port, url, close }.
  */
@@ -526,6 +527,19 @@ async function startWebUi(opts) {
       opts.writeConfig(cfg);
       try { opts.onSetup && opts.onSetup(cfg); } catch {}
       sendJson(res, 200, { ok: true, configured: true });
+      return;
+    }
+    if (req.method === "POST" && p === "/api/call") {
+      const body = await readJson(req);
+      const number = String(body && body.number || "").replace(/[^0-9+]/g, "");
+      if (!/^\+?[0-9]{7,15}$/.test(number)) { sendJson(res, 400, { ok: false, error: "Invalid phone number." }); return; }
+      if (typeof opts.onCall !== "function") { sendJson(res, 503, { ok: false, error: "Local call control unavailable." }); return; }
+      try {
+        const result = await opts.onCall(number);
+        sendJson(res, 200, { ok: true, engine: "local", result });
+      } catch (e) {
+        sendJson(res, 500, { ok: false, engine: "local", error: e && e.message || "Local call failed." });
+      }
       return;
     }
     if (req.method === "POST" && (p === "/api/pause" || p === "/api/resume")) {
