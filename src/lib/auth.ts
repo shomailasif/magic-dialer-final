@@ -12,17 +12,17 @@ function secret(): string {
   return s;
 }
 
-export function signSession(userId: string): string {
-  const payload = `${userId}.${Date.now()}`;
+export function signSession(userId: string, sessionId = ""): string {
+  const payload = `${userId}.${Date.now()}.${sessionId}`;
   const sig = createHmac("sha256", secret()).update(payload).digest("hex");
   return `${payload}.${sig}`;
 }
 
-export function verifySession(token: string): { userId: string } | null {
+export function verifySession(token: string): { userId: string; sessionId: string } | null {
   const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const payload = `${parts[0]}.${parts[1]}`;
-  const sig = parts[2];
+  if (parts.length !== 4) return null;
+  const payload = `${parts[0]}.${parts[1]}.${parts[2]}`;
+  const sig = parts[3];
   const expected = createHmac("sha256", secret()).update(payload).digest("hex");
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
@@ -31,7 +31,7 @@ export function verifySession(token: string): { userId: string } | null {
   const ts = Number(parts[1]);
   if (Number.isNaN(ts)) return null;
   if (Date.now() - ts > SESSION_TTL_MS) return null;
-  return { userId: parts[0] };
+  return { userId: parts[0], sessionId: parts[2] };
 }
 
 export const SESSION_COOKIE_NAME = SESSION_COOKIE;
@@ -61,14 +61,14 @@ export async function createDeviceSession(
   deviceFingerprint: string,
   ipAddress: string,
   userAgent: string
-): Promise<void> {
+): Promise<string> {
   // Delete any existing sessions for this user (one device at a time)
   await prisma.session.deleteMany({
     where: { userId },
   });
 
   // Create new session
-  await prisma.session.create({
+  const session = await prisma.session.create({
     data: {
       userId,
       deviceFingerprint,
@@ -77,6 +77,7 @@ export async function createDeviceSession(
       expiresAt: new Date(Date.now() + SESSION_TTL_MS),
     },
   });
+  return session.id;
 }
 
 /**
@@ -135,6 +136,9 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   if (!token) return null;
   const verified = verifySession(token);
   if (!verified) return null;
+  if (!verified.sessionId) return null;
+  const active = await prisma.session.findFirst({ where: { id: verified.sessionId, userId: verified.userId, expiresAt: { gt: new Date() } } });
+  if (!active) return null;
   const user = await prisma.user.findUnique({
     where: { id: verified.userId },
     include: { subscription: true },
