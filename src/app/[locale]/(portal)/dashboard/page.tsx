@@ -74,6 +74,16 @@ export default async function DashboardPage({
         </div>
       </div>
 
+      <Card className="border-indigo-200 bg-indigo-50 p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-indigo-700">One-time PC setup</p>
+            <h2 className="mt-1 text-lg font-bold text-slate-900">Download Magic Dialer</h2>
+            <p className="mt-1 text-sm text-slate-600">Install the Windows engine on this PC once. After installation, use Magic Dialer from this panel normally.</p>
+          </div>
+          <Button href="https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/magic-dialer-engine-windows.exe" variant="primary">Download for Windows</Button>
+        </div>
+      </Card>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard label={t("statTotalLeads")} value={totalLeads} tone="indigo" />
         <StatCard label={t("statCallsMade")} value={calls} />
