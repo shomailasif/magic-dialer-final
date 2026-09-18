@@ -337,7 +337,12 @@ function ask(question) {
  * machines on one computer. `opts.setup` opens the web setup/dashboard.
  */
 async function runAgent(opts = {}) {
-  if (isPacked()) {\n    const validation = await validatePendingUpdate(VERSION).catch((e) => ({ error: e.message }));\n    if (validation && validation.rollback) { log("Pending update failed health validation; known-good rollback launched."); setTimeout(() => process.exit(0), 1500); return; }\n    if (validation && validation.error) log("Update validation failed safely: " + validation.error);\n    scheduleAutoUpdate();\n  }
+  if (isPacked()) {
+    const validation = await validatePendingUpdate(VERSION).catch((e) => ({ error: e.message }));
+    if (validation && validation.rollback) { log("Pending update failed health validation; known-good rollback launched."); setTimeout(() => process.exit(0), 1500); return; }
+    if (validation && validation.error) log("Update validation failed safely: " + validation.error);
+    scheduleAutoUpdate();
+  }
   let engineHealthServer = null;
   try { engineHealthServer = await startEngineHealthServer({ version: VERSION }); log("Local engine health: http://127.0.0.1:18787/health"); }
   catch (e) { log("Local engine health unavailable: " + e.message); }
