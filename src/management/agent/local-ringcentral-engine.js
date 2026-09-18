@@ -10,7 +10,7 @@ function normalizePcmu(input) {
   return rem ? Buffer.concat([b, Buffer.alloc(FRAME_BYTES - rem, SILENCE)]) : b;
 }
 function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {} }) {
-  let bridge, session, streamer, closed = false, bytesIn = 0, bytesOut = 0;
+  let bridge, session, streamer, activePlayback, closed = false, bytesIn = 0, bytesOut = 0;
   let sendChain = Promise.resolve();
   let generation = 0;
   async function connect() {
@@ -31,10 +31,11 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     return new Promise((resolve, reject) => {
       if (!session || closed) return reject(new Error("local media is not connected"));
       let settled = false;
-      const finish = () => { if (!settled) { settled = true; resolve(audio.length); } };
-      const fail = err => { if (!settled) { settled = true; reject(err instanceof Error ? err : new Error(String(err || "audio stream failed"))); } };
+      const finish = () => { if (!settled) { settled = true; if (activePlayback && activePlayback.finish === finish) activePlayback = null; resolve(audio.length); } };
+      const fail = err => { if (!settled) { settled = true; if (activePlayback && activePlayback.finish === finish) activePlayback = null; reject(err instanceof Error ? err : new Error(String(err || "audio stream failed"))); } };
       try {
         streamer = session.streamAudio(audio);
+        activePlayback = { finish };
         bytesOut += audio.length;
         if (!streamer || typeof streamer.once !== "function") return finish();
         streamer.once("finished", finish);
@@ -51,7 +52,9 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   }
   function interrupt() {
     generation++;
+    const interrupted = activePlayback;
     try { if (streamer && typeof streamer.stop === "function") streamer.stop(); } catch {}
+    if (interrupted && typeof interrupted.finish === "function") interrupted.finish();
     streamer = null;
     sendChain = Promise.resolve();
     onLog("[local-media-v2] outbound playback interrupted");
