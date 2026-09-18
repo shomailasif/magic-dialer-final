@@ -39,10 +39,10 @@ export async function POST(request: Request) {
   const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown";
   const deviceFingerprint = generateDeviceFingerprint(userAgent, ip);
 
-  // Create device session (invalidates any existing sessions for this user)
-  await createDeviceSession(user.id, deviceFingerprint, ip, userAgent);
+  // One account = one active PC. A new successful login becomes the sole web session.
+  const sessionId = await createDeviceSession(user.id, deviceFingerprint, ip, userAgent);
 
-  const token = signSession(user.id);
+  const token = signSession(user.id, sessionId);
   const response = NextResponse.json({
     ok: true,
     role: user.role,
