@@ -453,6 +453,22 @@ async function startWebUi(opts) {
     const u = new URL(req.url, "http://127.0.0.1");
     const p = u.pathname;
 
+    if (req.method === "GET" && p === "/" && u.searchParams.get("enroll")) {
+      const ticket = String(u.searchParams.get("enroll") || "");
+      const portal = String(u.searchParams.get("portal") || "").replace(/\/+$/, "");
+      const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
+      if (!ticket || !/^https?:\/\//.test(portal)) { res.writeHead(400, { "Content-Type": "text/plain" }); res.end("Invalid enrollment request."); return; }
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><p>Connecting this PC securely to your account...</p></body>");
+      setImmediate(async () => {
+        try {
+          if (typeof opts.onEnroll !== "function") throw new Error("Enrollment unavailable");
+          await opts.onEnroll({ ticket, portal });
+          if (number && typeof opts.onCall === "function") await opts.onCall(number);
+        } catch {}
+      });
+      return;
+    }
     if (req.method === "GET" && p === "/" && u.searchParams.get("call")) {
       const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
       if (!/^\+?[0-9]{7,15}$/.test(number)) { res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Invalid phone number."); return; }
