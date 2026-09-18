@@ -122,9 +122,12 @@ async function runWatchdog(args) {
 
   while (true) {
     log(`watchdog starting agent (pid engine: ${childCmd.cmd})...`);
-    const child = spawn(childCmd.cmd, childCmd.args, { stdio: ["ignore", "inherit", "inherit"] });
+    const watchdogLog = path.join(path.dirname(WATCHDOG_LOCK), "watchdog-child.log");
+    let logFd = null;
+    try { logFd = fs.openSync(watchdogLog, "a"); } catch {}
+    const child = spawn(childCmd.cmd, childCmd.args, { stdio: ["ignore", logFd == null ? "inherit" : logFd, logFd == null ? "inherit" : logFd] });
     const exited = await new Promise((resolve) => {
-      child.on("exit", (code) => resolve({ code, ranFor: Date.now() - (child._start || Date.now()) }));
+      child.on("exit", (code) => { try { if (logFd != null) fs.closeSync(logFd); } catch {} resolve({ code, ranFor: Date.now() - (child._start || Date.now()) }); });
       child._start = Date.now();
     });
 
