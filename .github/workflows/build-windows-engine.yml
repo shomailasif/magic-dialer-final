@@ -97,18 +97,30 @@ jobs:
       - name: Reopen launcher while engine is already running
         shell: powershell
         run: |
+          $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
+          # Previous smoke intentionally uninstalls. Install a fresh copy for this independent gate.
+          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
           $launcher = Join-Path $app "MagicDialer.exe"
+          if (-not (Test-Path $launcher)) { throw "Launcher missing before duplicate-launch gate" }
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
-          Start-Sleep -Seconds 1
+          $healthy = $false
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            try {
+              $h = Invoke-RestMethod -Uri "http://127.0.0.1:18787/health" -TimeoutSec 1
+              if ($h.ok -eq $true) { $healthy = $true; break }
+            } catch {}
+          }
+          if (-not $healthy) { throw "Engine was not healthy before duplicate-launch gate" }
           $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
-          if ($before -lt 1) { throw "Engine was not running before duplicate-launch gate" }
           $p = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(5000)) { throw "Duplicate launcher did not exit cleanly" }
           if ($p.ExitCode -ne 0) { throw "Duplicate launcher failed with exit code $($p.ExitCode)" }
           Start-Sleep -Milliseconds 500
           $after = @(Get-Process agent -ErrorAction SilentlyContinue).Count
           if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
+          Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: In-place upgrade with running old engine
         shell: powershell
         run: |
