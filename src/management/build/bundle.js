@@ -18,6 +18,8 @@ esbuild
     platform: "node",
     target: ["node18"],
     format: "cjs",
+    loader: { ".node": "copy" },
+    assetNames: "native/[name]-[hash]",
     outfile: path.join(__dirname, "dist", "agent-bundle.js"),
     banner: { js: "#!/usr/bin/env node" },
   })
