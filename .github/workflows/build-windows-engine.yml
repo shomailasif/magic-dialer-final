@@ -65,6 +65,8 @@ jobs:
               if ($proc.HasExited) { Write-Host "LAUNCHER EXIT CODE: $($proc.ExitCode)" }
               Write-Host "AGENT PROCESSES:"
               Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+              Write-Host "WATCHDOG TCP LISTENERS:"
+              Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in @((Get-Process agent -ErrorAction SilentlyContinue).Id) } | Select-Object LocalAddress,LocalPort,OwningProcess | Format-List
               Write-Host "ALL CHILD PROCESSES OF WATCHDOG:"
               $agents = Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue
               foreach ($a in $agents) { Get-CimInstance Win32_Process -Filter "ParentProcessId=$($a.ProcessId)" -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List }
