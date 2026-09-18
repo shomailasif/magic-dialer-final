@@ -453,6 +453,15 @@ async function startWebUi(opts) {
     const u = new URL(req.url, "http://127.0.0.1");
     const p = u.pathname;
 
+    if (req.method === "GET" && p === "/" && u.searchParams.get("call")) {
+      const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
+      if (!/^\+?[0-9]{7,15}$/.test(number)) { res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Invalid phone number."); return; }
+      if (typeof opts.onCall !== "function") { res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Local call control unavailable."); return; }
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><p>Starting local-engine test call...</p></body>");
+      setImmediate(async () => { try { await opts.onCall(number); } catch {} });
+      return;
+    }
     if (req.method === "GET" && p === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
       res.end(PAGE);
