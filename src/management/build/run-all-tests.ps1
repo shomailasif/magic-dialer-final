@@ -3,7 +3,8 @@
 $node = Join-Path $env:ProgramFiles "nodejs\node.exe"
 $tests = @(
   "agent\local-ringcentral-engine.test.js",
-  "agent\local-ringcentral-engine.behavior.test.js"
+  "agent\local-ringcentral-engine.behavior.test.js",
+  "agent\local-call-controller.behavior.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {
