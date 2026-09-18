@@ -35,19 +35,14 @@ static class MagicDialerLauncher
 
         try
         {
-            // Single-instance launcher: if the supervised engine is already
-            // running, opening Magic Dialer is a successful no-op. Starting a
-            // second packaged agent can make Windows reject the executable
-            // with ERROR_SHARING_VIOLATION ("file is being used by another process").
-            foreach (Process p in Process.GetProcessesByName("agent"))
+            // Do not execute agent.exe again when the installed engine already
+            // owns its local ports. A packaged Node executable can be locked by
+            // the running watchdog/child even when process enumeration is
+            // incomplete or access to MainModule is denied.
+            if (EngineIsReachable())
             {
-                try
-                {
-                    string running = p.MainModule == null ? "" : p.MainModule.FileName;
-                    if (String.Equals(Path.GetFullPath(running), Path.GetFullPath(agent), StringComparison.OrdinalIgnoreCase))
-                        return 0;
-                }
-                catch { }
+                OpenDashboard();
+                return 0;
             }
 
             var psi = new ProcessStartInfo
@@ -59,9 +54,6 @@ static class MagicDialerLauncher
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
-            // The launcher is windowless: it hands off to the hidden agent
-            // process, which serves the setup/dashboard in the browser and
-            // exits. No console, no PowerShell window, no flash.
             Process.Start(psi);
         }
         catch (Exception ex)
@@ -78,6 +70,29 @@ static class MagicDialerLauncher
             return 1;
         }
         return 0;
+    }
+
+    private static bool EngineIsReachable()
+    {
+        try
+        {
+            var req = System.Net.WebRequest.Create("http://127.0.0.1:18787/health");
+            req.Timeout = 1200;
+            using (var res = req.GetResponse())
+            using (var reader = new StreamReader(res.GetResponseStream()))
+                return reader.ReadToEnd().Contains("\"service\":\"magic-dialer-engine\"");
+        }
+        catch { return false; }
+    }
+
+    private static void OpenDashboard()
+    {
+        try
+        {
+            string url = "http://127.0.0.1:48771/";
+            Process.Start(new ProcessStartInfo { FileName = url, UseShellExecute = true });
+        }
+        catch { }
     }
 
     private static string BuildAgentArgs(string[] args)
