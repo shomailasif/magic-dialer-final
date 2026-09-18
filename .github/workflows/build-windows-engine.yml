@@ -88,3 +88,16 @@ jobs:
           name: magic-dialer-engine-windows
           path: src/management/build/dist/magic-dialer-engine-windows.exe
           if-no-files-found: error
+      - name: Publish stable installer
+        if: github.ref == 'refs/heads/main'
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
+          gh release view engine-latest *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create engine-latest $installer --title "Magic Dialer Engine" --notes "Validated Windows engine installer. Built from $env:GITHUB_SHA."
+          } else {
+            gh release upload engine-latest $installer --clobber
+          }
