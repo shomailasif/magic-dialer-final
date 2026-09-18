@@ -94,7 +94,7 @@ jobs:
       - name: Verify updater rollback state gate
         shell: pwsh
         run: |
-          node src/management/agent/auto-update.behavior.test.js
+          node agent/auto-update.behavior.test.js
           if ($LASTEXITCODE -ne 0) { throw "Updater rollback behavior gate failed" }
 
       - name: Publish stable installer
