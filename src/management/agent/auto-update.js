@@ -36,4 +36,4 @@ async function validatePendingUpdate(currentVersion){
  if(prior&&fs.existsSync(prior)){launchInstaller(prior);return{pending:true,healthy:false,rollback:true}}
  return{pending:true,healthy:false,rollback:false};
 }
-module.exports={MANIFEST_URL,RELEASE_PREFIX,HEALTH_URL,newer,validManifest,sha256,healthy,checkForUpdate,validatePendingUpdate};
+module.exports={MANIFEST_URL,RELEASE_PREFIX,HEALTH_URL,newer,validManifest,sha256,healthy,checkForUpdate,validatePendingUpdate,_test:{readState,writeState,stateDir}};
