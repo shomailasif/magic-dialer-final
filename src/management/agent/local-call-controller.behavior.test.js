@@ -41,6 +41,7 @@ async function main() {
     number: "2", deps
   });
   assert.equal(interrupted, 1, "sustained prospect speech must interrupt playback exactly once");
+  assert.equal(pushes, 14, "inbound audio must continue through playback and listening without dropping frames");
   assert.ok(sttBytes >= 160, "prospect audio must reach STT");
   assert.equal(result.heard, "please wait");
   assert.equal(closed, 1, "engine must close");
