@@ -795,6 +795,12 @@ function customerHomeHtml(c) {
   const providers = ["ringcentral","twilio","vonage","plivo","thinq","flowroute","myexotel","asterisk","freepbx","generic"];
   const provOpts = providers.map((p) => '<option value="' + p + '"' + (voipProvider === p ? " selected" : "") + ">" + esc(voipProviderLabel(p)) + "</option>").join("") + '<option value="custom"' + (!providers.includes(voipProvider) && voipProvider ? " selected" : "") + ">Other / custom SIP</option>";
   return pageShell("My Dashboard - Magic Dialer", `
+  <div class="card" id="engineCard" style="max-width:820px;margin:28px auto 0;padding:20px">
+    <div style="font-size:14px;font-weight:700;color:#e2e8f0;margin-bottom:6px">Magic Dialer Engine</div>
+    <div id="engineStatus" style="color:#fbbf24;font-size:12px;margin-bottom:12px">Checking this PC...</div>
+    <a class="btn" id="engineDownload" href="/downloads/magic-dialer-engine-windows.exe" style="display:none;text-align:center">Download Magic Dialer Engine for Windows</a>
+  </div>
+
   <div style="max-width:820px;margin:0 auto;padding:28px 20px 60px">
     <div style="display:flex;align-items:center;gap:14px;margin-bottom:26px">
       ${logoHtml(44)}
@@ -867,7 +873,14 @@ function customerHomeHtml(c) {
     </div>
   </div>
   <script>
-    const HOSTED = ${jsonSafe(HOSTED_VOIP_SERVERS)};
+    const HOSTED = ${jsonSafe(HOSTED_VOIP_SERVERS)};\n    (async function detectLocalEngine(){
+      const status=document.getElementById('engineStatus'), dl=document.getElementById('engineDownload');
+      try { const ctl=new AbortController(); setTimeout(()=>ctl.abort(),900);
+        const r=await fetch('http://127.0.0.1:18787/health',{signal:ctl.signal,cache:'no-store'});
+        if(!r.ok) throw new Error('offline'); const j=await r.json();
+        status.style.color='#34d399'; status.textContent='Engine online'+(j.version?' · v'+j.version:'');
+      } catch { status.style.color='#fbbf24'; status.textContent='Engine not detected on this Windows PC.'; dl.style.display='inline-block'; }
+    })();
     function voipToggle() {
       const custom = !HOSTED[document.getElementById('vProvider').value];
       document.querySelectorAll('.voipCust').forEach((el) => el.style.display = custom ? '' : 'none');
