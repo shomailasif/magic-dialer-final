@@ -66,7 +66,7 @@ async function nextTurn({ transcript, ...config }) {
 }
 
 async function opening(config) {
-  return complete({ history: [{ role: "user", content: "Start the call now with a brief natural introduction and a relevant opening question in the active conversation language." }], config });
+  return complete({ history: [{ role: "user", content: "Start the call now with a brief natural introduction in the active conversation language. Do not begin with a questionnaire or force a question; give the prospect room to respond naturally." }], config });
 }
 
 module.exports = { nextTurn, opening, systemPrompt };
