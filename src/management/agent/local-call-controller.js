@@ -32,7 +32,8 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
         const frame = b.subarray(i, i + 160);
         if (frame.length < 160) continue;
         const event = state.vad.push(frame, 20);
-        if (state.playing && event.speaking && !state.interrupted) {
+        state.speechDuringPlaybackMs = state.playing && event.voiced ? (state.speechDuringPlaybackMs || 0) + 20 : 0;
+        if (state.playing && event.speaking && state.speechDuringPlaybackMs >= 220 && !state.interrupted) {
           state.interrupted = true;
           engine.interrupt();
           onLog("[local-media-v2] barge-in detected; outbound playback stopped");
@@ -58,10 +59,11 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, ended };
+      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
+      state.speechDuringPlaybackMs = 0;
     }
     const n = await engine.sendAudio(out.buffer);
     if (state) state.playing = false;
@@ -76,7 +78,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, ended };
+      state = { vad: createVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
     }
     const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, 15000);
     await ended;
