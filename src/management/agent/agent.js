@@ -161,7 +161,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.2.0";
+const VERSION = "1.3.0";
 
 /**
  * Roll a call result into the customer's lifetime + daily stats, persisted in
