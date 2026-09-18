@@ -13,8 +13,8 @@ function validManifest(m){return !!(m&&/^\d+\.\d+\.\d+$/.test(String(m.version))
 async function sha256(file){return await new Promise((resolve,reject)=>{const h=crypto.createHash("sha256"),s=fs.createReadStream(file);s.on("data",d=>h.update(d));s.on("end",()=>resolve(h.digest("hex")));s.on("error",reject)})}
 async function download(url,dest){const r=await fetch(url,{redirect:"follow",cache:"no-store"});if(!r.ok)throw new Error("update download HTTP "+r.status);fs.writeFileSync(dest,Buffer.from(await r.arrayBuffer()))}
 function stateDir(){return path.join(process.env.LOCALAPPDATA||os.homedir(),"Magic Dialer","updates")}
-function readState(){try{return JSON.parse(fs.readFileSync(path.join(stateDir(),"state.json"),"utf8"))}catch{return{}}}
-function writeState(s){fs.mkdirSync(stateDir(),{recursive:true});const target=path.join(stateDir(),"state.json"),tmp=target+".tmp-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(s,null,2));fs.renameSync(tmp,target)}
+function readState(){const target=path.join(stateDir(),"state.json");try{return JSON.parse(fs.readFileSync(target,"utf8"))}catch{try{const bak=target+".bak";return JSON.parse(fs.readFileSync(bak,"utf8"))}catch{return{}}}}
+function writeState(s){fs.mkdirSync(stateDir(),{recursive:true});const target=path.join(stateDir(),"state.json"),tmp=target+".tmp-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(s,null,2));if(fs.existsSync(target))fs.copyFileSync(target,target+".bak");fs.renameSync(tmp,target)}
 function seededInstaller(version){const p=path.join(stateDir(),"known-good-"+version+".exe");return fs.existsSync(p)?p:null}
 async function healthy(expectedVersion,timeoutMs=45000){const end=Date.now()+timeoutMs;while(Date.now()<end){try{const r=await fetch(HEALTH_URL,{cache:"no-store"});const j=await r.json();if(r.ok&&j.ok&&(!expectedVersion||j.version===expectedVersion))return true}catch{}await new Promise(r=>setTimeout(r,1000))}return false}
 function launchInstaller(file){const c=spawn(file,["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"],{detached:true,stdio:"ignore",windowsHide:true});c.unref()}
