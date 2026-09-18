@@ -1,0 +1,20 @@
+"use strict";
+const assert = require("assert");
+const { EventEmitter } = require("events");
+const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
+(async () => {
+  const session = new EventEmitter(); let stopped=0, cleanup=0;
+  session.streamAudio=()=>{const s=new EventEmitter();s.stop=()=>{stopped++;};return s;};
+  const received=[];
+  const engine=createLocalRingCentralEngine({sip:{},number:"15555550100",onAudio:b=>received.push(Buffer.from(b)),bridgeFactory:async()=>({ok:true,callSession:session,cleanup:()=>cleanup++})});
+  await engine.connect();
+  const first=engine.sendAudio(Buffer.alloc(320,0x7f));
+  await new Promise(r=>setTimeout(r,5));
+  session.emit("audioPacket",{payload:Buffer.alloc(160,0x22)});
+  engine.interrupt();
+  const result=await Promise.race([first,new Promise((_,reject)=>setTimeout(()=>reject(new Error("interrupted playback promise hung")),100))]);
+  assert.strictEqual(result,320); assert.strictEqual(stopped,1); assert.strictEqual(received.length,1); assert.strictEqual(received[0].length,160);
+  const queued=engine.sendAudio(Buffer.alloc(160,0x33)); engine.interrupt(); assert.strictEqual(await queued,0);
+  engine.close(); assert.strictEqual(cleanup,1);
+  console.log("PASS local media behavioral interruption");
+})().catch(e=>{console.error(e);process.exit(1);});
