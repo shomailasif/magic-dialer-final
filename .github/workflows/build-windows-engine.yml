@@ -121,6 +121,30 @@ jobs:
           $after = @(Get-Process agent -ErrorAction SilentlyContinue).Count
           if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      - name: Exact customer reopen with packaged agent file locked
+        shell: powershell
+        run: |
+          $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
+          $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
+          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          $launcher = Join-Path $app "MagicDialer.exe"
+          Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
+          $healthy = $false
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            try {
+              $h = Invoke-RestMethod "http://127.0.0.1:18787/health" -TimeoutSec 1
+              if ($h.service -eq "magic-dialer-engine") { $healthy = $true; break }
+            } catch {}
+          }
+          if (-not $healthy) { throw "Engine not healthy before exact reopen gate" }
+          $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          $p = Start-Process -FilePath $launcher -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(5000)) { throw "Launcher did not exit while engine already healthy" }
+          if ($p.ExitCode -ne 0) { throw "Launcher reproduced customer file-lock failure: exit $($p.ExitCode)" }
+          $after = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          if ($after -ne $before) { throw "Launcher executed another agent despite healthy local engine" }
+          Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: In-place upgrade with running old engine
         shell: powershell
         run: |
