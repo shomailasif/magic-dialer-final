@@ -94,6 +94,34 @@ jobs:
           if ($seedHash -ne $installerHash) { throw "Seeded rollback installer differs from installed release bytes" }
           Write-Host "Rollback seed verified byte-for-byte: $seedHash"
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
+      - name: In-place upgrade with running old engine
+        shell: powershell
+        run: |
+          $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
+          $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
+          # Reinstall once, start the real launcher/watchdog, then install over the running copy.
+          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          $launcher = Join-Path $app "MagicDialer.exe"
+          Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
+          $oldPid = $null
+          for ($i=0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 300
+            $a = Get-Process agent -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($a) { $oldPid = $a.Id; break }
+          }
+          if (-not $oldPid) { throw "Pre-upgrade engine did not start" }
+          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
+          $healthy = $false
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            try {
+              $h = Invoke-RestMethod -Uri "http://127.0.0.1:18787/health" -TimeoutSec 1
+              if ($h.ok -eq $true -and $h.callControl -eq $true) { $healthy = $true; break }
+            } catch {}
+          }
+          if (-not $healthy) { throw "In-place upgrade did not restart healthy local call-control engine" }
+          Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Microsoft Defender security gate
         shell: powershell
         run: |
