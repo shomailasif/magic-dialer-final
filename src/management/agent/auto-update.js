@@ -32,6 +32,7 @@ async function checkForUpdate(currentVersion){
 }
 async function validatePendingUpdate(currentVersion){
  const s=readState();if(!s.pendingVersion)return{pending:false};
+ if(currentVersion===s.previousVersion)return{pending:true,installing:true};
  if(currentVersion===s.pendingVersion&&await healthy(s.pendingVersion,15000)){writeState({lastGoodVersion:currentVersion,lastGoodInstaller:s.pendingInstaller});return{pending:true,healthy:true}}
  const prior=s.lastGoodInstaller;
  writeState({...s,blockedVersion:s.pendingVersion,pendingVersion:null,pendingInstaller:null});
