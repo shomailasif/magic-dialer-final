@@ -12,12 +12,12 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.2.0
+AppVersion=1.3.0
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=MagicDialer-Setup
+OutputBaseFilename=magic-dialer-engine-windows
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
