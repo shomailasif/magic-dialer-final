@@ -6,7 +6,7 @@
  * Run: node build/bundle.js
  * Output: build/dist/agent-bundle.js
  */
-const esbuild = require("C:/Users/USER/Documents/Default Project/autodial-ai/node_modules/esbuild");
+const esbuild = require("esbuild");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
