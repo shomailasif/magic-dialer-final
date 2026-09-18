@@ -40,6 +40,19 @@ Name: "{userstartup}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilen
 Name: "{commondesktop}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 Name: "{group}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var CacheDir, CacheFile: string;
+begin
+  if CurStep = ssPostInstall then begin
+    CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
+    ForceDirectories(CacheDir);
+    CacheFile := CacheDir + '\\known-good-1.3.0.exe';
+    if not FileExists(CacheFile) then
+      FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
+  end;
+end;
+
 [Run]
 ; Open the app window: the agent runs its dashboard locally and the customer
 ; completes the one-time setup right there (portal URL + access key).
