@@ -1,5 +1,5 @@
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const DEFAULT_MODEL = "qwen/qwen3.8-27b";
+const DEFAULT_MODEL = "openai/gpt-oss-120b";
 
 function clean(text) {
   return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^([\"'`]+)|([\"'`]+)$/g, "").trim();
