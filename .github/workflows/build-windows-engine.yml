@@ -42,8 +42,8 @@ jobs:
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
-          & $installer /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Installer exited $LASTEXITCODE" }
+          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          if (-not (Test-Path (Join-Path $env:LOCALAPPDATA "Magic Dialer"))) { throw "Installer did not create application directory" }
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
           foreach ($file in @("agent.exe","MagicDialer.exe","logo.ico")) {
             if (-not (Test-Path (Join-Path $app $file))) { throw "Missing installed $file" }
@@ -52,8 +52,7 @@ jobs:
           if (-not (Test-Path $startup)) { throw "Missing Windows startup shortcut" }
           $uninstaller = Join-Path $app "unins000.exe"
           if (-not (Test-Path $uninstaller)) { throw "Missing uninstaller" }
-          & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-          if ($LASTEXITCODE -ne 0) { throw "Uninstaller exited $LASTEXITCODE" }
+          Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
       - uses: actions/upload-artifact@v4
         with:
