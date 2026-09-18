@@ -8,13 +8,23 @@ export function TestCallCard() {
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  function launchLocalCall() {
+  async function launchLocalCall() {
     if (!number.trim()) return;
     setLoading(true);
-    setStatus("Opening the installed Magic Dialer engine...");
-    const local = new URL("http://127.0.0.1:48771/");
-    local.searchParams.set("call", number.trim());
-    window.location.assign(local.toString());
+    setStatus("Connecting this PC to your account...");
+    try {
+      const r = await fetch("/api/engine/enrollment-ticket", { method: "POST" });
+      const e = await r.json();
+      if (!r.ok || !e.ticket) throw new Error(e.error || "Could not enroll this PC");
+      const local = new URL("http://127.0.0.1:48771/");
+      local.searchParams.set("enroll", e.ticket);
+      local.searchParams.set("portal", window.location.origin);
+      local.searchParams.set("call", number.trim());
+      window.location.assign(local.toString());
+    } catch (err) {
+      setLoading(false);
+      setStatus("PC connection failed: " + (err instanceof Error ? err.message : "unknown error"));
+    }
   }
 
   return (
