@@ -11,6 +11,7 @@ const localDb = require("./local-db");
 const sync = require("./sync");
 const { emailQualifiedLead } = require("./email");
 const { ensurePhoneSession } = require("./call-start");
+const { startEngineHealthServer } = require("./engine-health");
 
 /**
  * Customer PC agent.
@@ -320,6 +321,9 @@ function ask(question) {
  * machines on one computer. `opts.setup` opens the web setup/dashboard.
  */
 async function runAgent(opts = {}) {
+  let engineHealthServer = null;
+  try { engineHealthServer = await startEngineHealthServer({ version: VERSION }); log("Local engine health: http://127.0.0.1:18787/health"); }
+  catch (e) { log("Local engine health unavailable: " + e.message); }
   const cfgPath = opts.configPath || defaultConfigPath();
   const configDir = path.dirname(cfgPath);
   let config = loadConfig(cfgPath);
