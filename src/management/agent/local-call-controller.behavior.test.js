@@ -44,6 +44,7 @@ async function main() {
   assert.equal(pushes, 14, "inbound audio must continue through playback and listening without dropping frames");
   assert.ok(sttBytes >= 160, "prospect audio must reach STT");
   assert.equal(result.heard, "please wait");
+  assert.equal(sttBytes, 2240, "captured turn must retain every expected 20ms frame through barge-in");
   assert.equal(closed, 1, "engine must close");
   console.log("PASS: controller barge-in -> capture -> STT");
 }
