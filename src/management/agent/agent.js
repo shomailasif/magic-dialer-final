@@ -402,6 +402,7 @@ async function runAgent(opts = {}) {
         delete live.token;
         saveConfig(live, cfgPath);
         Object.assign(config, live);
+        try { setupDoneResolve(live); } catch {}
         log("PC enrolled to logged-in customer account.");
         return { ok: true };
       },
@@ -424,7 +425,7 @@ async function runAgent(opts = {}) {
     if (!opened) { opened = true; openBrowser(url); }
   };
 
-  if (!config || !config.token || !config.portalUrl) {
+  if (!config || (!config.deviceToken && !config.token) || !config.portalUrl) {
     config = config || {};
     config.machineId = config.machineId || crypto.randomUUID();
     config.lang = config.lang || "en";
@@ -436,7 +437,7 @@ async function runAgent(opts = {}) {
       saveConfig(config, cfgPath);
     }
 
-    if (!config.token || !config.portalUrl) {
+    if ((!config.deviceToken && !config.token) || !config.portalUrl) {
       log("No config yet - setting up.");
       if (useWebUi) {
         const srv = await ensureWebUi();
@@ -567,7 +568,8 @@ async function runAgent(opts = {}) {
   while (true) {
     try {
       const syncPayload = sync.buildSyncPayload();
-      const res = await post(`${portal}/api/heartbeat`, {
+      const heartbeatPortal = String(config.portalUrl || portal).replace(/\/+$/, "");
+      const res = await post(`${heartbeatPortal}/api/heartbeat`, {
         deviceToken: config.deviceToken || config.token,
         voipReady: !!(config.voip && config.voip.ready),
         sync: syncPayload,
