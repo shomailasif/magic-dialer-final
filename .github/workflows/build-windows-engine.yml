@@ -1,0 +1,45 @@
+name: Build Windows Engine
+on:
+  workflow_dispatch: {}
+  push:
+    branches: ["main"]
+    paths:
+      - "src/management/agent/**"
+      - "src/management/build/**"
+      - "src/management/package.json"
+      - ".github/workflows/build-windows-engine.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src/management
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Install packaging tools
+        run: npm install --no-save esbuild @yao-pkg/pkg
+      - name: Bundle engine
+        run: node build/bundle.js
+      - name: Package engine
+        shell: powershell
+        run: npx pkg build/dist/agent-bundle.js --targets node22-win-x64 --output build/dist/agent.exe
+      - name: Compile launcher
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File build/compile-launcher.ps1
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup -y --no-progress
+      - name: Build installer
+        shell: powershell
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\installer.iss'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magic-dialer-engine-windows
+          path: src/management/build/dist/magic-dialer-engine-windows.exe
+          if-no-files-found: error
