@@ -392,6 +392,12 @@ async function runAgent(opts = {}) {
       statusPath: path.join(configDir, "status.json"),
       onSetup: (cfg) => { try { setupDoneResolve(cfg); } catch {} },
       onMode: (mode) => { try { log(`dashboard mode -> ${mode}`); } catch {} },
+      onCall: async (number) => {
+        const liveConfig = loadConfig(cfgPath);
+        if (!liveConfig) throw new Error("Magic Dialer setup is incomplete");
+        log("LOCAL DASHBOARD CALL CONTROL: " + number);
+        return runLocalCall({ config: liveConfig, number, onLog: (m) => log(m), onMode: () => {} });
+      },
       serviceName: "Magic Dialer",
     });
     try { writeDashboardUrl(uiServer.url); } catch {}
