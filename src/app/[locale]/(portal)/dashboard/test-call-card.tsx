@@ -11,9 +11,13 @@ export function TestCallCard() {
   async function dialTest() {
     if (!number.trim()) return;
     setLoading(true);
-    setStatus("Placing test call...");
+    setStatus("Checking local Magic Dialer engine...");
     try {
-      const res = await fetch("/api/test-call", {
+      const health = await fetch("http://127.0.0.1:18787/health", { cache: "no-store" });
+      const hj = await health.json();
+      if (!health.ok || hj?.service !== "magic-dialer-engine" || hj?.callControl !== true) throw new Error("Local Magic Dialer engine is not ready. Start or update the Windows engine.");
+      setStatus(`Local engine v${hj.version} online — placing test call...`);
+      const res = await fetch("http://127.0.0.1:18787/call", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ number: number.trim() }),
@@ -22,7 +26,7 @@ export function TestCallCard() {
       if (!res.ok) {
         setStatus(`Failed: ${data.error || "Unknown error"}`);
       } else {
-        setStatus(`Call placed! ${data.message || "Check your phone."}`);
+        setStatus("Local-engine test call completed.");
       }
     } catch (e: unknown) {
       setStatus(`Error: ${e instanceof Error ? e.message : "Network error"}`);
