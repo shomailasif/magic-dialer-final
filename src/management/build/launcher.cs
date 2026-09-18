@@ -41,7 +41,8 @@ static class MagicDialerLauncher
                 Arguments = BuildAgentArgs(args),
                 WorkingDirectory = dir,
                 UseShellExecute = false,
-                CreateNoWindow = true
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
             };
             // The launcher is windowless: it hands off to the hidden agent
             // process, which serves the setup/dashboard in the browser and
