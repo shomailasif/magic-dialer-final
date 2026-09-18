@@ -1,1 +1,10 @@
-const assert=require("node:assert");const u=require("./auto-update");assert.equal(u.newer("1.3.1","1.3.0"),true);assert.equal(u.newer("1.3.0","1.3.0"),false);assert.equal(u.newer("1.2.9","1.3.0"),false);assert.ok(u.MANIFEST_URL.startsWith("https://"));console.log("auto-update behavior: PASS");
+const assert=require("node:assert");const u=require("./auto-update");
+assert.equal(u.newer("1.3.1","1.3.0"),true);
+assert.equal(u.newer("1.3.0","1.3.0"),false);
+assert.equal(u.newer("1.2.9","1.3.0"),false);
+assert.ok(u.MANIFEST_URL.startsWith("https://"));
+assert.equal(u.validManifest({version:"1.3.1",sha256:"a".repeat(64),url:u.RELEASE_PREFIX+"magic-dialer-engine-windows.exe"}),true);
+assert.equal(u.validManifest({version:"1.3.1",sha256:"a".repeat(64),url:"https://evil.example/x.exe"}),false);
+assert.equal(u.validManifest({version:"x",sha256:"a".repeat(64),url:u.RELEASE_PREFIX+"x.exe"}),false);
+assert.equal(u.validManifest({version:"1.3.1",sha256:"bad",url:u.RELEASE_PREFIX+"x.exe"}),false);
+console.log("auto-update behavior: PASS");
