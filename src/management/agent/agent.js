@@ -11,7 +11,7 @@ const localDb = require("./local-db");
 const sync = require("./sync");
 const { emailQualifiedLead } = require("./email");
 const { ensurePhoneSession } = require("./call-start");
-const { startEngineHealthServer } = require("./engine-health");
+const { startEngineHealthServer } = require("./engine-health");\nconst { checkForUpdate } = require("./auto-update");
 
 /**
  * Customer PC agent.
@@ -168,7 +168,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.3.0";
+const VERSION = "1.3.0";\n\nfunction scheduleAutoUpdate() {\n  const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + e.message));\n  setTimeout(run, 15000);\n  const timer = setInterval(run, 6 * 60 * 60 * 1000);\n  if (timer.unref) timer.unref();\n}\n
 
 /**
  * Roll a call result into the customer's lifetime + daily stats, persisted in
@@ -327,7 +327,7 @@ function ask(question) {
  * Agent main loop. `opts.configPath` lets the demo point at different
  * machines on one computer. `opts.setup` opens the web setup/dashboard.
  */
-async function runAgent(opts = {}) {
+async function runAgent(opts = {}) {\n  if (isPacked()) scheduleAutoUpdate();
   let engineHealthServer = null;
   try { engineHealthServer = await startEngineHealthServer({ version: VERSION }); log("Local engine health: http://127.0.0.1:18787/health"); }
   catch (e) { log("Local engine health unavailable: " + e.message); }
