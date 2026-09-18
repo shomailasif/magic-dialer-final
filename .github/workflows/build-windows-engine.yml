@@ -50,10 +50,8 @@ jobs:
           }
           $startup = Join-Path $env:APPDATA "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Magic Dialer.lnk"
           if (-not (Test-Path $startup)) { throw "Missing Windows startup shortcut" }
-          $engine = Join-Path $app "agent.exe"
-          $stdout = Join-Path $env:RUNNER_TEMP "engine-stdout.log"
-          $stderr = Join-Path $env:RUNNER_TEMP "engine-stderr.log"
-          $proc = Start-Process -FilePath $engine -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $launcher = Join-Path $app "MagicDialer.exe"
+          $proc = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
           try {
             $healthy = $false
             for ($i=0; $i -lt 30; $i++) {
@@ -64,10 +62,8 @@ jobs:
               } catch {}
             }
             if (-not $healthy) {
-              if (Test-Path $stdout) { Write-Host "ENGINE STDOUT:"; Get-Content $stdout }
-              if (Test-Path $stderr) { Write-Host "ENGINE STDERR:"; Get-Content $stderr }
-              if ($proc.HasExited) { Write-Host "ENGINE EXIT CODE: $($proc.ExitCode)" }
-              throw "Installed engine did not become healthy on localhost:18787"
+              if ($proc.HasExited) { Write-Host "LAUNCHER EXIT CODE: $($proc.ExitCode)" }
+              throw "Installed customer launcher did not produce a healthy engine on localhost:18787"
             }
           } finally {
             Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
