@@ -1,10 +1,9 @@
-const assert=require("node:assert");const u=require("./auto-update");
-assert.equal(u.newer("1.3.1","1.3.0"),true);
-assert.equal(u.newer("1.3.0","1.3.0"),false);
-assert.equal(u.newer("1.2.9","1.3.0"),false);
+const assert=require("node:assert");const fs=require("node:fs");const os=require("node:os");const path=require("node:path");
+const u=require("./auto-update");
+assert.equal(u.newer("1.3.1","1.3.0"),true);assert.equal(u.newer("1.3.0","1.3.0"),false);assert.equal(u.newer("1.2.9","1.3.0"),false);
 assert.ok(u.MANIFEST_URL.startsWith("https://"));
 assert.equal(u.validManifest({version:"1.3.1",sha256:"a".repeat(64),url:u.RELEASE_PREFIX+"magic-dialer-engine-windows.exe"}),true);
 assert.equal(u.validManifest({version:"1.3.1",sha256:"a".repeat(64),url:"https://evil.example/x.exe"}),false);
 assert.equal(u.validManifest({version:"x",sha256:"a".repeat(64),url:u.RELEASE_PREFIX+"x.exe"}),false);
 assert.equal(u.validManifest({version:"1.3.1",sha256:"bad",url:u.RELEASE_PREFIX+"x.exe"}),false);
-console.log("auto-update behavior: PASS");
+(async()=>{const d=fs.mkdtempSync(path.join(os.tmpdir(),"md-hash-"));const p=path.join(d,"x");fs.writeFileSync(p,"known-good");assert.equal(await u.sha256(p),"f3f07e5bc9a2e316727730136c4b369985cb43c9327da1e1c93d32c511b292ca");fs.rmSync(d,{recursive:true,force:true});console.log("auto-update behavior: PASS")})().catch(e=>{console.error(e);process.exit(1)});
