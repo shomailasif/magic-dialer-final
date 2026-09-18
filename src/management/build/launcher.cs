@@ -9,9 +9,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Magic Dialer")]
 [assembly: AssemblyCompany("Magic Dialer")]
 [assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
-[assembly: AssemblyInformationalVersion("1.2.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyInformationalVersion("1.3.0")]
 [assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
 
 static class MagicDialerLauncher
@@ -38,7 +38,7 @@ static class MagicDialerLauncher
             var psi = new ProcessStartInfo
             {
                 FileName = agent,
-                Arguments = EscapeArgs(args),
+                Arguments = BuildAgentArgs(args),
                 WorkingDirectory = dir,
                 UseShellExecute = false,
                 CreateNoWindow = true
@@ -62,6 +62,14 @@ static class MagicDialerLauncher
             return 1;
         }
         return 0;
+    }
+
+    private static string BuildAgentArgs(string[] args)
+    {
+        // Customer launcher always starts the self-healing supervisor.
+        // Extra arguments are forwarded to the supervised agent.
+        string forwarded = EscapeArgs(args);
+        return string.IsNullOrWhiteSpace(forwarded) ? "--watchdog" : "--watchdog " + forwarded;
     }
 
     private static string EscapeArgs(string[] args)
