@@ -35,6 +35,21 @@ static class MagicDialerLauncher
 
         try
         {
+            // Single-instance launcher: if the supervised engine is already
+            // running, opening Magic Dialer is a successful no-op. Starting a
+            // second packaged agent can make Windows reject the executable
+            // with ERROR_SHARING_VIOLATION ("file is being used by another process").
+            foreach (Process p in Process.GetProcessesByName("agent"))
+            {
+                try
+                {
+                    string running = p.MainModule == null ? "" : p.MainModule.FileName;
+                    if (String.Equals(Path.GetFullPath(running), Path.GetFullPath(agent), StringComparison.OrdinalIgnoreCase))
+                        return 0;
+                }
+                catch { }
+            }
+
             var psi = new ProcessStartInfo
             {
                 FileName = agent,
