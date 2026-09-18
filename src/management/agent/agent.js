@@ -392,6 +392,20 @@ async function runAgent(opts = {}) {
       statusPath: path.join(configDir, "status.json"),
       onSetup: (cfg) => { try { setupDoneResolve(cfg); } catch {} },
       onMode: (mode) => { try { log(`dashboard mode -> ${mode}`); } catch {} },
+      onEnroll: async ({ ticket, portal }) => {
+        const live = loadConfig(cfgPath) || {};
+        live.machineId = live.machineId || crypto.randomUUID();
+        const r = await post(String(portal).replace(/\/+$/, "") + "/api/engine/enroll", { ticket, machineId: live.machineId });
+        if (r.status !== 200 || !r.body || !r.body.deviceToken) throw new Error("Account enrollment rejected");
+        live.portalUrl = String(portal).replace(/\/+$/, "");
+        live.deviceToken = r.body.deviceToken;
+        delete live.token;
+        saveConfig(live, cfgPath);
+        Object.assign(config, live);
+        log("PC enrolled to logged-in customer account.");
+        return { ok: true };
+      },
+
       onCall: async (number) => {
         const liveConfig = loadConfig(cfgPath);
         if (!liveConfig) throw new Error("Magic Dialer setup is incomplete");
@@ -554,7 +568,7 @@ async function runAgent(opts = {}) {
     try {
       const syncPayload = sync.buildSyncPayload();
       const res = await post(`${portal}/api/heartbeat`, {
-        token: config.token,
+        deviceToken: config.deviceToken || config.token,
         voipReady: !!(config.voip && config.voip.ready),
         sync: syncPayload,
       });
