@@ -1,5 +1,9 @@
 "use strict";
 const http = require("node:http");
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const crypto = require("node:crypto");
 
 function json(res, code, body, origin = "*") {
   res.writeHead(code, {
@@ -16,12 +20,19 @@ function json(res, code, body, origin = "*") {
 }
 
 function startEngineHealthServer({ version, getStatus = () => "online", onCall = null, allowedOrigin = "*", port = 18787 } = {}) {
+  const noncePath = path.join(os.homedir(), ".magicdialer", "browser-token");
+  let browserToken = "";
+  try { fs.mkdirSync(path.dirname(noncePath), { recursive: true }); browserToken = fs.existsSync(noncePath) ? fs.readFileSync(noncePath, "utf8").trim() : crypto.randomBytes(24).toString("hex"); if (!fs.existsSync(noncePath)) fs.writeFileSync(noncePath, browserToken, { mode: 0o600 }); } catch { browserToken = crypto.randomBytes(24).toString("hex"); }
   let callActive = false;
   const server = http.createServer(async (req, res) => {
     const origin = String(req.headers.origin || "");
     const corsOrigin = allowedOrigin === "*" ? "*" : (origin === allowedOrigin ? origin : "");
     if (origin && !corsOrigin) return json(res, 403, { error: "origin not allowed" }, "null");
     if (req.method === "OPTIONS") return json(res, 204, {}, corsOrigin || allowedOrigin);
+    if (req.method === "GET" && req.url === "/browser-call") {
+      const u = new URL(req.url, "http://127.0.0.1");
+      return json(res, 400, { error: "number required" }, corsOrigin || allowedOrigin);
+    }
     if (req.method === "GET" && req.url === "/health") {
       return json(res, 200, { ok: true, service: "magic-dialer-engine", version: version || null, status: getStatus(), callControl: typeof onCall === "function" }, corsOrigin || allowedOrigin);
     }
