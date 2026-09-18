@@ -13,11 +13,12 @@ export function TestCallCard() {
     setLoading(true);
     setStatus("Checking local Magic Dialer engine...");
     try {
-      const health = await fetch("http://127.0.0.1:18787/health", { cache: "no-store" });
+      const localFetch = (url: string, init: RequestInit = {}) => fetch(url, { ...init, targetAddressSpace: "local" } as RequestInit & { targetAddressSpace: "local" });
+      const health = await localFetch("http://127.0.0.1:18787/health", { cache: "no-store" });
       const hj = await health.json();
       if (!health.ok || hj?.service !== "magic-dialer-engine" || hj?.callControl !== true) throw new Error("Local Magic Dialer engine is not ready. Start or update the Windows engine.");
       setStatus(`Local engine v${hj.version} online — placing test call...`);
-      const res = await fetch("http://127.0.0.1:18787/call", {
+      const res = await localFetch("http://127.0.0.1:18787/call", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ number: number.trim() }),
