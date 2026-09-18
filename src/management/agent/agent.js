@@ -11,6 +11,7 @@ const localDb = require("./local-db");
 const sync = require("./sync");
 const { emailQualifiedLead } = require("./email");
 const { ensurePhoneSession } = require("./call-start");
+const { runLocalCall } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
 const { checkForUpdate, validatePendingUpdate } = require("./auto-update");
 
@@ -343,12 +344,30 @@ async function runAgent(opts = {}) {
     if (validation && validation.error) log("Update validation failed safely: " + validation.error);
     scheduleAutoUpdate();
   }
-  let engineHealthServer = null;
-  try { engineHealthServer = await startEngineHealthServer({ version: VERSION }); log("Local engine health: http://127.0.0.1:18787/health"); }
-  catch (e) { log("Local engine health unavailable: " + e.message); }
   const cfgPath = opts.configPath || defaultConfigPath();
   const configDir = path.dirname(cfgPath);
   let config = loadConfig(cfgPath);
+  let engineHealthServer = null;
+  try {
+    const portalOrigin = config && config.portalUrl ? new URL(config.portalUrl).origin : "*";
+    engineHealthServer = await startEngineHealthServer({
+      version: VERSION,
+      allowedOrigin: portalOrigin,
+      getStatus: () => "online",
+      onCall: async (number) => {
+        const liveConfig = loadConfig(cfgPath);
+        if (!liveConfig) throw new Error("Magic Dialer setup is incomplete");
+        log("LOCAL CALL CONTROL: " + number);
+        return runLocalCall({
+          config: liveConfig,
+          number,
+          onLog: (m) => log(m),
+          onMode: () => {},
+        });
+      },
+    });
+    log("Local engine call control: http://127.0.0.1:18787");
+  } catch (e) { log("Local engine call control unavailable: " + e.message); }
 
   if (!takeAgentLock()) {
     log("Magic Dialer is already running - opening its dashboard...");
