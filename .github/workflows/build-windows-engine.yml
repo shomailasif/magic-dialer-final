@@ -91,6 +91,12 @@ jobs:
           name: magic-dialer-engine-windows
           path: src/management/build/dist/magic-dialer-engine-windows.exe
           if-no-files-found: error
+      - name: Verify updater rollback state gate
+        shell: pwsh
+        run: |
+          node src/management/agent/auto-update.behavior.test.js
+          if ($LASTEXITCODE -ne 0) { throw "Updater rollback behavior gate failed" }
+
       - name: Publish stable installer
         if: github.ref == 'refs/heads/main'
         shell: powershell
