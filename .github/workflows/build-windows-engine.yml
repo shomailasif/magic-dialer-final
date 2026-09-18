@@ -64,7 +64,10 @@ jobs:
             if (-not $healthy) {
               if ($proc.HasExited) { Write-Host "LAUNCHER EXIT CODE: $($proc.ExitCode)" }
               Write-Host "AGENT PROCESSES:"
-              Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue | Select-Object ProcessId,CommandLine | Format-List
+              Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+              Write-Host "ALL CHILD PROCESSES OF WATCHDOG:"
+              $agents = Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue
+              foreach ($a in $agents) { Get-CimInstance Win32_Process -Filter "ParentProcessId=$($a.ProcessId)" -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List }
               $lock = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog.lock"
               if (Test-Path $lock) { Write-Host "WATCHDOG LOCK:"; Get-Content $lock }
               throw "Installed customer launcher did not produce a healthy engine on localhost:18787"
