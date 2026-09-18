@@ -95,9 +95,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
-          gh release view engine-latest *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create engine-latest $installer --title "Magic Dialer Engine" --notes "Validated Windows engine installer. Built from $env:GITHUB_SHA."
-          } else {
+          $exists = gh release view engine-latest --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) {
             gh release upload engine-latest $installer --clobber
+          } else {
+            gh release create engine-latest $installer --title "Magic Dialer Engine" --notes "Validated Windows engine installer. Built from $env:GITHUB_SHA."
           }
+          if ($LASTEXITCODE -ne 0) { throw "Stable installer publish failed" }
