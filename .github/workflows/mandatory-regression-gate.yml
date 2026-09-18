@@ -4,11 +4,23 @@ on:
     branches: ["main"]
     paths:
       - "src/management/**"
+      - "src/app/api/engine/**"
+      - "src/app/api/heartbeat/**"
+      - "src/app/api/auth/**"
+      - "src/app/**/dashboard/test-call-card.tsx"
+      - "src/lib/auth.ts"
+      - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "src/management/**"
+      - "src/app/api/engine/**"
+      - "src/app/api/heartbeat/**"
+      - "src/app/api/auth/**"
+      - "src/app/**/dashboard/test-call-card.tsx"
+      - "src/lib/auth.ts"
+      - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
   workflow_dispatch: {}
 
@@ -23,6 +35,12 @@ jobs:
       - name: Install management dependencies
         working-directory: src/management
         run: npm install
+      - name: Install application dependencies
+        run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Type-check application and enrollment APIs
+        run: npx tsc --noEmit
       - name: Run complete regression suite
         shell: powershell
         run: powershell -ExecutionPolicy Bypass -File src/management/build/run-all-tests.ps1
