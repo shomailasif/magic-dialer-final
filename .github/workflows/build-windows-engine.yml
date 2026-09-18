@@ -91,6 +91,7 @@ jobs:
           $seedHash = (Get-FileHash -Algorithm SHA256 $seed).Hash
           $installerHash = (Get-FileHash -Algorithm SHA256 $installer).Hash
           if ($seedHash -ne $installerHash) { throw "Seeded rollback installer differs from installed release bytes" }
+          Write-Host "Rollback seed verified byte-for-byte: $seedHash"
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
       - uses: actions/upload-artifact@v4
         with:
