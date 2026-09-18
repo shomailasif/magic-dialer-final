@@ -118,7 +118,7 @@ async function runWatchdog(args) {
   const childCmd = process.env.MD_WATCHDOG_CHILD
     ? { cmd: "cmd.exe", args: ["/d", "/c", process.env.MD_WATCHDOG_CHILD] }
     : isPacked()
-      ? { cmd: process.execPath, args: ["--watchdog-child", ...childArgs] }
+      ? { cmd: process.execPath, args: [process.argv[1], ...childArgs] }
       : { cmd: process.execPath, args: [__filename, ...childArgs] };
   let crashes = 0;
   let lastExit = 0;
@@ -553,8 +553,7 @@ if (require.main === module) {
   const call = argv.includes("--call") || argv.includes("--call-once");
   const callOnce = argv.includes("--call-once");
   const noBrowser = argv.includes("--no-browser") || argv.includes("--silent") || argv.includes("--startup");
-  const watchdogChild = argv.includes("--watchdog-child");
-  const rest = argv.filter((a) => !a.startsWith("--"));
+   const rest = argv.filter((a) => !a.startsWith("--"));
   if (argv.includes("--watchdog")) {
     runWatchdog(argv.filter((a) => a !== "--watchdog")).catch((e) => { console.error(e); process.exit(1); });
   } else {
