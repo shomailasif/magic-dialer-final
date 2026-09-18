@@ -115,7 +115,11 @@ async function runWatchdog(args) {
   if (!takeWatchdogLock()) return;
   const childArgs = args.filter((a) => a !== "--watchdog");
   childArgs.push("--no-browser");
-  const childCmd = process.env.MD_WATCHDOG_CHILD ? { cmd: "cmd.exe", args: ["/d", "/c", process.env.MD_WATCHDOG_CHILD] } : { cmd: process.execPath, args: childArgs };
+  const childCmd = process.env.MD_WATCHDOG_CHILD
+    ? { cmd: "cmd.exe", args: ["/d", "/c", process.env.MD_WATCHDOG_CHILD] }
+    : isPacked()
+      ? { cmd: process.execPath, args: ["--watchdog-child", ...childArgs] }
+      : { cmd: process.execPath, args: [__filename, ...childArgs] };
   let crashes = 0;
   let lastExit = 0;
   const restart = (n) => new Promise((r) => setTimeout(r, n));
@@ -549,9 +553,10 @@ if (require.main === module) {
   const call = argv.includes("--call") || argv.includes("--call-once");
   const callOnce = argv.includes("--call-once");
   const noBrowser = argv.includes("--no-browser") || argv.includes("--silent") || argv.includes("--startup");
+  const watchdogChild = argv.includes("--watchdog-child");
   const rest = argv.filter((a) => !a.startsWith("--"));
   if (argv.includes("--watchdog")) {
-    runWatchdog(rest).catch((e) => { console.error(e); process.exit(1); });
+    runWatchdog(argv.filter((a) => a !== "--watchdog")).catch((e) => { console.error(e); process.exit(1); });
   } else {
     runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce, open, noBrowser }).catch((e) => {
       console.error(e);
