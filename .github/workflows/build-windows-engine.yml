@@ -94,6 +94,21 @@ jobs:
           if ($seedHash -ne $installerHash) { throw "Seeded rollback installer differs from installed release bytes" }
           Write-Host "Rollback seed verified byte-for-byte: $seedHash"
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
+      - name: Reopen launcher while engine is already running
+        shell: powershell
+        run: |
+          $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
+          $launcher = Join-Path $app "MagicDialer.exe"
+          Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
+          Start-Sleep -Seconds 1
+          $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          if ($before -lt 1) { throw "Engine was not running before duplicate-launch gate" }
+          $p = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
+          if (-not $p.WaitForExit(5000)) { throw "Duplicate launcher did not exit cleanly" }
+          if ($p.ExitCode -ne 0) { throw "Duplicate launcher failed with exit code $($p.ExitCode)" }
+          Start-Sleep -Milliseconds 500
+          $after = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
       - name: In-place upgrade with running old engine
         shell: powershell
         run: |
