@@ -11,6 +11,9 @@ const { startEngineHealthServer } = require("./engine-health");
   try {
     const r = await fetch("http://127.0.0.1:18788/health");
     assert.equal(r.status, 200);
+    assert.equal(r.headers.get("access-control-allow-private-network"), "true");
+    assert.equal(r.headers.get("private-network-access-name"), "magic-dialer-engine");
+    assert.match(r.headers.get("private-network-access-id") || "", /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i);
     const j = await r.json();
     assert.deepEqual(j, { ok: true, service: "magic-dialer-engine", version: "test", status: "ready", callControl: true });
     const call = await fetch("http://127.0.0.1:18788/call", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ number: "+16234001991" }) });
