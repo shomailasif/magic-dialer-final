@@ -8,6 +8,9 @@ function json(res, code, body, origin = "*") {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Private-Network": "true",
+    "Private-Network-Access-Name": "magic-dialer-engine",
+    "Private-Network-Access-ID": "4d:44:4c:52:01:01",
   });
   res.end(JSON.stringify(body));
 }
