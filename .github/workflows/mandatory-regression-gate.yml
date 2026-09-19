@@ -58,8 +58,14 @@ jobs:
       - name: Audit production dependencies
         shell: powershell
         run: |
-          npm prune --omit=dev
+          $temp = Join-Path $env:RUNNER_TEMP "runtime-audit"
+          New-Item -ItemType Directory -Force -Path $temp | Out-Null
+          Copy-Item package.json (Join-Path $temp "package.json")
+          Push-Location $temp
+          node -e "const fs=require('fs');const p=require('./package.json');delete p.devDependencies;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          npm install --package-lock-only --ignore-scripts
           npm audit --omit=dev --audit-level=high
+          Pop-Location
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Type-check application and enrollment APIs
