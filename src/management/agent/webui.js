@@ -21,7 +21,7 @@ const os = require("node:os");
  * ASCII banner as the customer-facing face of the product.
  */
 
-/** Preferred dashboard port; falls back to a random free port if taken. */
+/** Fixed loopback port used by the cloud portal for secure PC enrollment. */
 const PREFERRED_PORT = 48771;
 
 function localDataDir() {
@@ -424,15 +424,9 @@ function readJson(req) {
  *   serviceName: string (title/version seed)
  * Returns { port, url, close }.
  */
-function listenWithFallback(server, port, cb) {
-  const tryPort = (p) => {
-    server.once("error", (e) => {
-      if (e && e.code === "EADDRINUSE" && p !== 0) { tryPort(0); return; }
-      cb(null, null);
-    });
-    server.listen(p, "127.0.0.1", () => cb(server.address().port, null));
-  };
-  tryPort(port);
+function listenOnFixedPort(server, port, cb) {
+  server.once("error", (e) => cb(null, e));
+  server.listen(port, "127.0.0.1", () => cb(server.address().port, null));
 }
 
 async function startWebUi(opts) {
@@ -573,8 +567,9 @@ async function startWebUi(opts) {
     notFound(res);
   });
 
-  const actualPort = await new Promise((resolve) => {
-    listenWithFallback(server, opts.port === 0 ? 0 : (opts.port || PREFERRED_PORT), (port) => resolve(port));
+  const requestedPort = opts.port === 0 ? 0 : (opts.port || PREFERRED_PORT);
+  const actualPort = await new Promise((resolve, reject) => {
+    listenOnFixedPort(server, requestedPort, (port, err) => err ? reject(err) : resolve(port));
   });
   const url = `http://127.0.0.1:${actualPort}/`;
   return {
