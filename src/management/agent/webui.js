@@ -471,9 +471,16 @@ async function startWebUi(opts) {
       const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
       if (!/^\+?[0-9]{7,15}$/.test(number)) { res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Invalid phone number."); return; }
       if (typeof opts.onCall !== "function") { res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Local call control unavailable."); return; }
+      const portalOrigin = allowedOrigin && /^https?:\/\//.test(allowedOrigin) ? allowedOrigin : "";
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><p>Starting local-engine test call...</p></body>");
-      setImmediate(async () => { try { await opts.onCall(number); } catch {} });
+      res.write("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><p>Starting local-engine test call...</p>");
+      try {
+        await opts.onCall(number);
+        res.end("<p style='color:#15803d'>Test call completed. Returning to the portal...</p><script>try{if(window.opener&&"+JSON.stringify(!!portalOrigin)+"){window.opener.postMessage({type:'magic-dialer-call-complete'}, "+JSON.stringify(portalOrigin)+");setTimeout(function(){window.close()},350)}}catch(e){}</script></body>");
+      } catch (e) {
+        const msg = e && e.message ? e.message : "Local call failed";
+        res.end("<p style='color:#b91c1c'>Call failed: "+escapHtml(msg)+"</p><script>try{if(window.opener&&"+JSON.stringify(!!portalOrigin)+"){window.opener.postMessage({type:'magic-dialer-call-failed',error:"+JSON.stringify(String(msg))+"}, "+JSON.stringify(portalOrigin)+")}}catch(e){}</script></body>");
+      }
       return;
     }
     if (req.method === "GET" && p === "/") {
