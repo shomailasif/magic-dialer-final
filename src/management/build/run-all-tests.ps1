@@ -6,7 +6,8 @@ $tests = @(
   "agent\local-ringcentral-engine.behavior.test.js",
   "agent\local-call-controller.behavior.test.js",
   "agent\engine-health.behavior.test.js",
-  "agent\auto-update.behavior.test.js"
+  "agent\auto-update.behavior.test.js",
+  "build\release-version-consistency.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {
