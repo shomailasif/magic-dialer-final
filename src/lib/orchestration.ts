@@ -114,9 +114,12 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         accountSid: user.dialerConfig?.accountSid || process.env.RC_ACCOUNT_SID || null,
       });
 
-      if (dialResult.connected && user.agentConfig) {
-        const callLocale = detectLeadLanguage(lead, user.agentConfig);
-        aiResult = await runAIagent(user.agentConfig, lead, callLocale);
+      if (dialResult.connected) {
+        // RingOut/API connection alone does not provide the bidirectional media
+        // required by the live conversational brain. Never fabricate a transcript
+        // or outcome with the simulation agent after a real call connects.
+        console.error("[campaign] call connected without live media bridge; refusing simulated AI result");
+        dialResult = { connected: false, outcome: "FAILED", durationSecs: dialResult.durationSecs };
       }
     }
 
