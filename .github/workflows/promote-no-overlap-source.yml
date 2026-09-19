@@ -1,47 +1,15 @@
-name: Stage validated no-overlap source repair
+name: Historical promote no overlap source (disabled)
+
+# Historical recovery workflow retained for audit only.
+# Automatic source mutation is disabled; production changes use the mandatory regression gate.
 on:
-  push:
-    branches: [promote/no-overlap-only]
-    paths: ['.github/workflows/promote-no-overlap-source.yml']
+  workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
+
 jobs:
-  stage:
+  historical-only:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: promote/no-overlap-only
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Apply only validated 3-line repair
-        shell: python
-        run: |
-          from pathlib import Path
-          p=Path('src/lib/sip-conversation.ts')
-          s=p.read_text()
-          old="""  const expectedMs = Math.ceil((next.length / RATE) * 1000);\n"""
-          assert s.count(old)==1
-          s=s.replace(old,'',1)
-          old="""    clearTimeout(watchdog);\n"""
-          assert s.count(old)==1
-          s=s.replace(old,'',1)
-          old="""  const watchdog = setTimeout(() => settle('watchdog'), Math.max(1200, expectedMs + 750));\n"""
-          assert s.count(old)==1
-          s=s.replace(old,'',1)
-          assert "settle('watchdog')" not in s
-          assert "streamer.once('finished', () => settle('finished'));" in s
-          p.write_text(s)
-      - run: npm ci
-      - run: npm run build
-      - name: Commit source only after green build
-        run: |
-          git config user.name wodozone-repair
-          git config user.email actions@users.noreply.github.com
-          git add src/lib/sip-conversation.ts
-          git diff --cached --exit-code && exit 0
-          test "$(git diff --cached --numstat | wc -l)" -eq 1
-          git commit -m 'Prevent overlapping RingCentral audio streamers'
-          git push origin HEAD:promote/no-overlap-only
+      - run: echo "Historical workflow only; source mutation and git push are disabled."
