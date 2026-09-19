@@ -17,6 +17,8 @@ on:
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
       - ".github/workflows/build-windows-engine.yml"
+      - "package.json"
+      - "package-lock.json"
   pull_request:
     branches: ["main"]
     paths:
@@ -34,6 +36,8 @@ on:
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
       - ".github/workflows/build-windows-engine.yml"
+      - "package.json"
+      - "package-lock.json"
   workflow_dispatch: {}
 
 jobs:
@@ -49,6 +53,8 @@ jobs:
         run: npm install
       - name: Install application dependencies
         run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Type-check application and enrollment APIs
