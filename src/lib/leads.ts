@@ -36,7 +36,7 @@ export async function parseAndImportLeads(
     lower.endsWith(".xls")
   ) {
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(buffer);
+    await workbook.xlsx.load(Buffer.from(buffer) as unknown as ExcelJS.Buffer);
     const sheet = workbook.worksheets[0];
     if (!sheet) throw new Error("Excel file contains no worksheets.");
     const headers = sheet.getRow(1).values as unknown[];
