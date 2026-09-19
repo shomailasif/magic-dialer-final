@@ -98,8 +98,8 @@ function avoidRepeatedQuestion(state: ConversationState, candidate: string): str
   if (!q) return candidate;
   const previous = state.agentSaidHistory.map(normalizeQuestion).filter(Boolean);
   if (!previous.includes(q)) return candidate;
-  console.warn("[free-ai] blocked repeated question:", q);
-  return "Thanks, I have that. Tell me what would be most useful for you to know next.";
+  console.warn("[free-ai] repeated question detected; preserving model response rather than injecting scripted dialogue:", q);
+  return candidate;
 }
 
 function smartFallback(state: ConversationState): string {
