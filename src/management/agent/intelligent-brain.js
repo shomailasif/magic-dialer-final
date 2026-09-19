@@ -69,4 +69,16 @@ async function opening(config) {
   return complete({ history: [{ role: "user", content: "Start the call now with a brief natural introduction in the active conversation language. Do not begin with a questionnaire or force a question; give the prospect room to respond naturally." }], config });
 }
 
-module.exports = { nextTurn, opening, systemPrompt, clean };
+async function preflightBrain(config) {
+  const r = await complete({
+    history: [{ role: "user", content: "Reply with exactly READY." }],
+    config,
+    maxTokens: 8,
+  });
+  if (String(r.text || "").trim().toUpperCase() !== "READY") {
+    throw new Error("AI brain preflight failed: " + (r.error || "unexpected response"));
+  }
+  return true;
+}
+
+module.exports = { nextTurn, opening, preflightBrain, systemPrompt, clean };
