@@ -2,7 +2,7 @@ const http = require("node:http");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { openDb, registerCustomer, processHeartbeat, setDisabled, markStaleOffline, allCustomers, getCustomerByToken, logCall, allCalls, getCallById, updateCustomer, setCallList, saveLeads, enrollDevice } = require("./db");
+const { openDb, registerCustomer, processHeartbeat, setDisabled, markStaleOffline, allCustomers, getCustomerByToken, logCall, allCalls, getCallById, updateCustomer, setCallList, saveLeads, enrollDevice, createEnrollmentTicket, getEnrollmentTicket, markEnrollmentTicketConnected } = require("./db");
 const { HEARTBEAT_INTERVAL_MS, STALE_AFTER_MS, HOSTED_VOIP_SERVERS, voipComplete, heartbeatResponse } = require("../shared/protocol");
 const { sendEmail, listOutbox } = require("./mailer");
 const { issueSession, verifySession, sessionIdentity, sessionFromCookieHeader, checkPassword, adminPassword, authenticate, issueCustomerSession, verifyCustomerSession, customerSessionFromCookieHeader } = require("./auth");
@@ -113,7 +113,6 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     return m ? { token: decodeURIComponent(m[1]) } : null;
   };
 
-  const enrollmentTickets = new Map();
   const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
@@ -183,29 +182,28 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     if (url.pathname === "/api/engine/enrollment-ticket" && method === "POST") {
       if (!myToken) return send(401, { error: "Customer session required" });
       const ticket = crypto.randomBytes(32).toString("hex");
-      enrollmentTickets.set(ticket, { customerToken: myToken, expires: Date.now() + 120000 });
+      await createEnrollmentTicket(db, ticket, myToken, Date.now() + 120000);
       return send(200, { ticket, expiresIn: 120 });
     }
     if (url.pathname === "/api/engine/enroll" && method === "POST") {
       const body = await readBody(req);
       const ticket = String(body.ticket || "");
       const machineId = String(body.machineId || "").trim();
-      const pending = enrollmentTickets.get(ticket);
-      if (!pending || pending.expires < Date.now() || !machineId) return send(409, { error: "Enrollment ticket invalid or expired" });
-      if (pending.connected) return send(409, { error: "Enrollment ticket already used" });
-      const enrolled = await enrollDevice(db, pending.customerToken, machineId);
+      const pending = await getEnrollmentTicket(db, ticket);
+      if (!pending || Number(pending.expires_at) < Date.now() || !machineId) return send(409, { error: "Enrollment ticket invalid or expired" });
+      if (Number(pending.connected) === 1) return send(409, { error: "Enrollment ticket already used" });
+      const enrolled = await enrollDevice(db, pending.customer_token, machineId);
       if (!enrolled) return send(409, { error: "Customer enrollment failed" });
       if (enrolled.error === "active_device") return send(409, { error: "This account is already connected to another active PC" });
-      pending.connected = true;
-      pending.connectedAt = Date.now();
+      await markEnrollmentTicketConnected(db, ticket);
       return send(200, { ok: true, deviceToken: enrolled.deviceToken });
     }
     if (url.pathname === "/api/engine/enrollment-status" && method === "GET") {
       if (!myToken) return send(401, { error: "Customer session required" });
       const ticket = String(url.searchParams.get("ticket") || "");
-      const pending = enrollmentTickets.get(ticket);
-      if (!pending || pending.customerToken !== myToken || pending.expires < Date.now()) return send(404, { error: "Enrollment ticket invalid or expired" });
-      return send(200, { connected: pending.connected === true });
+      const pending = await getEnrollmentTicket(db, ticket);
+      if (!pending || pending.customer_token !== myToken || Number(pending.expires_at) < Date.now()) return send(404, { error: "Enrollment ticket invalid or expired" });
+      return send(200, { connected: Number(pending.connected) === 1 });
     }
 
     // --- Heartbeat from a customer's PC (no login - the agent must work) ---
