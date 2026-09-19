@@ -53,8 +53,8 @@ jobs:
       - name: Install management dependencies
         working-directory: src/management
         run: npm install
-      - name: Install application dependencies
-        run: npm ci
+      - name: Synchronize and install application dependencies
+        run: npm install --package-lock-only --ignore-scripts && npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
       - name: Generate Prisma client
