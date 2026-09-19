@@ -4,7 +4,7 @@ on:
   push:
     branches: ["main"]
     paths:
-      - ".github/workflows/generate-lockfile-artifact.yml"\n      - ".lockfile-trigger"
+      - ".github/workflows/generate-lockfile-artifact.yml"\n      - ".lockfile-trigger"\n      - ".lockfile-trigger-2"
 permissions:
   contents: write
 jobs:
