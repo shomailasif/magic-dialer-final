@@ -15,6 +15,8 @@ async function main() {
 
   let pushes = 0;
   const deps = {
+    async preflightBrain() { return true; },
+    async opening() { return { text: "Hello" }; },
     async registerSession() { return { ok: true, last: "SIP/2.0 200 OK", host: "test.invalid:5096" }; },
     createLocalRingCentralEngine(opts) { onAudio = opts.onAudio; return engine; },
     createVad() {
@@ -54,6 +56,8 @@ async function main() {
       config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
       number: "2",
       deps: {
+        async preflightBrain() { return true; },
+        async opening() { return { text: "Hello" }; },
         async speakToBuffer() { return null; },
         async registerSession() { sipAttempted = true; return { ok: true }; },
       },
@@ -68,6 +72,8 @@ async function main() {
       config: { voip: { ready: true, username: "u", sipPassword: "bad", number: "1" }, product: "test" },
       number: "2",
       deps: {
+        async preflightBrain() { return true; },
+        async opening() { return { text: "Hello" }; },
         async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
         async registerSession() { return { ok: false, last: "403 Forbidden" }; },
         createLocalRingCentralEngine() { engineCreated = true; return engine; },
