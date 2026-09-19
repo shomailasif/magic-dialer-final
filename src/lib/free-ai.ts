@@ -258,11 +258,9 @@ export async function processProspectInput(
   const text = transcript.trim();
   if (!text) {
     state.silenceCount++;
-    // Handle silence with smart fallback
-    const response = smartFallback(state);
-    state.agentSaidHistory.push(response);
-    state.conversationHistory.push({ role: "assistant", content: response });
-    return { text: response, state, shouldEnd: false };
+    // Silence is not conversational input. Never inject scripted dialogue into a live call.
+    // The media/VAD layer decides whether to keep listening or end an idle call.
+    return { text: "", state, shouldEnd: false };
   }
 
   state.turnCount++;
