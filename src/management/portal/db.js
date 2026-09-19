@@ -243,6 +243,17 @@ async function getCustomerByToken(db, token) {
 async function enrollDevice(db, customerToken, machineId) {
   const c = await getCustomerByToken(db, customerToken);
   if (!c || !machineId) return null;
+  // A customer account may be bound to only one active PC. Reconnecting the
+  // same machine is allowed, but a different machine must wait until the
+  // current engine lease is stale.
+  const activeOnAnotherMachine =
+    !!c.device_token &&
+    !!c.machine_id &&
+    c.machine_id !== machineId &&
+    c.last_seen != null &&
+    (Date.now() - Number(c.last_seen)) <= STALE_AFTER_MS;
+  if (activeOnAnotherMachine) return { error: "active_device" };
+
   const deviceToken = crypto.randomBytes(32).toString("hex");
   if (db.pool) await db.pool.query("UPDATE customers SET machine_id=$1, device_token=$2 WHERE token=$3 AND portal_id=$4", [machineId, deviceToken, customerToken, db.portalId]);
   else db.sqlite.prepare("UPDATE customers SET machine_id=?, device_token=? WHERE token=? AND portal_id=?").run(machineId, deviceToken, customerToken, db.portalId);
