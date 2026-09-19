@@ -4,8 +4,29 @@ const { voiceCall } = require("./call");
 const { speakToBuffer } = require("./voice");
 const { createVad } = require("./vad");
 const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
+const { registerSession } = require("../portal/softphone");
 const { transcribeAuto } = require("./multilingual-stt");
 const { normalizeLanguage } = require("./language");
+
+function sipOptions(v) {
+  return {
+    user: v.username,
+    pass: v.sipPassword,
+    authId: v.authId || v.username,
+    domain: v.domain || "sip.ringcentral.com",
+    proxy: v.host || v.server || "sip40.ringcentral.com",
+    port: Number(v.port || 5096),
+  };
+}
+
+async function preflightLocalSip(config, deps = {}) {
+  const v = config && config.voip || {};
+  if (!v.ready || !v.username || !v.sipPassword || !v.number) throw new Error("VOIP configuration incomplete");
+  const reg = deps.registerSession || registerSession;
+  const result = await reg(sipOptions(v));
+  if (!result || !result.ok) throw new Error("RingCentral SIP registration failed: " + ((result && result.last) || "unknown error"));
+  return { ok: true, host: result.host || null };
+}
 
 async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {}, deps = {} }) {
   const makeEngine = deps.createLocalRingCentralEngine || createLocalRingCentralEngine;
@@ -20,16 +41,11 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
 
   let state = null;
   let activeLocale = config.lang && config.lang !== "auto" ? normalizeLanguage(config.lang) : "en";
+  await preflightLocalSip(config, deps);
+  onLog("[local-media-v2] SIP registration preflight passed");
   const engine = makeEngine({
     number: target,
-    sip: {
-      user: v.username,
-      pass: v.sipPassword,
-      authId: v.authId || v.username,
-      domain: v.domain || "sip.ringcentral.com",
-      proxy: v.host || v.server || "sip40.ringcentral.com",
-      port: Number(v.port || 5096),
-    },
+    sip: sipOptions(v),
     onLog,
     onAudio: (b) => {
       if (!state) return;
@@ -121,4 +137,4 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
   }
 }
 
-module.exports = { runLocalCall };
+module.exports = { runLocalCall, preflightLocalSip, sipOptions };
