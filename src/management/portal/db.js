@@ -585,8 +585,19 @@ async function getCallById(db, id) {
 }
 
 async function createEnrollmentTicket(db, ticket, customerToken, expiresAt) {
-  if (db.pool) await db.pool.query("INSERT INTO enrollment_tickets(ticket,customer_token,expires_at,connected,portal_id) VALUES($1,$2,$3,0,$4)", [ticket,customerToken,expiresAt,db.portalId]);
-  else db.sqlite.prepare("INSERT INTO enrollment_tickets(ticket,customer_token,expires_at,connected,portal_id) VALUES(?,?,?,?,?)").run(ticket,customerToken,expiresAt,0,db.portalId);
+  // Bound persistent workflow state. Tickets are valid for only two minutes;
+  // keeping expired rows has no security or recovery value.
+  const now = Date.now();
+  if (db.pool) {
+    await db.pool.query("DELETE FROM enrollment_tickets WHERE portal_id=$1 AND expires_at < $2", [db.portalId, now]);
+    await db.pool.query("INSERT INTO enrollment_tickets(ticket,customer_token,expires_at,connected,portal_id) VALUES($1,$2,$3,0,$4)", [ticket,customerToken,expiresAt,db.portalId]);
+  } else {
+    const tx = db.sqlite.transaction(() => {
+      db.sqlite.prepare("DELETE FROM enrollment_tickets WHERE portal_id=? AND expires_at < ?").run(db.portalId, now);
+      db.sqlite.prepare("INSERT INTO enrollment_tickets(ticket,customer_token,expires_at,connected,portal_id) VALUES(?,?,?,?,?)").run(ticket,customerToken,expiresAt,0,db.portalId);
+    });
+    tx();
+  }
 }
 async function getEnrollmentTicket(db, ticket) {
   if (!ticket) return null;
