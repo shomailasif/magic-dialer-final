@@ -13,6 +13,7 @@ on:
       - "src/lib/auth.ts"
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
+      - ".github/workflows/build-windows-engine.yml"
   pull_request:
     branches: ["main"]
     paths:
@@ -26,6 +27,7 @@ on:
       - "src/lib/auth.ts"
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
+      - ".github/workflows/build-windows-engine.yml"
   workflow_dispatch: {}
 
 jobs:
