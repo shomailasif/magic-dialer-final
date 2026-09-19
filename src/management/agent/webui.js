@@ -146,7 +146,7 @@ const PAGE = `<!doctype html>
     <div class="steps">
       <div class="step done"><div class="n">1</div><div class="t">Your company</div></div>
       <div class="step"><div class="n">2</div><div class="t">Contact &amp; leads</div></div>
-      <div class="step"><div class="n">3</div><div class="t">Connect to portal</div></div>
+      <div class="step"><div class="n">3</div><div class="t">Finish setup</div></div>
     </div>
     <div class="card" style="padding:22px 24px">
       <div class="warn-box">One-time setup. After you save, this PC starts as your agent and appears ONLINE in your portal within a few seconds.</div>
@@ -230,18 +230,8 @@ const PAGE = `<!doctype html>
           </div>
         </div>
         <div class="sec" style="border-bottom:0;padding-bottom:0">
-          <h2>Connect to portal</h2>
-          <div class="desc">Provided by your Magic Dialer administrator.</div>
-          <div class="row">
-            <div>
-              <label for="fPortal">Portal URL</label>
-              <input id="fPortal" inputmode="url" placeholder="https://....suga.run">
-            </div>
-            <div>
-              <label for="fToken">Access key</label>
-              <input id="fToken" placeholder="from your admin">
-            </div>
-          </div>
+          <h2>Finish local setup</h2>
+          <div class="desc">Account connection is handled securely from your logged-in Magic Dialer portal. No access key is required here.</div>
           <div class="inl" style="margin-top:18px">
             <button type="submit" id="saveBtn" class="btn primary">Save &amp; start</button>
             <button type="button" id="cancelBtn" class="btn ghost">Cancel</button>
@@ -374,15 +364,11 @@ $id("setupForm").addEventListener("submit",async function(ev){
     voipUser:$id("fVoipUser").value.trim(),
     voipPass:$id("fVoipPass").value.trim(),
     voipServer:$id("fVoipServer").value.trim(),
-    voipExt:$id("fVoipExt").value.trim(),
-    portalUrl:$id("fPortal").value.trim(),
-    token:$id("fToken").value.trim()};
+    voipExt:$id("fVoipExt").value.trim()};
   $id("setupErr").textContent="";
   var missing=[];
   if(!body.companyName)missing.push("company name");
   if(!body.product)missing.push("what you sell");
-  if(!body.portalUrl)missing.push("portal URL");
-  if(!body.token)missing.push("access key");
   if(missing.length){$id("setupErr").textContent="Please fill in: "+missing.join(", ")+".";return}
   var btn=$id("saveBtn");btn.disabled=true;btn.textContent="Starting agent…";
   try{
