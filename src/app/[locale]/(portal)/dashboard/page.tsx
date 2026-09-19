@@ -6,6 +6,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
 import { TestCallCard } from "./test-call-card";
+import { ConnectPcButton } from "./connect-pc-card";
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
@@ -81,7 +82,7 @@ export default async function DashboardPage({
             <h2 className="mt-1 text-lg font-bold text-slate-900">Download Magic Dialer</h2>
             <p className="mt-1 text-sm text-slate-600">Install the Windows engine on this PC once. After installation, use Magic Dialer from this panel normally.</p>
           </div>
-          <Button href="https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/magic-dialer-engine-windows.exe" variant="primary">Download for Windows</Button>
+          <ConnectPcButton />
         </div>
       </Card>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
