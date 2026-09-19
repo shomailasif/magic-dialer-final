@@ -440,14 +440,15 @@ async function startWebUi(opts) {
     const cfgForOrigin = opts.readConfig ? (opts.readConfig() || {}) : {};
     const allowedOrigin = String(cfgForOrigin.portalUrl || "").replace(/\/+$/, "");
     const crossOriginAllowed = !!origin && !!allowedOrigin && origin === allowedOrigin;
-    if (origin && !crossOriginAllowed) { sendJson(res, 403, { ok: false, error: "Origin not allowed." }); return; }
-    if (crossOriginAllowed) {
+    const isCallRoute = p === "/api/call";
+    if (isCallRoute && origin && !crossOriginAllowed) { sendJson(res, 403, { ok: false, error: "Origin not allowed." }); return; }
+    if (isCallRoute && crossOriginAllowed) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     }
-    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    if (isCallRoute && req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     if (req.method === "GET" && p === "/" && u.searchParams.get("enroll")) {
       const ticket = String(u.searchParams.get("enroll") || "");
