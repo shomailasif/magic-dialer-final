@@ -61,6 +61,18 @@ jobs:
         run: npx tsc --noEmit
       - name: Production build
         run: npm run build
+      - name: Verify production safety invariants
+        shell: powershell
+        run: |
+          $bad = @()
+          $orchestration = Get-Content src/lib/orchestration.ts -Raw
+          $brain = Get-Content src/lib/free-ai.ts -Raw
+          $auth = Get-Content src/lib/auth.ts -Raw
+          if ($orchestration -match 'runAIagent') { $bad += 'simulated AI agent referenced by production orchestration' }
+          if ($brain -match 'Sarah|Dispatch Solutions|save up to 30%|smartFallback|623-400-1991') { $bad += 'hard-coded scripted sales content returned to live brain' }
+          if ($auth -match 'process\.env\.AUTH_SECRET \|\| "dev-fallback-secret-change-me"') { $bad += 'production auth can silently fall back to development secret' }
+          if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }
+          Write-Host 'Production safety invariants PASS'
       - name: Run complete regression suite
         shell: powershell
         run: powershell -ExecutionPolicy Bypass -File src/management/build/run-all-tests.ps1
