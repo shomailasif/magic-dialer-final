@@ -1,5 +1,5 @@
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { prisma } from "@/lib/db";
 
 export interface ImportRowError {
@@ -35,9 +35,20 @@ export async function parseAndImportLeads(
     lower.endsWith(".xlsx") ||
     lower.endsWith(".xls")
   ) {
-    const wb = XLSX.read(buffer, { type: "buffer" });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    rows = XLSX.utils.sheet_to_json(sheet) as Record<string, unknown>[];
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet) throw new Error("Excel file contains no worksheets.");
+    const headers = sheet.getRow(1).values as unknown[];
+    sheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const record: Record<string, unknown> = {};
+      row.eachCell((cell, colNumber) => {
+        const header = String(headers[colNumber] ?? "").trim();
+        if (header) record[header] = cell.text;
+      });
+      rows.push(record);
+    });
   } else {
     throw new Error("Unsupported file type. Please upload a CSV or Excel file.");
   }
