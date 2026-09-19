@@ -69,11 +69,18 @@ export async function createDeviceSession(
 ): Promise<string> {
   const now = new Date();
   await prisma.session.deleteMany({ where: { userId, expiresAt: { lte: now } } });
-  const lockCutoff = new Date(now.getTime() - DEVICE_LOCK_MS);\n  const active = await prisma.session.findFirst({\n    where: { userId, expiresAt: { gt: now }, lastActiveAt: { gt: lockCutoff } },\n    orderBy: { lastActiveAt: "desc" },\n  });
+  const lockCutoff = new Date(now.getTime() - DEVICE_LOCK_MS);
+  const active = await prisma.session.findFirst({
+    where: { userId, expiresAt: { gt: now }, lastActiveAt: { gt: lockCutoff } },
+    orderBy: { lastActiveAt: "desc" },
+  });
   if (active) {
     if (active.deviceFingerprint !== deviceFingerprint) throw new Error("ACCOUNT_ACTIVE_ON_ANOTHER_PC");
+    await prisma.session.update({ where: { id: active.id }, data: { lastActiveAt: now } });
     return active.id;
   }
+
+  await prisma.session.deleteMany({ where: { userId } });
 
   const session = await prisma.session.create({
     data: {
