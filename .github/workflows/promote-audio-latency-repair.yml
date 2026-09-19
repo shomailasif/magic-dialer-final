@@ -1,58 +1,15 @@
-name: Promote validated call repair
+name: Historical audio latency repair (disabled)
+
+# Historical recovery workflow. Source mutation is intentionally disabled.
+# Production changes must pass Mandatory Regression Gate before deployment.
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/promote-audio-latency-repair.yml']
+  workflow_dispatch:
+
 permissions:
-  contents: write
+  contents: read
+
 jobs:
-  promote:
+  historical-only:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Apply validated 12-line call repair
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          f=Path('src/lib/sip-conversation.ts')
-          p=f.read_text()
-          old='''  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }\n  const combined = Buffer.concat(allParts);\n  console.log("[sip-conv] TTS combined:", combined.length, "bytes");\n  const frames = await legacyToFramesFromAudio(combined);\n  console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");\n  return frames;'''
-          new='''  if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }\n  const frames: Buffer[] = [];\n  for (const part of allParts) {\n    const partFrames = await legacyToFramesFromAudio(part);\n    frames.push(...partFrames);\n  }\n  console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");\n  return frames;'''
-          assert old in p, 'main audio block differs from validated base'
-          p=p.replace(old,new)
-          assert 'listenForSpeech(cs, start, heardRef, 3000)' in p
-          p=p.replace('listenForSpeech(cs, start, heardRef, 3000)', 'listenForSpeech(cs, start, heardRef, 15000)')
-          assert 'now-lastVoice>=350' in p
-          p=p.replace('now-lastVoice>=350', 'now-lastVoice>=500')
-          f.write_text(p)
-          PY
-      - name: Verify preserved fixes and new repair
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          p=Path('src/lib/sip-conversation.ts').read_text()
-          assert 'const combined = Buffer.concat(allParts)' not in p
-          assert 'const partFrames = await legacyToFramesFromAudio(part);' in p
-          assert 'listenForSpeech(cs, start, heardRef, 3000)' not in p
-          assert 'listenForSpeech(cs, start, heardRef, 15000)' in p
-          assert 'now-lastVoice>=500' in p
-          assert 'Buffer.alloc(FRAME, 0xff)' in p
-          assert 'const media = createMediaState(cs)' in p
-          assert 'const greetingFrames = await textToFramesLocal(greeting);' in p
-          PY
-      - run: npm ci
-      - run: npm run build
-      - name: Commit source only after green build
-        run: |
-          git config user.name wodozone-repair
-          git config user.email actions@users.noreply.github.com
-          git add src/lib/sip-conversation.ts
-          git diff --cached --quiet && exit 0
-          git commit -m "Repair production TTS playback and turn latency"
-          git push origin HEAD:main
+      - run: echo "Historical repair retained for audit only; no source mutation is permitted."
