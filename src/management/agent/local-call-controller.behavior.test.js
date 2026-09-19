@@ -24,7 +24,7 @@ async function main() {
         return { voiced: false, speaking: true, ended: pushes >= 14 };
       }};
     },
-    async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff) }; },
+    async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
     async transcribeAuto(audio) { sttBytes = audio.length; return { text: "please wait", language: "en" }; },
     async voiceCall({ speakFn, listenFn }) {
       const speaking = speakFn("Hello");
@@ -47,6 +47,20 @@ async function main() {
   assert.equal(result.heard, "please wait");
   assert.equal(sttBytes, 2240, "captured turn must retain every expected 20ms frame through barge-in");
   assert.equal(closed, 1, "engine must close");
+
+  let sipAttempted = false;
+  await assert.rejects(
+    () => runLocalCall({
+      config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
+      number: "2",
+      deps: {
+        async speakToBuffer() { return null; },
+        async registerSession() { sipAttempted = true; return { ok: true }; },
+      },
+    }),
+    /TTS preflight failed/
+  );
+  assert.equal(sipAttempted, false, "failed TTS preflight must block SIP registration and dialing");
 
   let engineCreated = false;
   await assert.rejects(
