@@ -1,7 +1,8 @@
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
-const { openDb, registerCustomer, processHeartbeat, setDisabled, markStaleOffline, allCustomers, getCustomerByToken, logCall, allCalls, getCallById, updateCustomer, setCallList, saveLeads } = require("./db");
+const { openDb, registerCustomer, processHeartbeat, setDisabled, markStaleOffline, allCustomers, getCustomerByToken, logCall, allCalls, getCallById, updateCustomer, setCallList, saveLeads, enrollDevice } = require("./db");
 const { HEARTBEAT_INTERVAL_MS, STALE_AFTER_MS, HOSTED_VOIP_SERVERS, voipComplete, heartbeatResponse } = require("../shared/protocol");
 const { sendEmail, listOutbox } = require("./mailer");
 const { issueSession, verifySession, sessionIdentity, sessionFromCookieHeader, checkPassword, adminPassword, authenticate, issueCustomerSession, verifyCustomerSession, customerSessionFromCookieHeader } = require("./auth");
@@ -112,6 +113,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     return m ? { token: decodeURIComponent(m[1]) } : null;
   };
 
+  const enrollmentTickets = new Map();
   const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
@@ -177,10 +179,29 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       return c ? send(200, { customer: c }) : send(404, { error: "Customer not found" });
     }
 
+    // Secure one-time PC enrollment.
+    if (url.pathname === "/api/engine/enrollment-ticket" && method === "POST") {
+      if (!myToken) return send(401, { error: "Customer session required" });
+      const ticket = crypto.randomBytes(32).toString("hex");
+      enrollmentTickets.set(ticket, { customerToken: myToken, expires: Date.now() + 120000 });
+      return send(200, { ticket, expiresIn: 120 });
+    }
+    if (url.pathname === "/api/engine/enroll" && method === "POST") {
+      const body = await readBody(req);
+      const ticket = String(body.ticket || "");
+      const machineId = String(body.machineId || "").trim();
+      const pending = enrollmentTickets.get(ticket);
+      enrollmentTickets.delete(ticket);
+      if (!pending || pending.expires < Date.now() || !machineId) return send(409, { error: "Enrollment ticket invalid or expired" });
+      const enrolled = await enrollDevice(db, pending.customerToken, machineId);
+      if (!enrolled) return send(409, { error: "Customer enrollment failed" });
+      return send(200, { ok: true, deviceToken: enrolled.deviceToken });
+    }
+
     // --- Heartbeat from a customer's PC (no login - the agent must work) ---
     if (url.pathname === "/api/heartbeat" && method === "POST") {
       const body = await readBody(req);
-      const out = await processHeartbeat(db, { token: body.token, voipReady: body.voipReady, sync: body.sync });
+      const out = await processHeartbeat(db, { token: body.token, deviceToken: body.deviceToken, voipReady: body.voipReady, sync: body.sync });
       return send(200, heartbeatResponse({ ok: out.ok, disabled: out.disabled, config: out.config, reason: out.reason, sync: out.sync }));
     }
 
@@ -806,7 +827,9 @@ function customerHomeHtml(c) {
   <div class="card" id="engineCard" style="max-width:820px;margin:28px auto 0;padding:20px">
     <div style="font-size:14px;font-weight:700;color:#e2e8f0;margin-bottom:6px">Magic Dialer Engine</div>
     <div id="engineStatus" style="color:#fbbf24;font-size:12px;margin-bottom:12px">Checking this PC...</div>
+    <button class="btn" id="engineConnect" type="button" style="display:none;margin-right:8px">Connect this PC</button>
     <a class="btn" id="engineDownload" href="/downloads/magic-dialer-engine-windows.exe" style="display:none;text-align:center">Download Magic Dialer Engine for Windows</a>
+    <div id="engineConnectMsg" style="display:none;margin-top:10px;color:#34d399;font-size:12px"></div>
   </div>
 
   <div style="max-width:820px;margin:0 auto;padding:28px 20px 60px">
@@ -882,13 +905,30 @@ function customerHomeHtml(c) {
   </div>
   <script>
     const HOSTED = ${jsonSafe(HOSTED_VOIP_SERVERS)};\n    (async function detectLocalEngine(){
-      const status=document.getElementById('engineStatus'), dl=document.getElementById('engineDownload');
+      const status=document.getElementById('engineStatus'), dl=document.getElementById('engineDownload'), connect=document.getElementById('engineConnect');
       try { const ctl=new AbortController(); setTimeout(()=>ctl.abort(),900);
         const r=await fetch('http://127.0.0.1:18787/health',{signal:ctl.signal,cache:'no-store'});
         if(!r.ok) throw new Error('offline'); const j=await r.json();
-        status.style.color='#34d399'; status.textContent='Engine online'+(j.version?' · v'+j.version:'');
+        status.style.color='#34d399'; status.textContent='Engine online'+(j.version?' · v'+j.version:''); connect.style.display='inline-flex';
       } catch { status.style.color='#fbbf24'; status.textContent='Engine not detected on this Windows PC.'; dl.style.display='inline-block'; }
     })();
+    document.getElementById('engineConnect').addEventListener('click', async () => {
+      const status=document.getElementById('engineStatus');
+      status.textContent='Connecting this PC...';
+      try {
+        const tr=await fetch('/api/engine/enrollment-ticket',{method:'POST'}); const tj=await tr.json();
+        if(!tr.ok || !tj.ticket) throw new Error(tj.error || 'Could not create connection ticket');
+        const local='http://127.0.0.1:48771/?enroll='+encodeURIComponent(tj.ticket)+'&portal='+encodeURIComponent(location.origin);
+        const pop=window.open(local,'magicDialerConnect','popup=yes,width=520,height=360,resizable=yes,scrollbars=yes');
+        if(!pop) throw new Error('Allow the Magic Dialer connection popup in your browser');
+      } catch(e) { status.style.color='#f87171'; status.textContent=e.message || 'Connection failed'; }
+    });
+    window.addEventListener('message',(ev)=>{
+      if(ev.origin!=='http://127.0.0.1:48771' || !ev.data) return;
+      const status=document.getElementById('engineStatus'), msg=document.getElementById('engineConnectMsg');
+      if(ev.data.type==='magic-dialer-enrolled') { status.style.color='#34d399'; status.textContent='Engine online · connected'; msg.style.display='block'; msg.textContent='This PC is connected.'; }
+      if(ev.data.type==='magic-dialer-enrollment-failed') { status.style.color='#f87171'; status.textContent=ev.data.error || 'Connection failed'; }
+    });
     function voipToggle() {
       const custom = !HOSTED[document.getElementById('vProvider').value];
       document.querySelectorAll('.voipCust').forEach((el) => el.style.display = custom ? '' : 'none');

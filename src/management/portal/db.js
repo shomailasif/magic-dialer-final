@@ -77,8 +77,8 @@ async function openDb(dbPath) {
       created_at   INTEGER NOT NULL,
       last_seen    INTEGER,
       status       TEXT NOT NULL DEFAULT 'online',
-      disabled     INTEGER NOT NULL DEFAULT 0,
-      voip_ready   INTEGER NOT NULL DEFAULT 0,
+      disabled     INTEGER NOT NULL DEFAULT 0,      voip_ready   INTEGER NOT NULL DEFAULT 0,
+      device_token TEXT,
       portal_id    TEXT NOT NULL DEFAULT 'main'
     );
     CREATE TABLE IF NOT EXISTS calls (
@@ -134,8 +134,8 @@ async function initPostgres(pool) {
       created_at   BIGINT NOT NULL,
       last_seen    BIGINT,
       status       TEXT NOT NULL DEFAULT 'online',
-      disabled     INTEGER NOT NULL DEFAULT 0,
-      voip_ready   INTEGER NOT NULL DEFAULT 0,
+      disabled     INTEGER NOT NULL DEFAULT 0,      voip_ready   INTEGER NOT NULL DEFAULT 0,
+      device_token TEXT,
       portal_id    TEXT NOT NULL DEFAULT 'main'
     );
     CREATE TABLE IF NOT EXISTS calls (
@@ -156,7 +156,7 @@ async function initPostgres(pool) {
   // adds columns): the platform features + strategies need these columns, or
   // saveLeads/updateCustomer/call-result crashes on a pre-existing DB.
   for (const ddl of [
-    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS voip_ready INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS voip_ready INTEGER NOT NULL DEFAULT 0",\n    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS device_token TEXT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS settings TEXT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS call_list TEXT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS leads_found TEXT",
@@ -196,7 +196,7 @@ function rowToCustomer(r) {
     last_seen: r.last_seen == null ? null : Number(r.last_seen),
     status: r.status,
     disabled: Number(r.disabled),
-    voip_ready: Number(r.voip_ready),
+    voip_ready: Number(r.voip_ready),\n    device_token: r.device_token || null,
     portal_id: r.portal_id,
   };
 }
@@ -240,7 +240,22 @@ async function getCustomerByToken(db, token) {
   return rowToCustomer(db.sqlite.prepare("SELECT * FROM customers WHERE token = ? AND portal_id = ?").get(token, db.portalId));
 }
 
-async function processHeartbeat(db, { token, voipReady, sync: syncData }) {
+async function enrollDevice(db, customerToken, machineId) {
+  const c = await getCustomerByToken(db, customerToken);
+  if (!c || !machineId) return null;
+  const deviceToken = crypto.randomBytes(32).toString("hex");
+  if (db.pool) await db.pool.query("UPDATE customers SET machine_id=$1, device_token=$2 WHERE token=$3 AND portal_id=$4", [machineId, deviceToken, customerToken, db.portalId]);
+  else db.sqlite.prepare("UPDATE customers SET machine_id=?, device_token=? WHERE token=? AND portal_id=?").run(machineId, deviceToken, customerToken, db.portalId);
+  return { deviceToken };
+}
+
+async function getCustomerByDeviceToken(db, deviceToken) {
+  if (!deviceToken) return null;
+  if (db.pool) { const r=await db.pool.query("SELECT * FROM customers WHERE device_token=$1 AND portal_id=$2", [deviceToken, db.portalId]); return rowToCustomer(r.rows[0]); }
+  return rowToCustomer(db.sqlite.prepare("SELECT * FROM customers WHERE device_token=? AND portal_id=?").get(deviceToken, db.portalId));
+}
+
+async function processHeartbeat(db, { token, deviceToken, voipReady, sync: syncData }) {
   if (typeof token !== "string" || !token) {
     return { ok: false, disabled: true, reason: "unknown" };
   }
