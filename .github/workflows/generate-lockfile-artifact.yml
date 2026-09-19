@@ -1,0 +1,28 @@
+name: Generate Lockfile Artifact
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/generate-lockfile-artifact.yml"
+permissions:
+  contents: read
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Generate clean npm lockfile
+        run: |
+          rm -f package-lock.json
+          npm install --package-lock-only --ignore-scripts
+          npm ci --ignore-scripts
+      - name: Upload generated lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-package-lock
+          path: package-lock.json
+          if-no-files-found: error
