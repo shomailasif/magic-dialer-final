@@ -1001,7 +1001,7 @@ function customerHomeHtml(c) {
       btn.disabled = true; btn.textContent = 'Dialing...'; result.style.color = '#7c8aa8'; result.textContent = 'Placing test call...';
       try {
         const token = ${jsonSafe(c.token)};
-        const r = await fetch('http://127.0.0.1:48771/api/call', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({number})});
+        const r = await fetch('http://127.0.0.1:18787/call', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({number})});
         const j = await r.json();
         if (!r.ok || !j.ok) { result.style.color = '#f87171'; result.textContent = 'Call failed: ' + (j.error || 'Local engine rejected the call'); }
         else { result.style.color = '#34d399'; result.textContent = 'Test call completed through this PC.'; }
