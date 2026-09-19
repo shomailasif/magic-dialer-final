@@ -542,19 +542,25 @@ async function speakStreaming(cs: any, media: MediaState, text: string, heardRef
   if (!text || !text.trim()) return;
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
   console.log("[sip-conv] speakStreaming:", sentences.length, "sentences from:", text.slice(0, 60));
-  for (const sentence of sentences) {
+  // Synthesize sentence chunks concurrently so later sentences do not add
+  // serial network/TTS delay. Playback order is still preserved below.
+  const prepared = sentences.map(async (sentence) => {
     const trimmed = sentence.trim();
-    if (!trimmed) continue;
+    if (!trimmed) return null;
+    try {
+      const frames = await textToFramesLocal(trimmed);
+      return frames?.length ? { trimmed, audio: Buffer.concat(frames) } : null;
+    } catch (e: any) {
+      console.error("[sip-conv] speakStreaming TTS error:", e?.message);
+      return null;
+    }
+  });
+  for (const pending of prepared) {
     if (cs.disposed) break;
-    let frames: Buffer[];
-    try { frames = await textToFramesLocal(trimmed); } catch (e: any) { console.error("[sip-conv] speakStreaming TTS error:", e?.message); continue; }
-    if (!frames || !frames.length) continue;
-    const audio = Buffer.concat(frames);
-    console.log("[sip-conv] speakStreaming: sentence '" + trimmed.slice(0, 30) + "' → " + audio.length + " bytes");
-    if (cs.disposed) break;
-    enqueueAudio(media, audio);
-    // Don't wait for queue to drain — start TTS for next sentence immediately
-    // But wait if queue is getting too deep (>3 pending)
+    const ready = await pending;
+    if (!ready || cs.disposed) continue;
+    console.log("[sip-conv] speakStreaming: sentence '" + ready.trimmed.slice(0, 30) + "' → " + ready.audio.length + " bytes");
+    enqueueAudio(media, ready.audio);
     while (media.pendingAudio.length > 3 && !cs.disposed) await new Promise(r => setTimeout(r, 100));
   }
   // Wait for all remaining audio to finish
