@@ -90,7 +90,9 @@ jobs:
           if ($dialer -match 'Math\.random|seed.*phone|simulat') { $bad += 'dialer contains simulation/fake-call behavior' }
           if ($sip -match 'call you back within 30 minutes|Are you still there\?') { $bad += 'SIP runtime contains prohibited scripted call behavior' }
           if ($testCall -match 'window\.location\.assign') { $bad += 'customer Test Call navigates away from the portal' }
-          if ($testCall -notmatch '127\.0\.0\.1:18787/call') { $bad += 'customer Test Call is not routed to local engine call control' }
+          if ($testCall -notmatch '127\.0\.0\.1:48771') { $bad += 'customer Test Call is not handed to the fixed local engine popup' }
+          if ($testCall -notmatch 'magic-dialer-call-complete' -or $testCall -notmatch 'magic-dialer-call-failed') { $bad += 'customer Test Call does not consume local popup result messages' }
+          if ($testCall -match 'targetAddressSpace') { $bad += 'customer Test Call still depends on browser Local Network Access fetch permission' }
           if ($connectPc -notmatch 'window\.open') { $bad += 'Connect this PC no longer preserves the portal with a popup' }
           if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }
           Write-Host 'Production safety invariants PASS'
