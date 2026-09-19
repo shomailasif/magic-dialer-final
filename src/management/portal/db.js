@@ -256,11 +256,21 @@ async function getCustomerByDeviceToken(db, deviceToken) {
 }
 
 async function processHeartbeat(db, { token, deviceToken, voipReady, sync: syncData }) {
-  if (typeof token !== "string" || !token) {
-    return { ok: false, disabled: true, reason: "unknown" };
-  }
-  const c = await getCustomerByToken(db, token);
+  const hasDeviceToken = typeof deviceToken === "string" && deviceToken.length > 0;
+  const hasLegacyToken = typeof token === "string" && token.length > 0;
+  const c = hasDeviceToken
+    ? await getCustomerByDeviceToken(db, deviceToken)
+    : hasLegacyToken
+      ? await getCustomerByToken(db, token)
+      : null;
   if (!c) return { ok: false, disabled: true, reason: "unknown" };
+  // Once a customer is device-bound, the old customer access token must not
+  // authenticate an engine heartbeat. This prevents a second PC from bypassing
+  // the machine credential by continuing to use the legacy token.
+  if (!hasDeviceToken && c.device_token) {
+    return { ok: false, disabled: true, reason: "device_enrollment_required" };
+  }
+  token = c.token;
   try {
     c.settings = (c.settings && typeof c.settings === "object") ? c.settings : JSON.parse(c.settings || "{}");
   } catch { c.settings = {}; }
