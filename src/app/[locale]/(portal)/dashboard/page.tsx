@@ -60,6 +60,8 @@ export default async function DashboardPage({
     ]);
 
   const active = user?.subscription?.status === "ACTIVE";
+  const engineDevice = user ? await prisma.engineDevice.findFirst({ where: { userId: user.id, revokedAt: null }, orderBy: { lastSeenAt: "desc" } }) : null;
+  const engineOnline = !!engineDevice?.lastSeenAt && Date.now() - engineDevice.lastSeenAt.getTime() < 2 * 60 * 1000;
 
   return (
     <div className="space-y-6">
@@ -85,7 +87,7 @@ export default async function DashboardPage({
             <h2 className="mt-1 text-lg font-bold text-slate-900">Download Magic Dialer</h2>
             <p className="mt-1 text-sm text-slate-600">Install the Windows engine on this PC once. After installation, use Magic Dialer from this panel normally.</p>
           </div>
-          <ConnectPcButton />
+          <ConnectPcButton connected={engineOnline} lastSeenAt={engineDevice?.lastSeenAt?.toISOString() || null} />
         </div>
       </Card>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
