@@ -8,17 +8,31 @@ export function TestCallCard() {
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  function launchLocalCall() {
+  async function dialTest() {
     if (!number.trim()) return;
     setLoading(true);
-    setStatus("Opening the connected local engine...");
+    setStatus("Checking connected Magic Dialer engine...");
     try {
-      const local = new URL("http://127.0.0.1:48771/");
-      local.searchParams.set("call", number.trim());
-      window.location.assign(local.toString());
+      const localFetch = (url: string, init: RequestInit = {}) =>
+        fetch(url, { ...init, targetAddressSpace: "loopback" } as RequestInit & { targetAddressSpace: "loopback" });
+      const health = await localFetch("http://127.0.0.1:18787/health", { cache: "no-store" });
+      const hj = await health.json();
+      if (!health.ok || hj?.service !== "magic-dialer-engine" || hj?.callControl !== true) {
+        throw new Error("Local Magic Dialer engine is not ready. Start or update the Windows engine.");
+      }
+      setStatus(`Local engine v${hj.version || "unknown"} online — placing test call...`);
+      const res = await localFetch("http://127.0.0.1:18787/call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number: number.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || "Local engine rejected the call");
+      setStatus("Test call completed through this PC.");
     } catch (err) {
+      setStatus("Call failed: " + (err instanceof Error ? err.message : "network error"));
+    } finally {
       setLoading(false);
-      setStatus("Local engine handoff failed: " + (err instanceof Error ? err.message : "unknown error"));
     }
   }
 
@@ -35,7 +49,7 @@ export function TestCallCard() {
           onChange={(e) => setNumber(e.target.value)}
           className="flex-1"
         />
-        <Button onClick={launchLocalCall} loading={loading} disabled={!number.trim()}>
+        <Button onClick={dialTest} loading={loading} disabled={!number.trim()}>
           Call test
         </Button>
       </div>
