@@ -82,8 +82,8 @@ jobs:
           $auth = Get-Content src/lib/auth.ts -Raw
           $dialer = Get-Content src/lib/dialer.ts -Raw
           $sip = Get-Content src/lib/sip-conversation.ts -Raw
-          $testCall = Get-Content 'src/app/[locale]/(portal)/dashboard/test-call-card.tsx' -Raw
-          $connectPc = Get-Content 'src/app/[locale]/(portal)/dashboard/connect-pc-card.tsx' -Raw
+          $testCall = Get-Content -LiteralPath 'src/app/[locale]/(portal)/dashboard/test-call-card.tsx' -Raw
+          $connectPc = Get-Content -LiteralPath 'src/app/[locale]/(portal)/dashboard/connect-pc-card.tsx' -Raw
           if ($orchestration -match 'runAIagent') { $bad += 'simulated AI agent referenced by production orchestration' }
           if ($brain -match 'Sarah|Dispatch Solutions|save up to 30%|smartFallback|623-400-1991') { $bad += 'hard-coded scripted sales content returned to live brain' }
           if ($auth -match 'process\.env\.AUTH_SECRET \|\| "dev-fallback-secret-change-me"') { $bad += 'production auth can silently fall back to development secret' }
