@@ -10,6 +10,12 @@ const schema = z.object({
   apiKey: z.string().optional().default(""),
   accountSid: z.string().optional().default(""),
   outboundNumber: z.string().optional().default(""),
+  sipUsername: z.string().optional().default(""),
+  sipPassword: z.string().optional().default(""),
+  sipAuthId: z.string().optional().default(""),
+  sipDomain: z.string().optional().default(""),
+  sipProxy: z.string().optional().default(""),
+  sipPort: z.string().optional().default(""),
 });
 
 export async function GET() {
@@ -18,7 +24,7 @@ export async function GET() {
   const config = await prisma.dialerConfig.findUnique({ where: { userId: user.id } });
   return NextResponse.json({
     config: config
-      ? { ...config, apiKey: config.apiKey ? "••••••••" : "", accountSid: config.accountSid ? "••••••••" : "" }
+      ? { ...config, apiKey: config.apiKey ? "••••••••" : "", accountSid: config.accountSid ? "••••••••" : "", sipPassword: config.sipPassword ? "••••••••" : "" }
       : null,
   });
 }
@@ -46,12 +52,15 @@ export async function POST(request: Request) {
 
   const apiKey = d.apiKey && d.apiKey !== "••••••••" ? d.apiKey : prevApiKey;
   const accountSid = d.accountSid && d.accountSid !== "••••••••" ? d.accountSid : prevSid;
+  const sipPassword = d.sipPassword && d.sipPassword !== "••••••••" ? d.sipPassword : existing?.sipPassword || "";
 
   const temp = {
     provider: d.provider as DialerProvider,
     apiKey,
     accountSid,
     outboundNumber: d.outboundNumber,
+    sipUsername: d.sipUsername || existing?.sipUsername || "",
+    sipPassword,
   };
 
   const check = await validateProvider(temp as never);
@@ -67,6 +76,12 @@ export async function POST(request: Request) {
       apiKey,
       accountSid,
       outboundNumber: d.outboundNumber,
+      sipUsername: d.sipUsername,
+      sipPassword,
+      sipAuthId: d.sipAuthId,
+      sipDomain: d.sipDomain,
+      sipProxy: d.sipProxy,
+      sipPort: d.sipPort,
       validated: true,
     },
     update: {
@@ -74,6 +89,12 @@ export async function POST(request: Request) {
       apiKey,
       accountSid,
       outboundNumber: d.outboundNumber,
+      sipUsername: d.sipUsername,
+      sipPassword,
+      sipAuthId: d.sipAuthId,
+      sipDomain: d.sipDomain,
+      sipProxy: d.sipProxy,
+      sipPort: d.sipPort,
       validated: true,
     },
   });
