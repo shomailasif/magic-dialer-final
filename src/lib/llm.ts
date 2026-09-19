@@ -5,6 +5,7 @@
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || "qwen/qwen3.8-27b";
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 3500);
 
 export interface LLMMessage {
   role: "system" | "user" | "assistant";
@@ -18,7 +19,7 @@ export async function chatCompletion(messages: LLMMessage[], options: { maxToken
   if (!GROQ_KEY) return { content: "", error: "GROQ_API_KEY missing" };
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 6000);
+    const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
     const resp = await fetch(GROQ_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
@@ -78,7 +79,9 @@ export async function getAIResponse(conversationHistory: LLMMessage[], config: {
     { role: "system", content: buildSystemPrompt(config) },
     ...conversationHistory.slice(-24),
   ];
-  const response = await chatCompletion(messages, { maxTokens: 120, temperature: 0.55 });
+  // Phone turns must stay brief: fewer generated tokens reduce time-to-TTS without
+  // changing the model or provider. The prompt already caps normal output at 1-2 sentences.
+  const response = await chatCompletion(messages, { maxTokens: 72, temperature: 0.55 });
   if (response.error || !response.content?.trim()) {
     console.error("[llm] unavailable:", response.error || "empty");
     return "I'm sorry, could you repeat that?";
