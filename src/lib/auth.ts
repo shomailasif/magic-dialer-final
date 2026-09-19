@@ -151,8 +151,14 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   const verified = verifySession(token);
   if (!verified) return null;
   if (!verified.sessionId) return null;
-  const active = await prisma.session.findFirst({ where: { id: verified.sessionId, userId: verified.userId, expiresAt: { gt: new Date() } } });
+  const now = new Date();
+  const active = await prisma.session.findFirst({ where: { id: verified.sessionId, userId: verified.userId, expiresAt: { gt: now } } });
   if (!active) return null;
+  // Authenticated activity renews the device lease. This keeps a genuinely active PC locked
+  // while still allowing abandoned/crashed sessions to recover after DEVICE_LOCK_MS.
+  if (now.getTime() - active.lastActiveAt.getTime() > 60_000) {
+    await prisma.session.update({ where: { id: active.id }, data: { lastActiveAt: now } });
+  }
   const user = await prisma.user.findUnique({
     where: { id: verified.userId },
     include: { subscription: true },
