@@ -1,8 +1,6 @@
 /**
- * Free AI - Smart Conversation Engine
- *
- * Pattern-based fallback that works WITHOUT any LLM.
- * Tracks state, collects data, handles objections naturally.
+ * Live AI conversation state and safety controls.
+ * Spoken responses come from the configured LLM; no scripted sales fallback.
  */
 
 import { getAIResponse, type LLMMessage } from "@/lib/llm";
@@ -34,11 +32,6 @@ export interface AIResponse {
 
 // Pattern banks
 const BYE = ["bye", "goodbye", "see you", "talk later", "gotta go", "have to go", "hung up", "stop calling", "don't call again", "remove me"];
-const POSITIVE = ["yes", "yeah", "yep", "sure", "okay", "ok", "sounds good", "tell me more", "i'm interested", "go on", "continue", "alright", "what is it"];
-const OBJECTION = ["not interested", "no thanks", "no thank you", "busy", "can't talk", "cannot talk", "in a meeting", "driving", "send me an email", "not now", "later", "maybe", "not the right time", "who is this", "how did you get my number"];
-const QUESTION_WORDS = ["what", "how", "why", "when", "where", "who", "can you", "could you", "tell me", "explain"];
-const INTRODUCE = ["who are you", "what is this", "what company", "what do you do", "what are you selling"];
-const SILENCE_RESPONSES = ["Are you still there?", "Hello?", "I'm still here if you have any questions.", "Just let me know if you'd like to hear more."];
 
 function matchesAny(text: string, patterns: string[]): boolean {
   const lower = text.toLowerCase();
@@ -81,13 +74,6 @@ function extractCompany(text: string): string | null {
   return null;
 }
 
-function randomPick(arr: string[]): string {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
-
-/**
- * Smart pattern-based response when LLM is unavailable
- */
 function normalizeQuestion(text: string): string {
   const q = String(text || "").match(/[^.!?]*\?/g)?.pop() || "";
   return q.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
