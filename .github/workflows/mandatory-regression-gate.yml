@@ -56,9 +56,10 @@ jobs:
       - name: Synchronize and install application dependencies
         run: npm install --package-lock-only --ignore-scripts && npm ci
       - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-        env:
-          NODE_ENV: production
+        shell: powershell
+        run: |
+          npm prune --omit=dev
+          npm audit --omit=dev --audit-level=high
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Type-check application and enrollment APIs
