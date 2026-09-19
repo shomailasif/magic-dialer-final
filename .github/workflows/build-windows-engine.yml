@@ -1,4 +1,5 @@
 name: Build Windows Engine
+# CI rerun marker: validate bb370d4 Windows upgrade gate
 on:
   workflow_dispatch: {}
   push:
