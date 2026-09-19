@@ -146,6 +146,7 @@ jobs:
           if ($after -ne $before) { throw "Launcher executed another agent despite healthy local engine" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: In-place upgrade with running old engine
+        timeout-minutes: 3
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
