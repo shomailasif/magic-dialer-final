@@ -66,6 +66,7 @@ begin
 end;
 
 [Run]
-; Open the app window: the agent runs its dashboard locally and the customer
-; completes the one-time setup right there (portal URL + access key).
+; Open the local engine dashboard. Account pairing is performed securely from
+; the customer's authenticated web portal via "Connect This PC"; no access key
+; is entered or copied by the customer.
 Filename: "{app}\MagicDialer.exe"; Flags: nowait skipifsilent; Description: "Launch Magic Dialer"
