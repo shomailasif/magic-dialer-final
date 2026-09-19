@@ -22,7 +22,7 @@ function fallbackReply(text, { callbackNumber, callbackIn, locale }) {
   return lang === "en" ? "I want to answer that accurately rather than guess. Let me note it for the team to follow up." : "I do not have that detail, so I will not guess. I will note it for follow-up.";
 }
 
-async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en" }) {
+async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null }) {
   const transcript = [];
   const timeline = [];
   let heardSomething = false;
@@ -46,9 +46,13 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     transcript.push({ role: "lead", text: line, locale: detected || activeLocale });
   };
 
-  let first = await opening(config());
-  if (!first.text) llmFailures++;
-  await agent(first.text || fallbackOpening(config()));
+  if (preparedOpeningText) {
+    await agent(preparedOpeningText);
+  } else {
+    const first = await opening(config());
+    if (!first.text) throw new Error("AI opening unavailable; refusing scripted fallback");
+    await agent(first.text);
+  }
 
   // Turn count is only a runaway-call safety bound. Turn endings themselves are
   // controlled by the speech/VAD listener in call.js, never by a conversation timer.
