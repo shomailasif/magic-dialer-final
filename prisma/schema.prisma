@@ -165,6 +165,12 @@ model DialerConfig {
   apiKey         String?
   accountSid     String?
   outboundNumber String?
+  sipUsername    String?
+  sipPassword    String?
+  sipAuthId      String?
+  sipDomain      String?
+  sipProxy       String?
+  sipPort        String?
   validated      Boolean       @default(false)
   updatedAt      DateTime      @updatedAt
   createdAt      DateTime      @default(now())
