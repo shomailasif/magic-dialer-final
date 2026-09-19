@@ -161,7 +161,12 @@ jobs:
             if ($a) { $oldPid = $a.Id; break }
           }
           if (-not $oldPid) { throw "Pre-upgrade engine did not start" }
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          $upgrade = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -PassThru
+          if (-not $upgrade.WaitForExit(90000)) {
+            try { $upgrade.Kill() } catch {}
+            throw "In-place upgrade installer exceeded 90-second hard timeout"
+          }
+          if ($upgrade.ExitCode -ne 0) { throw "In-place upgrade installer failed with exit code $($upgrade.ExitCode)" }
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
           $healthy = $false
           for ($i=0; $i -lt 30; $i++) {
