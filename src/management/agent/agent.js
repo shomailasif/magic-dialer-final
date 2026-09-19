@@ -170,12 +170,12 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.3.3";
+const VERSION = "1.3.4";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + e.message));
   setTimeout(run, 15000);
-  const timer = setInterval(run, 6 * 60 * 60 * 1000);
+  const timer = setInterval(run, 5 * 60 * 1000);
   if (timer.unref) timer.unref();
 }
 
