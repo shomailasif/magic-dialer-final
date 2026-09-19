@@ -29,6 +29,7 @@ on:
       - "src/app/**/dashboard/test-call-card.tsx"
       - "src/app/**/dashboard/runtime-readiness-card.tsx"
       - "src/app/**/dashboard/page.tsx"
+      - "src/lib/**"
       - "src/lib/auth.ts"
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
