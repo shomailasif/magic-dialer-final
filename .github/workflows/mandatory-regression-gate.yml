@@ -53,7 +53,7 @@ jobs:
       - name: Install management dependencies
         working-directory: src/management
         run: npm install
-      - name: Synchronize and install application dependencies
+      - name: Verify and install committed dependencies
         run: npm ci
       - name: Audit production dependencies
         shell: powershell
