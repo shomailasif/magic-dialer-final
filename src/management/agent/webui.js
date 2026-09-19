@@ -408,7 +408,9 @@ function notFound(res) {
   res.end("Not found.");
 }
 
-async function sendJson(res, code, obj) {
+async function escapHtml(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (ch) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch])); }
+
+function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(body);
@@ -458,15 +460,15 @@ async function startWebUi(opts) {
       const portal = String(u.searchParams.get("portal") || "").replace(/\/+$/, "");
       const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
       if (!ticket || !/^https?:\/\//.test(portal)) { res.writeHead(400, { "Content-Type": "text/plain" }); res.end("Invalid enrollment request."); return; }
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><p>Connecting this PC securely to your account...</p></body>");
-      setImmediate(async () => {
-        try {
-          if (typeof opts.onEnroll !== "function") throw new Error("Enrollment unavailable");
-          await opts.onEnroll({ ticket, portal });
-          if (number && typeof opts.onCall === "function") await opts.onCall(number);
-        } catch {}
-      });
+      try {
+        if (typeof opts.onEnroll !== "function") throw new Error("Enrollment unavailable");
+        await opts.onEnroll({ ticket, portal });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#15803d'>This PC is connected.</h3><p>Magic Dialer is securely linked to your account. You can close this window and return to the portal.</p></body>");
+      } catch (e) {
+        res.writeHead(409, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#b91c1c'>PC connection failed.</h3><p>"+escapHtml(e && e.message ? e.message : "Enrollment rejected")+"</p></body>");
+      }
       return;
     }
     if (req.method === "GET" && p === "/" && u.searchParams.get("call")) {
@@ -490,7 +492,7 @@ async function startWebUi(opts) {
     }
     if (req.method === "GET" && p === "/api/state") {
       const cfg = opts.readConfig();
-      sendJson(res, 200, { configured: !!(cfg && cfg.token && cfg.portalUrl) });
+      sendJson(res, 200, { configured: !!(cfg && (cfg.deviceToken || cfg.token) && cfg.portalUrl) });
       return;
     }
     if (req.method === "GET" && p === "/api/status") {
