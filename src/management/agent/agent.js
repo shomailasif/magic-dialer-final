@@ -356,7 +356,7 @@ async function runAgent(opts = {}) {
       getStatus: () => "online",
       onCall: async (number) => {
         const liveConfig = loadConfig(cfgPath);
-        if (!liveConfig) throw new Error("Magic Dialer setup is incomplete");
+        if (!liveConfig || !liveConfig.deviceToken || !liveConfig.portalUrl || !liveConfig.portalSyncedAt) throw new Error("This PC is not enrolled and synchronized with the portal");
         log("LOCAL CALL CONTROL: " + number);
         return runLocalCall({
           config: liveConfig,
@@ -409,7 +409,7 @@ async function runAgent(opts = {}) {
 
       onCall: async (number) => {
         const liveConfig = loadConfig(cfgPath);
-        if (!liveConfig) throw new Error("Magic Dialer setup is incomplete");
+        if (!liveConfig || !liveConfig.deviceToken || !liveConfig.portalUrl || !liveConfig.portalSyncedAt) throw new Error("This PC is not enrolled and synchronized with the portal");
         log("LOCAL DASHBOARD CALL CONTROL: " + number);
         return runLocalCall({ config: liveConfig, number, onLog: (m) => log(m), onMode: () => {} });
       },
@@ -581,6 +581,8 @@ async function runAgent(opts = {}) {
           process.exit(0);
         }
         applyPortalConfig(config, res.body.config, cfgPath);
+        config.portalSyncedAt = new Date().toISOString();
+        saveConfig(config, cfgPath);
         // Process sync acknowledgements from portal
         if (res.body.sync) sync.processSyncResponse(res.body.sync);
         const stats = localDb.stats();
@@ -589,7 +591,7 @@ async function runAgent(opts = {}) {
         ui({ status: "ONLINE", mode: config.mode || "on", line: hl });
       } else {
         log(`heartbeat rejected (status ${res.status}) - not a registered customer.`);
-        ui({ status: "OFFLINE", mode: config.mode || "on", line: "Heartbeat rejected - check your access key." });
+        ui({ status: "OFFLINE", mode: config.mode || "on", line: "Heartbeat rejected - reconnect this PC from the portal." });
       }
     } catch (err) {
       log(`heartbeat failed (${err.code || err.message}) - retrying. Agent continues offline.`);
