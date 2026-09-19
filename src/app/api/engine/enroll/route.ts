@@ -6,17 +6,28 @@ export async function POST(req:Request){
  let b:any; try{b=await req.json()}catch{return NextResponse.json({error:"Invalid body"},{status:400})}
  const ticket=String(b.ticket||""), machineId=String(b.machineId||"");
  if(!ticket||!machineId) return NextResponse.json({error:"ticket and machineId required"},{status:400});
- const row=await prisma.engineEnrollmentTicket.findUnique({where:{tokenHash:hash(ticket)}});
- if(!row||row.consumedAt||row.expiresAt<=new Date()) return NextResponse.json({error:"Invalid or expired enrollment ticket"},{status:401});
- const now=new Date();
- const activeOther=await prisma.engineDevice.findFirst({where:{userId:row.userId,machineId:{not:machineId},revokedAt:null,leaseUntil:{gt:now}}});
- if(activeOther) return NextResponse.json({error:"This account is already active on another PC."},{status:409});
- const deviceToken=randomBytes(32).toString("base64url");
- const leaseUntil=new Date(Date.now()+2*60*1000);
- await prisma.$transaction([
-  prisma.engineDevice.updateMany({where:{userId:row.userId,machineId:{not:machineId}},data:{revokedAt:now,leaseUntil:null}}),
-  prisma.engineEnrollmentTicket.update({where:{id:row.id},data:{consumedAt:new Date()}}),
-  prisma.engineDevice.upsert({where:{userId_machineId:{userId:row.userId,machineId}},create:{userId:row.userId,machineId,tokenHash:hash(deviceToken),leaseUntil},update:{tokenHash:hash(deviceToken),revokedAt:null,leaseUntil}})
- ]);
- return NextResponse.json({ok:true,deviceToken});
+ const now=new Date(), ticketHash=hash(ticket), leaseUntil=new Date(now.getTime()+2*60*1000);
+ try {
+  const deviceToken=await prisma.$transaction(async(tx)=>{
+   const row=await tx.engineEnrollmentTicket.findUnique({where:{tokenHash:ticketHash}});
+   if(!row||row.consumedAt||row.expiresAt<=now) throw new Error("TICKET");
+   const consumed=await tx.engineEnrollmentTicket.updateMany({where:{id:row.id,consumedAt:null,expiresAt:{gt:now}},data:{consumedAt:now}});
+   if(consumed.count!==1) throw new Error("TICKET");
+   const claimed=await tx.user.updateMany({
+    where:{id:row.userId,OR:[{activeEngineMachineId:null},{activeEngineMachineId:machineId},{engineLeaseUntil:null},{engineLeaseUntil:{lte:now}}]},
+    data:{activeEngineMachineId:machineId,engineLeaseUntil:leaseUntil}
+   });
+   if(claimed.count!==1) throw new Error("LEASE");
+   const token=randomBytes(32).toString("base64url");
+   await tx.engineDevice.updateMany({where:{userId:row.userId,machineId:{not:machineId}},data:{revokedAt:now,leaseUntil:null}});
+   await tx.engineDevice.upsert({where:{userId_machineId:{userId:row.userId,machineId}},create:{userId:row.userId,machineId,tokenHash:hash(token),leaseUntil},update:{tokenHash:hash(token),revokedAt:null,leaseUntil}});
+   return token;
+  });
+  return NextResponse.json({ok:true,deviceToken});
+ } catch(e){
+  const m=e instanceof Error?e.message:"";
+  if(m==="LEASE") return NextResponse.json({error:"This account is already active on another PC."},{status:409});
+  if(m==="TICKET") return NextResponse.json({error:"Invalid or expired enrollment ticket"},{status:401});
+  throw e;
+ }
 }
