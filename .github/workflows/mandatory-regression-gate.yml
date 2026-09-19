@@ -101,7 +101,26 @@ jobs:
           if ($agentSource -notmatch 'const VERSION = "1\.3\.4"') { $bad += 'agent version is not 1.3.4' }
           if ($agentSource -notmatch 'setInterval\(run, 5 \* 60 \* 1000\)') { $bad += 'temporary updater interval is not exactly five minutes' }
           if ($launcherSource -notmatch 'AssemblyVersion\("1\.3\.4\.0"\)' -or $launcherSource -notmatch 'AssemblyInformationalVersion\("1\.3\.4"\)') { $bad += 'launcher metadata is not aligned to 1.3.4' }
-          if ($installerSource -notmatch '#define MyAppVersion "1\.3\.4"') { $bad += 'installer version is not aligned to 1.3.4' }
+          if ($installerSource -notmatch '(?m)^AppVersion=1\.3\.4
+          if ($engineWorkflow -notmatch 'version = "1\.3\.4"') { $bad += 'published updater manifest is not aligned to 1.3.4' }
+          if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }
+          Write-Host 'Production safety invariants PASS'
+      - name: Run complete regression suite
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File src/management/build/run-all-tests.ps1
+      - name: Verify deployed runtime when configured
+        shell: powershell
+        env:
+          PRODUCTION_HEALTH_URL: ${{ secrets.PRODUCTION_HEALTH_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRODUCTION_HEALTH_URL)) { Write-Host 'Production health URL not configured; skipping deployed runtime check'; exit 0 }
+          $response = Invoke-RestMethod -Uri $env:PRODUCTION_HEALTH_URL -Method Get -TimeoutSec 20
+          if ($response.ok -ne $true -or $response.service -ne 'magic-dialer' -or $response.status -ne 'online') {
+            Write-Error 'Production health response failed validation'
+            exit 1
+          }
+          Write-Host 'Deployed runtime health PASS'
+) { $bad += 'installer version is not aligned to 1.3.4' }
           if ($engineWorkflow -notmatch 'version = "1\.3\.4"') { $bad += 'published updater manifest is not aligned to 1.3.4' }
           if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }
           Write-Host 'Production safety invariants PASS'
