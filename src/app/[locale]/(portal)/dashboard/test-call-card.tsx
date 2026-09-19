@@ -11,28 +11,30 @@ export function TestCallCard() {
   async function dialTest() {
     if (!number.trim()) return;
     setLoading(true);
-    setStatus("Checking connected Magic Dialer engine...");
-    try {
-      const localFetch = (url: string, init: RequestInit = {}) =>
-        fetch(url, { ...init, targetAddressSpace: "loopback" } as RequestInit & { targetAddressSpace: "loopback" });
-      const health = await localFetch("http://127.0.0.1:18787/health", { cache: "no-store" });
-      const hj = await health.json();
-      if (!health.ok || hj?.service !== "magic-dialer-engine" || hj?.callControl !== true) {
-        throw new Error("Local Magic Dialer engine is not ready. Start or update the Windows engine.");
+    setStatus("Opening the connected Magic Dialer engine...");
+    let popup: Window | null = null;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== "http://127.0.0.1:48771" || event.source !== popup) return;
+      if (event.data?.type === "magic-dialer-call-complete") {
+        setStatus("Test call completed through this PC.");
+        setLoading(false);
+        window.removeEventListener("message", onMessage);
+      } else if (event.data?.type === "magic-dialer-call-failed") {
+        setStatus("Call failed: " + (event.data?.error || "Local call failed"));
+        setLoading(false);
+        window.removeEventListener("message", onMessage);
       }
-      setStatus(`Local engine v${hj.version || "unknown"} online — placing test call...`);
-      const res = await localFetch("http://127.0.0.1:18787/call", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ number: number.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data?.ok) throw new Error(data?.error || "Local engine rejected the call");
-      setStatus("Test call completed through this PC.");
+    };
+    window.addEventListener("message", onMessage);
+    try {
+      const local = new URL("http://127.0.0.1:48771/");
+      local.searchParams.set("call", number.trim());
+      popup = window.open(local.toString(), "magicDialerTestCall", "popup=yes,width=520,height=300");
+      if (!popup) throw new Error("Allow the Magic Dialer test-call popup, then try again.");
     } catch (err) {
-      setStatus("Call failed: " + (err instanceof Error ? err.message : "network error"));
-    } finally {
+      window.removeEventListener("message", onMessage);
       setLoading(false);
+      setStatus("Call failed: " + (err instanceof Error ? err.message : "local engine handoff failed"));
     }
   }
 
