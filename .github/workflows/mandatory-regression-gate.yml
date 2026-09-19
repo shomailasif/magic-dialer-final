@@ -53,6 +53,8 @@ jobs:
         run: npx prisma generate
       - name: Type-check application and enrollment APIs
         run: npx tsc --noEmit
+      - name: Production build
+        run: npm run build
       - name: Run complete regression suite
         shell: powershell
         run: powershell -ExecutionPolicy Bypass -File src/management/build/run-all-tests.ps1
