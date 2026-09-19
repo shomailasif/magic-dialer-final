@@ -15,6 +15,7 @@ async function main() {
 
   let pushes = 0;
   const deps = {
+    async registerSession() { return { ok: true, last: "SIP/2.0 200 OK", host: "test.invalid:5096" }; },
     createLocalRingCentralEngine(opts) { onAudio = opts.onAudio; return engine; },
     createVad() {
       return { push() {
@@ -46,6 +47,20 @@ async function main() {
   assert.equal(result.heard, "please wait");
   assert.equal(sttBytes, 2240, "captured turn must retain every expected 20ms frame through barge-in");
   assert.equal(closed, 1, "engine must close");
-  console.log("PASS: controller barge-in -> capture -> STT");
+
+  let engineCreated = false;
+  await assert.rejects(
+    () => runLocalCall({
+      config: { voip: { ready: true, username: "u", sipPassword: "bad", number: "1" }, product: "test" },
+      number: "2",
+      deps: {
+        async registerSession() { return { ok: false, last: "403 Forbidden" }; },
+        createLocalRingCentralEngine() { engineCreated = true; return engine; },
+      },
+    }),
+    /SIP registration failed: 403 Forbidden/
+  );
+  assert.equal(engineCreated, false, "failed SIP registration must block engine/call creation");
+  console.log("PASS: controller SIP preflight + barge-in -> capture -> STT");
 }
 main().catch(e => { console.error(e); process.exit(1); });
