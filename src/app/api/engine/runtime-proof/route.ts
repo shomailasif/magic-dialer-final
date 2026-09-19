@@ -5,6 +5,9 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
+    await prisma.user.findFirst({
+      select: { id: true, activeEngineMachineId: true, engineLeaseUntil: true },
+    });
     await prisma.engineDevice.findFirst({
       select: { id: true, userId: true, machineId: true, leaseUntil: true },
     });
@@ -14,7 +17,7 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       service: "magic-dialer-enrollment",
-      schema: "engine-enrollment-v1",
+      schema: "engine-enrollment-v2",
       singlePcLease: true,
       automaticEnrollment: true,
     }, { headers: { "Cache-Control": "no-store" } });
