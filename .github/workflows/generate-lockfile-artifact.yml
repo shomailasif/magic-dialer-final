@@ -11,6 +11,9 @@ on:
       - ".lockfile-trigger-4"
 permissions:
   contents: write
+concurrency:
+  group: lockfile-generator-main
+  cancel-in-progress: false
 jobs:
   generate:
     runs-on: ubuntu-latest
