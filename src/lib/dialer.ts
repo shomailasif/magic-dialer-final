@@ -120,12 +120,7 @@ export async function placeCall(input: PlaceCallInput): Promise<DialResult> {
     }
   }
 
-  // Simulation fallback for non-RC providers
-  const seed = [...input.to].reduce((acc, c) => acc + c.charCodeAt(0), 0);
-  const r = seed % 100;
-  if (r < 55) return { connected: true, outcome: "CONNECTED", durationSecs: 15 + (seed % 90) };
-  if (r < 70) return { connected: false, outcome: "NO_ANSWER", durationSecs: 0 };
-  if (r < 80) return { connected: false, outcome: "BUSY", durationSecs: 0 };
-  if (r < 90) return { connected: false, outcome: "UNREACHABLE", durationSecs: 0 };
-  return { connected: false, outcome: "FAILED", durationSecs: 0 };
+  // Production safety: unsupported providers must never fabricate a call result.
+  // Real provider adapters are required before TWILIO/VONAGE can place calls.
+  throw new Error(`Provider ${input.provider} is not enabled for live calling yet.`);
 }
