@@ -20,6 +20,7 @@ on:
       - ".github/workflows/build-windows-engine.yml"
       - "package.json"
       - "package-lock.json"
+      - ".regression-trigger"
   pull_request:
     branches: ["main"]
     paths:
