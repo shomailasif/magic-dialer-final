@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/db";
 import { placeCall, validateProvider } from "@/lib/dialer";
-import { recordLearning } from "@/lib/ai-agent";
 import { deliverOutcomeNotification } from "@/lib/notifications";
 import { makeSIPCall } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
@@ -70,7 +69,6 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   const hasSIP = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
 
   for (const lead of dueLeads) {
-    const aiResult = null;
     let sipResult = null as Awaited<ReturnType<typeof makeSIPCall>> | null;
     let dialResult: { connected: boolean; outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED"; durationSecs: number } = { connected: false, outcome: "FAILED", durationSecs: 0 };
 
@@ -136,11 +134,11 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       collectedEmail = sipResult.collectedEmail;
       collectedSeats = null;
     } else {
-      resultStatus = aiResult ? aiResult.leadStatus : "FAILED";
-      disposition = aiResult ? aiResult.disposition : dialResult.outcome;
-      transcript = aiResult?.transcript || "";
-      collectedEmail = aiResult?.collectedEmail || null;
-      collectedSeats = aiResult?.collectedSeats || null;
+      resultStatus = "FAILED";
+      disposition = dialResult.outcome;
+      transcript = "";
+      collectedEmail = null;
+      collectedSeats = null;
     }
 
     await prisma.$transaction([
@@ -155,18 +153,6 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       }),
     ]);
 
-    if (dialResult.connected && user.agentConfig && aiResult) {
-      const nextNotes = recordLearning(
-        user.agentConfig,
-        aiResult.disposition,
-        aiResult.leadStatus === "CONVERTED" || aiResult.leadStatus === "INTERESTED",
-      );
-      await prisma.aIAgentConfig.update({
-        where: { userId },
-        data: { learningNotes: nextNotes },
-      });
-    }
-
     await prisma.call.create({
       data: {
         userId,
@@ -177,7 +163,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         durationSecs: dialResult.durationSecs,
         outcome: dialResult.outcome,
         disposition,
-        aiSummary: sipResult ? `Call with ${sipResult.collectedName || "prospect"}. ${(Array.isArray(sipResult.transcript) ? sipResult.transcript.join("\n") : sipResult.transcript).slice(0, 500)}` : aiResult?.summary || null,
+        aiSummary: sipResult ? `Call with ${sipResult.collectedName || "prospect"}. ${(Array.isArray(sipResult.transcript) ? sipResult.transcript.join("\n") : sipResult.transcript).slice(0, 500)}` : null,
         transcript: transcript || null,
         resultStatus: resultStatus as never,
         collectedData: JSON.stringify({
