@@ -62,12 +62,14 @@ export async function createDeviceSession(
   ipAddress: string,
   userAgent: string
 ): Promise<string> {
-  // Delete any existing sessions for this user (one device at a time)
-  await prisma.session.deleteMany({
-    where: { userId },
-  });
+  const now = new Date();
+  await prisma.session.deleteMany({ where: { userId, expiresAt: { lte: now } } });
+  const active = await prisma.session.findFirst({ where: { userId, expiresAt: { gt: now } } });
+  if (active) {
+    if (active.deviceFingerprint !== deviceFingerprint) throw new Error("ACCOUNT_ACTIVE_ON_ANOTHER_PC");
+    return active.id;
+  }
 
-  // Create new session
   const session = await prisma.session.create({
     data: {
       userId,
