@@ -100,6 +100,8 @@ model User {
   sessions      Session[]
   engineDevices EngineDevice[]
   engineEnrollmentTickets EngineEnrollmentTicket[]
+  activeEngineMachineId String?
+  engineLeaseUntil DateTime?
 
   @@index([role])
 }
