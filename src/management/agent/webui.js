@@ -496,12 +496,10 @@ async function startWebUi(opts) {
     if (req.method === "POST" && p === "/api/setup") {
       const body = await readJson(req);
       if (!body || typeof body !== "object") { sendJson(res, 400, { ok: false, error: "Bad request." }); return; }
-      const portalUrl = String(body.portalUrl || "").trim();
-      const token = String(body.token || "").trim();
       const companyName = String(body.companyName || "").trim();
       const product = String(body.product || "").trim();
-      if (!portalUrl || !token || !companyName || !product) {
-        sendJson(res, 400, { ok: false, error: "Company name, product, portal URL and access key are required." });
+      if (!companyName || !product) {
+        sendJson(res, 400, { ok: false, error: "Company name and product are required." });
         return;
       }
       const persona = String(body.persona || "").trim() || "Atlas";
@@ -516,8 +514,6 @@ async function startWebUi(opts) {
       const voipServer = String(body.voipServer || "").trim();
       const voipExt = String(body.voipExt || "").trim();
       const cfg = opts.readConfig() || {};
-      cfg.portalUrl = portalUrl;
-      cfg.token = token;
       cfg.companyName = companyName;
       cfg.product = product;
       cfg.persona = persona;
