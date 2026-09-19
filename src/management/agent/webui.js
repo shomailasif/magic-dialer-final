@@ -434,6 +434,20 @@ async function startWebUi(opts) {
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://127.0.0.1");
     const p = u.pathname;
+    // The cloud customer portal is the only cross-origin caller allowed to invoke
+    // local call control. Enrollment persists that exact portal origin in config.
+    const origin = String(req.headers.origin || "");
+    const cfgForOrigin = opts.readConfig ? (opts.readConfig() || {}) : {};
+    const allowedOrigin = String(cfgForOrigin.portalUrl || "").replace(/\/+$/, "");
+    const crossOriginAllowed = !!origin && !!allowedOrigin && origin === allowedOrigin;
+    if (origin && !crossOriginAllowed) { sendJson(res, 403, { ok: false, error: "Origin not allowed." }); return; }
+    if (crossOriginAllowed) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    }
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     if (req.method === "GET" && p === "/" && u.searchParams.get("enroll")) {
       const ticket = String(u.searchParams.get("enroll") || "");
