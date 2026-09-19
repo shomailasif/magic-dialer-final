@@ -7,6 +7,7 @@ const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
 const { registerSession } = require("../portal/softphone");
 const { transcribeAuto } = require("./multilingual-stt");
 const { normalizeLanguage } = require("./language");
+const { preflightBrain, opening } = require("./intelligent-brain");
 
 function sipOptions(v) {
   return {
@@ -41,11 +42,27 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
 
   let state = null;
   let activeLocale = config.lang && config.lang !== "auto" ? normalizeLanguage(config.lang) : "en";
-  const voiceProbe = await tts("Hello", { locale: activeLocale, style: config.voiceStyle || "friendly" });
-  if (!voiceProbe || !Buffer.isBuffer(voiceProbe.buffer) || voiceProbe.buffer.length < 160) {
-    throw new Error("Telephone TTS preflight failed; refusing to place call");
+  const brainCheck = deps.preflightBrain || preflightBrain;
+  const openingFn = deps.opening || opening;
+  const brainConfig = {
+    product: config.product,
+    leadFields: config.leadFields || [],
+    persona: config.persona,
+    companyName: config.companyName,
+    callbackNumber: config.callbackNumber,
+    callbackIn: config.callbackIn,
+    locale: activeLocale,
+  };
+  await brainCheck(brainConfig);
+  onLog("[local-media-v2] AI brain preflight passed");
+  const first = await openingFn(brainConfig);
+  if (!first || !String(first.text || "").trim()) throw new Error("AI opening preflight failed; refusing to place call");
+  const openingText = String(first.text).trim();
+  const openingAudio = await tts(openingText, { locale: activeLocale, style: config.voiceStyle || "friendly" });
+  if (!openingAudio || !Buffer.isBuffer(openingAudio.buffer) || openingAudio.buffer.length < 160) {
+    throw new Error("Opening TTS preflight failed; refusing to place call");
   }
-  onLog(`[local-media-v2] TTS preflight passed (${voiceProbe.engine || "unknown"}, ${voiceProbe.buffer.length} bytes PCMU/8000)`);
+  onLog(`[local-media-v2] opening pre-render passed (${openingAudio.engine || "unknown"}, ${openingAudio.buffer.length} bytes PCMU/8000)`);
   await preflightLocalSip(config, deps);
   onLog("[local-media-v2] SIP registration preflight passed");
   const engine = makeEngine({
@@ -77,10 +94,17 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
   });
 
   await engine.connect();
+  let preparedOpening = { text: openingText, audio: openingAudio };
   const speakFn = async (text, turn = {}) => {
     const locale = normalizeLanguage(turn.locale || activeLocale);
     activeLocale = locale;
-    const out = await tts(text, { locale, style: config.voiceStyle || "friendly" });
+    let out;
+    if (preparedOpening && String(text || "").trim() === preparedOpening.text) {
+      out = preparedOpening.audio;
+      preparedOpening = null;
+    } else {
+      out = await tts(text, { locale, style: config.voiceStyle || "friendly" });
+    }
     if (!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) throw new Error("TTS produced no valid PCMU/8000 telephone audio");
     if (!state) {
       let release;
@@ -132,6 +156,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
       learning: config.learning,
       locale: config.lang || "auto",
       voiceStyle: config.voiceStyle || "friendly",
+      preparedOpeningText: openingText,
       speakFn,
       listenFn,
       onLog,
