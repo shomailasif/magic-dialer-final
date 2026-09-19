@@ -57,6 +57,8 @@ jobs:
         run: npm install --package-lock-only --ignore-scripts && npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+        env:
+          NODE_ENV: production
       - name: Generate Prisma client
         run: npx prisma generate
       - name: Type-check application and enrollment APIs
