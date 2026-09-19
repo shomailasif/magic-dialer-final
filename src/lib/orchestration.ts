@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { placeCall, validateProvider } from "@/lib/dialer";
-import { runAIagent, recordLearning, detectLeadLanguage } from "@/lib/ai-agent";
+import { recordLearning } from "@/lib/ai-agent";
 import { deliverOutcomeNotification } from "@/lib/notifications";
 import { makeSIPCall } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
@@ -70,7 +70,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   const hasSIP = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
 
   for (const lead of dueLeads) {
-    let aiResult = null as Awaited<ReturnType<typeof runAIagent>> | null;
+    const aiResult = null;
     let sipResult = null as Awaited<ReturnType<typeof makeSIPCall>> | null;
     let dialResult: { connected: boolean; outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED"; durationSecs: number } = { connected: false, outcome: "FAILED", durationSecs: 0 };
 
