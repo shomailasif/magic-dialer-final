@@ -12,7 +12,7 @@ const FRAME_MS = 20;
 
 async function voiceCall({
   product, leadFields, persona, companyName, callbackNumber, callbackIn,
-  contactEmail, token, portal, sessionId = null, learning, locale = "en", voiceStyle = "friendly",
+  contactEmail, token, portal, sessionId = null, learning, locale = "en", voiceStyle = "friendly", preparedOpeningText = null,
   onLog = () => {}, onMode = () => {}, speakFn, listenFn,
 }) {
   let channel = null;
@@ -134,7 +134,7 @@ async function voiceCall({
   onLog("Starting live call…");
   let result;
   try {
-    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale });
+    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText });
   } catch (e) {
     onLog("Call failed: " + e.message);
     if (channel) channel.close();
