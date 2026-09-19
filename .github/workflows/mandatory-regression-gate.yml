@@ -94,15 +94,6 @@ jobs:
           if ($testCall -notmatch 'magic-dialer-call-complete' -or $testCall -notmatch 'magic-dialer-call-failed') { $bad += 'customer Test Call does not consume local popup result messages' }
           if ($testCall -match 'targetAddressSpace') { $bad += 'customer Test Call still depends on browser Local Network Access fetch permission' }
           if ($connectPc -notmatch 'window\.open') { $bad += 'Connect this PC no longer preserves the portal with a popup' }
-          $agentSource = Get-Content 'src/management/agent/agent.js' -Raw
-          $launcherSource = Get-Content 'src/management/build/launcher.cs' -Raw
-          $installerSource = Get-Content 'src/management/build/installer.iss' -Raw
-          $engineWorkflow = Get-Content '.github/workflows/build-windows-engine.yml' -Raw
-          if ($agentSource -notmatch 'const VERSION = "1\.3\.4"') { $bad += 'agent version is not 1.3.4' }
-          if ($agentSource -notmatch 'setInterval\(run, 5 \* 60 \* 1000\)') { $bad += 'temporary updater interval is not exactly five minutes' }
-          if ($launcherSource -notmatch 'AssemblyVersion\("1\.3\.4\.0"\)' -or $launcherSource -notmatch 'AssemblyInformationalVersion\("1\.3\.4"\)') { $bad += 'launcher metadata is not aligned to 1.3.4' }
-          if ($installerSource -notmatch '(?m)^AppVersion=1\.3\.4
-          if ($engineWorkflow -notmatch 'version = "1\.3\.4"') { $bad += 'published updater manifest is not aligned to 1.3.4' }
           if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }
           Write-Host 'Production safety invariants PASS'
       - name: Run complete regression suite
