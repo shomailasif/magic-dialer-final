@@ -7,6 +7,7 @@ import { Link } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
 import { TestCallCard } from "./test-call-card";
 import { ConnectPcButton } from "./connect-pc-card";
+import { RuntimeReadinessCard } from "./runtime-readiness-card";
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
@@ -74,6 +75,8 @@ export default async function DashboardPage({
           <Button href="/dashboard" disabled={!active} loading={false}>{t("startCampaign")}</Button>
         </div>
       </div>
+
+      <RuntimeReadinessCard />
 
       <Card className="border-indigo-200 bg-indigo-50 p-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
