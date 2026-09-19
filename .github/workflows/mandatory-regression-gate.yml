@@ -82,3 +82,15 @@ jobs:
       - name: Run complete regression suite
         shell: powershell
         run: powershell -ExecutionPolicy Bypass -File src/management/build/run-all-tests.ps1
+      - name: Verify deployed runtime when configured
+        if: ${{ secrets.PRODUCTION_HEALTH_URL != '' }}
+        shell: powershell
+        env:
+          PRODUCTION_HEALTH_URL: ${{ secrets.PRODUCTION_HEALTH_URL }}
+        run: |
+          $response = Invoke-RestMethod -Uri $env:PRODUCTION_HEALTH_URL -Method Get -TimeoutSec 20
+          if ($response.ok -ne $true -or $response.service -ne 'magic-dialer' -or $response.status -ne 'online') {
+            Write-Error 'Production health response failed validation'
+            exit 1
+          }
+          Write-Host 'Deployed runtime health PASS'
