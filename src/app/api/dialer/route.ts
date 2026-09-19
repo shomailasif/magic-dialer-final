@@ -67,6 +67,9 @@ export async function POST(request: Request) {
   if (!check.ok) {
     return NextResponse.json({ error: check.error }, { status: 400 });
   }
+  if (d.provider === "RINGCENTRAL" && (!(d.sipUsername || existing?.sipUsername) || !sipPassword || !d.outboundNumber)) {
+    return NextResponse.json({ error: "RingCentral local calling requires SIP username, SIP password, and outbound number." }, { status: 400 });
+  }
 
   const config = await prisma.dialerConfig.upsert({
     where: { userId: user.id },
