@@ -270,17 +270,19 @@ export async function processProspectInput(
 
   // Check for goodbye/end signals
   if (matchesAny(text, BYE)) {
-    const closing = generateClosing(state);
+    const closing = "Thank you for your time. Goodbye.";
     state.phase = "done";
     state.agentSaidHistory.push(closing);
+    state.conversationHistory.push({ role: "assistant", content: closing });
     return { text: closing, state, shouldEnd: true };
   }
 
   // Limit conversation turns
   if (state.turnCount > 20) {
-    const closing = generateClosing(state);
+    const closing = "Thank you for your time. Goodbye.";
     state.phase = "done";
     state.agentSaidHistory.push(closing);
+    state.conversationHistory.push({ role: "assistant", content: closing });
     return { text: closing, state, shouldEnd: true };
   }
 
