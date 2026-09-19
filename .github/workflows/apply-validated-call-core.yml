@@ -1,94 +1,15 @@
-name: Apply validated call core repair
+name: Historical apply validated call core (disabled)
 
+# Historical recovery workflow retained for audit only.
+# Automatic source mutation is disabled; production changes use the mandatory regression gate.
 on:
-  push:
-    branches: [repair-call-core]
-    paths:
-      - '.github/workflows/apply-validated-call-core.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  repair:
+  historical-only:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: repair-call-core
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - name: Apply only validated source anchors
-        shell: python
-        run: |
-          from pathlib import Path
-          p=Path('src/lib/sip-conversation.ts')
-          s=p.read_text()
-          old='const b = Buffer.alloc(FRAME);'
-          assert old in s
-          s=s.replace(old,'const b = Buffer.alloc(FRAME, 0xff);',1)
-          old='''  const greeting = getInitialGreeting(state);\n  const greetingFramesPromise = textToFramesLocal(greeting);\n  const callPromise = sipCallBridge(sipConfig);\n  const [call, greetingFrames] = await Promise.all([callPromise, greetingFramesPromise]);'''
-          new='''  const greeting = getInitialGreeting(state);\n  // Opening audio must be ready before dialing so answer never waits on TTS.\n  const greetingFrames = await textToFramesLocal(greeting);\n  const call = await sipCallBridge(sipConfig);'''
-          assert old in s
-          s=s.replace(old,new,1)
-          old='''let pendingAudio: Buffer[] = [];\nlet streamActive = false;\nlet csRef: any = null;'''
-          new='''type MediaState = { pendingAudio: Buffer[]; streamActive: boolean; csRef: any };\nfunction createMediaState(csRef: any = null): MediaState {\n  return { pendingAudio: [], streamActive: false, csRef };\n}'''
-          assert old in s
-          s=s.replace(old,new,1)
-          replacements=[
-            ('function drainAudioQueue() {','function drainAudioQueue(media: MediaState) {'),
-            ('  if (streamActive || pendingAudio.length === 0 || !csRef) return;','  if (media.streamActive || media.pendingAudio.length === 0 || !media.csRef) return;'),
-            ('  if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }','  if (media.csRef.disposed) { media.pendingAudio = []; media.streamActive = false; return; }'),
-            ('  streamActive = true;','  media.streamActive = true;'),
-            ('  const next = pendingAudio.shift()!;','  const next = media.pendingAudio.shift()!;'),
-            ('    streamActive = false;','    media.streamActive = false;'),
-            ('    drainAudioQueue();','    drainAudioQueue(media);'),
-            ('    streamer = csRef.streamAudio(next);','    streamer = media.csRef.streamAudio(next);'),
-            ('function enqueueAudio(audio: Buffer) {\n  pendingAudio.push(audio);\n  drainAudioQueue();\n}','function enqueueAudio(media: MediaState, audio: Buffer) {\n  media.pendingAudio.push(audio);\n  drainAudioQueue(media);\n}'),
-            ('function waitForQueue(): Promise<void> {','function waitForQueue(media: MediaState): Promise<void> {'),
-            ('      if (!streamActive && pendingAudio.length === 0) { clearInterval(check); resolve(); }','      if (!media.streamActive && media.pendingAudio.length === 0) { clearInterval(check); resolve(); }'),
-            ('async function speak(cs: any, text: string, heardRef: { current: boolean }, skipEdge = false): Promise<void> {','async function speak(cs: any, media: MediaState, text: string, heardRef: { current: boolean }, skipEdge = false): Promise<void> {'),
-            ('  enqueueAudio(audio);\n  return waitForQueue();','  enqueueAudio(media, audio);\n  return waitForQueue(media);'),
-            ('async function speakStreaming(cs: any, text: string, heardRef: { current: boolean }): Promise<void> {','async function speakStreaming(cs: any, media: MediaState, text: string, heardRef: { current: boolean }): Promise<void> {'),
-            ('    enqueueAudio(audio);','    enqueueAudio(media, audio);'),
-            ('    while (pendingAudio.length > 3 && !cs.disposed)','    while (media.pendingAudio.length > 3 && !cs.disposed)'),
-          ]
-          for a,b in replacements:
-            assert a in s, a
-            s=s.replace(a,b,1)
-          old='''  const cs = call.callSession;\n  const cleanup = call.cleanup;\n  csRef = cs;\n  pendingAudio = [];\n  streamActive = false;'''
-          new='''  const cs = call.callSession;\n  const cleanup = call.cleanup;\n  const media = createMediaState(cs);'''
-          assert old in s
-          s=s.replace(old,new,1)
-          s=s.replace('enqueueAudio(Buffer.concat(greetingFrames));','enqueueAudio(media, Buffer.concat(greetingFrames));',1)
-          s=s.replace('await waitForQueue();','await waitForQueue(media);')
-          s=s.replace('await speak(cs, greeting, heardRef);','await speak(cs, media, greeting, heardRef);',1)
-          s=s.replace('await speak(cs, "Are you still there?", heardRef);','await speak(cs, media, "Are you still there?", heardRef);',1)
-          s=s.replace('await speak(cs, fallbackText, heardRef);','await speak(cs, media, fallbackText, heardRef);',1)
-          s=s.replace('await speakStreaming(cs, responseText, heardRef);','await speakStreaming(cs, media, responseText, heardRef);',1)
-          s=s.replace('await speakStreaming(cs, closing, heardRef);','await speakStreaming(cs, media, closing, heardRef);',1)
-          old='''  // Cleanup queue state\n  pendingAudio = [];\n  streamActive = false;\n  csRef = null;'''
-          new='''  // Cleanup only this call's media state.\n  media.pendingAudio = [];\n  media.streamActive = false;\n  media.csRef = null;'''
-          assert old in s
-          s=s.replace(old,new,1)
-          p.write_text(s)
-      - name: Verify source invariants
-        run: |
-          grep -F 'Buffer.alloc(FRAME, 0xff)' src/lib/sip-conversation.ts
-          grep -F 'const greetingFrames = await textToFramesLocal(greeting);' src/lib/sip-conversation.ts
-          grep -F 'const media = createMediaState(cs);' src/lib/sip-conversation.ts
-          grep -F 'function drainAudioQueue(media: MediaState)' src/lib/sip-conversation.ts
-          ! grep -F 'let pendingAudio: Buffer[] = []' src/lib/sip-conversation.ts
-          ! grep -F 'Promise.all([callPromise, greetingFramesPromise])' src/lib/sip-conversation.ts
-      - run: npm ci
-      - run: npm run build
-      - name: Commit validated source only after green build
-        run: |
-          git config user.name wodozone-repair
-          git config user.email actions@users.noreply.github.com
-          git add src/lib/sip-conversation.ts
-          git diff --cached --exit-code && exit 0
-          git commit -m 'Isolate call media and fix opening playback'
-          git push origin HEAD:repair-call-core
+      - run: echo "Historical workflow only; source mutation and git push are disabled."
