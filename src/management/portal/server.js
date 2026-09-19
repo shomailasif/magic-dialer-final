@@ -195,6 +195,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       if (pending.connected) return send(409, { error: "Enrollment ticket already used" });
       const enrolled = await enrollDevice(db, pending.customerToken, machineId);
       if (!enrolled) return send(409, { error: "Customer enrollment failed" });
+      if (enrolled.error === "active_device") return send(409, { error: "This account is already active on another PC" });
       pending.connected = true;
       pending.connectedAt = Date.now();
       return send(200, { ok: true, deviceToken: enrolled.deviceToken });
