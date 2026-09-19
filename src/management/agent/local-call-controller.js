@@ -41,6 +41,11 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
 
   let state = null;
   let activeLocale = config.lang && config.lang !== "auto" ? normalizeLanguage(config.lang) : "en";
+  const voiceProbe = await tts("Hello", { locale: activeLocale, style: config.voiceStyle || "friendly" });
+  if (!voiceProbe || !Buffer.isBuffer(voiceProbe.buffer) || voiceProbe.buffer.length < 160) {
+    throw new Error("Telephone TTS preflight failed; refusing to place call");
+  }
+  onLog(`[local-media-v2] TTS preflight passed (${voiceProbe.engine || "unknown"}, ${voiceProbe.buffer.length} bytes PCMU/8000)`);
   await preflightLocalSip(config, deps);
   onLog("[local-media-v2] SIP registration preflight passed");
   const engine = makeEngine({
