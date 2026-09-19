@@ -20,15 +20,20 @@ export async function POST(request: Request) {
     apiKey: body.apiKey && body.apiKey !== "••••••••" ? body.apiKey : current?.apiKey || rcApiKey,
     accountSid: body.accountSid && body.accountSid !== "••••••••" ? body.accountSid : current?.accountSid || rcSid,
     outboundNumber: (body.outboundNumber as string) || current?.outboundNumber || "",
+    sipUsername: (body.sipUsername as string) || current?.sipUsername || "",
+    sipPassword: body.sipPassword && body.sipPassword !== "••••••••" ? body.sipPassword : current?.sipPassword || "",
   };
 
   const check = await validateProvider(candidate as never);
+  if (candidate.provider === "RINGCENTRAL" && (!candidate.sipUsername || !candidate.sipPassword || !candidate.outboundNumber)) {
+    return NextResponse.json({ ok: false, error: "RingCentral local calling requires SIP username, SIP password, and outbound number." }, { status: 400 });
+  }
   if (!check.ok) {
     return NextResponse.json({ ok: false, error: check.error }, { status: 400 });
   }
 
   return NextResponse.json({
     ok: true,
-    message: `Connection successful. Your ${candidate.provider} credentials are valid.`,
+    message: `Configuration is complete for ${candidate.provider}. Live SIP registration is verified by the enrolled local engine before calling.`,
   });
 }
