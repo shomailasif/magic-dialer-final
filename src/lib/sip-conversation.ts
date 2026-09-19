@@ -623,7 +623,7 @@ export async function runConversation(
     if (cs.disposed) { console.log("[sip-conv] call disposed during listen, ending"); break; }
     if (!r.spoke) {
       if (cs.disposed) break;
-      await speak(cs, media, "Are you still there?", heardRef);
+      // Do not inject scripted dialogue during silence; briefly keep listening.
       const retry = await listenForSpeech(cs, start, heardRef, 4000, media);
       if (!retry.spoke) break;
       r = retry;
@@ -658,9 +658,11 @@ export async function runConversation(
   }
 
   const data = getCollectedData(state);
-  const closing = `Thank${data.name ? " you, " + data.name : " you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!`;
-  lines.push(`Agent: ${closing}`);
-  if (!cs.disposed) await speakStreaming(cs, media, closing, heardRef);
+  // Do not invent a callback, role, phone number, or scripted closing.
+  // The conversational brain owns spoken closing language when it chooses to end.
+  if (!cs.disposed && state.phase !== "done") {
+    console.log("[sip-conv] conversation ended without scripted closing");
+  }
 
   // Wait for final audio then hangup
   await waitForQueue(media);
