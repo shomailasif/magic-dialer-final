@@ -81,6 +81,13 @@ async function openDb(dbPath) {
       device_token TEXT,
       portal_id    TEXT NOT NULL DEFAULT 'main'
     );
+    CREATE TABLE IF NOT EXISTS enrollment_tickets (
+      ticket TEXT PRIMARY KEY,
+      customer_token TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      connected INTEGER NOT NULL DEFAULT 0,
+      portal_id TEXT NOT NULL DEFAULT 'main'
+    );
     CREATE TABLE IF NOT EXISTS calls (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       customer_token TEXT,
@@ -137,6 +144,13 @@ async function initPostgres(pool) {
       disabled     INTEGER NOT NULL DEFAULT 0,      voip_ready   INTEGER NOT NULL DEFAULT 0,
       device_token TEXT,
       portal_id    TEXT NOT NULL DEFAULT 'main'
+    );
+    CREATE TABLE IF NOT EXISTS enrollment_tickets (
+      ticket TEXT PRIMARY KEY,
+      customer_token TEXT NOT NULL,
+      expires_at BIGINT NOT NULL,
+      connected INTEGER NOT NULL DEFAULT 0,
+      portal_id TEXT NOT NULL DEFAULT 'main'
     );
     CREATE TABLE IF NOT EXISTS calls (
       id           BIGSERIAL PRIMARY KEY,
@@ -557,6 +571,20 @@ async function getCallById(db, id) {
   return db.sqlite.prepare("SELECT * FROM calls WHERE id = ? AND portal_id = ?").get(n, db.portalId) || null;
 }
 
+async function createEnrollmentTicket(db, ticket, customerToken, expiresAt) {
+  if (db.pool) await db.pool.query("INSERT INTO enrollment_tickets(ticket,customer_token,expires_at,connected,portal_id) VALUES($1,$2,$3,0,$4)", [ticket,customerToken,expiresAt,db.portalId]);
+  else db.sqlite.prepare("INSERT INTO enrollment_tickets(ticket,customer_token,expires_at,connected,portal_id) VALUES(?,?,?,?,?)").run(ticket,customerToken,expiresAt,0,db.portalId);
+}
+async function getEnrollmentTicket(db, ticket) {
+  if (!ticket) return null;
+  if (db.pool) { const r=await db.pool.query("SELECT * FROM enrollment_tickets WHERE ticket=$1 AND portal_id=$2",[ticket,db.portalId]); return r.rows[0]||null; }
+  return db.sqlite.prepare("SELECT * FROM enrollment_tickets WHERE ticket=? AND portal_id=?").get(ticket,db.portalId)||null;
+}
+async function markEnrollmentTicketConnected(db, ticket) {
+  if (db.pool) await db.pool.query("UPDATE enrollment_tickets SET connected=1 WHERE ticket=$1 AND portal_id=$2",[ticket,db.portalId]);
+  else db.sqlite.prepare("UPDATE enrollment_tickets SET connected=1 WHERE ticket=? AND portal_id=?").run(ticket,db.portalId);
+}
+
 function safeParse(s) {
   if (!s) return [];
   try {
@@ -604,4 +632,8 @@ module.exports = {
   setCallList,
   saveLeads,
   USES_PG,
+  enrollDevice,
+  createEnrollmentTicket,
+  getEnrollmentTicket,
+  markEnrollmentTicketConnected,
 };
