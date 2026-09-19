@@ -191,11 +191,20 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       const ticket = String(body.ticket || "");
       const machineId = String(body.machineId || "").trim();
       const pending = enrollmentTickets.get(ticket);
-      enrollmentTickets.delete(ticket);
       if (!pending || pending.expires < Date.now() || !machineId) return send(409, { error: "Enrollment ticket invalid or expired" });
+      if (pending.connected) return send(409, { error: "Enrollment ticket already used" });
       const enrolled = await enrollDevice(db, pending.customerToken, machineId);
       if (!enrolled) return send(409, { error: "Customer enrollment failed" });
+      pending.connected = true;
+      pending.connectedAt = Date.now();
       return send(200, { ok: true, deviceToken: enrolled.deviceToken });
+    }
+    if (url.pathname === "/api/engine/enrollment-status" && method === "GET") {
+      if (!myToken) return send(401, { error: "Customer session required" });
+      const ticket = String(url.searchParams.get("ticket") || "");
+      const pending = enrollmentTickets.get(ticket);
+      if (!pending || pending.customerToken !== myToken || pending.expires < Date.now()) return send(404, { error: "Enrollment ticket invalid or expired" });
+      return send(200, { connected: pending.connected === true });
     }
 
     // --- Heartbeat from a customer's PC (no login - the agent must work) ---
@@ -921,6 +930,21 @@ function customerHomeHtml(c) {
         const local='http://127.0.0.1:48771/?enroll='+encodeURIComponent(tj.ticket)+'&portal='+encodeURIComponent(location.origin);
         const pop=window.open(local,'magicDialerConnect','popup=yes,width=520,height=360,resizable=yes,scrollbars=yes');
         if(!pop) throw new Error('Allow the Magic Dialer connection popup in your browser');
+        const started=Date.now();
+        const poll=setInterval(async()=>{
+          if(Date.now()-started>120000){ clearInterval(poll); status.style.color='#f87171'; status.textContent='Connection confirmation timed out'; return; }
+          try {
+            const sr=await fetch('/api/engine/enrollment-status?ticket='+encodeURIComponent(tj.ticket),{cache:'no-store'});
+            if(!sr.ok) return;
+            const sj=await sr.json();
+            if(sj.connected){
+              clearInterval(poll);
+              status.style.color='#34d399'; status.textContent='Engine online · connected';
+              const msg=document.getElementById('engineConnectMsg'); msg.style.display='block'; msg.textContent='This PC is connected.';
+              try { if(pop && !pop.closed) pop.close(); } catch {}
+            }
+          } catch {}
+        },500);
       } catch(e) { status.style.color='#f87171'; status.textContent=e.message || 'Connection failed'; }
     });
     window.addEventListener('message',(ev)=>{
