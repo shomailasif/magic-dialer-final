@@ -68,6 +68,7 @@ async function main() {
       config: { voip: { ready: true, username: "u", sipPassword: "bad", number: "1" }, product: "test" },
       number: "2",
       deps: {
+        async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
         async registerSession() { return { ok: false, last: "403 Forbidden" }; },
         createLocalRingCentralEngine() { engineCreated = true; return engine; },
       },
