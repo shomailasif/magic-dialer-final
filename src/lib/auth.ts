@@ -8,8 +8,12 @@ const SESSION_COOKIE = "autodial_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 
 function secret(): string {
-  const s = process.env.AUTH_SECRET || "dev-fallback-secret-change-me";
-  return s;
+  const configured = process.env.AUTH_SECRET?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("AUTH_SECRET is required in production");
+  }
+  return "dev-fallback-secret-change-me";
 }
 
 export function signSession(userId: string, sessionId = ""): string {
