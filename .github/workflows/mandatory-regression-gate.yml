@@ -54,7 +54,7 @@ jobs:
         working-directory: src/management
         run: npm install
       - name: Synchronize and install application dependencies
-        run: npm install --package-lock-only --ignore-scripts && npm ci
+        run: npm ci
       - name: Audit production dependencies
         shell: powershell
         run: |
