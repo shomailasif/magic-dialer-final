@@ -8,7 +8,8 @@ $tests = @(
   "agent\engine-health.behavior.test.js",
   "agent\auto-update.behavior.test.js",
   "build\release-version-consistency.test.js",
-  "build\\ai-gateway-contract.test.js"
+  "build\\ai-gateway-contract.test.js",
+  "build\\groq-direct-probe-contract.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {
