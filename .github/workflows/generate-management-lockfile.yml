@@ -1,0 +1,42 @@
+name: Generate Management Lockfile
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/management/package.json"
+      - ".github/workflows/generate-management-lockfile.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: src/management
+    steps:
+      - name: Checkout exact PR revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Use Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/management/package-lock.json
+      - name: Generate lockfile without lifecycle scripts
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Validate generated lockfile structure
+        run: |
+          node -e "const p=require('./package.json');const l=require('./package-lock.json');if(l.lockfileVersion!==3)throw new Error('lockfileVersion must be 3');for(const [n,v] of Object.entries(p.dependencies||{})){if(l.packages?.['']?.dependencies?.[n]!==v)throw new Error('root lock dependency mismatch: '+n);if(!l.packages?.['node_modules/'+n])throw new Error('missing locked package: '+n)}"
+      - name: Upload generated lockfile only
+        uses: actions/upload-artifact@v4
+        with:
+          name: management-package-lock
+          path: src/management/package-lock.json
+          if-no-files-found: error
+          retention-days: 1
