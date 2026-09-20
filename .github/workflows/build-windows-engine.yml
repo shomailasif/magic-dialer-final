@@ -151,8 +151,8 @@ jobs:
           }
           if (-not $healthy) { throw "Engine was not healthy before duplicate-launch gate" }
           Write-Host "REOPEN MARKER E: engine healthy"
+          $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
           $beforeProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
-          $before = $beforeProcs.Count
           Write-Host "REOPEN DIAGNOSTIC BEFORE:"
           $beforeProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
           $lock = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog.lock"
