@@ -28,7 +28,9 @@ for (const [label, value] of Object.entries({installerVersion, launcherAssembly,
   assert.equal(value, agentVersion, label + " must equal agent version " + agentVersion);
 }
 
-assert.equal((agent.match(/setInterval\(run, 5 \* 60 \* 1000\)/g) || []).length, 1,
-  "temporary updater interval must be exactly five minutes and declared once");
+assert.equal((agent.match(/setInterval\(run, 6 \* 60 \* 60 \* 1000\)/g) || []).length, 1,
+  "production updater interval must be exactly six hours and declared once");
+assert.equal((agent.match(/setInterval\(run, 5 \* 60 \* 1000\)/g) || []).length, 0,
+  "temporary five-minute updater interval must not remain in production");
 
-console.log("release version consistency: PASS " + agentVersion + " / updater 5m");
+console.log("release version consistency: PASS " + agentVersion + " / updater 6h");

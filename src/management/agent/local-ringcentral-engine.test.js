@@ -22,8 +22,8 @@ const trunk = fs.readFileSync(path.join(__dirname, "../portal/trunk.js"), "utf8"
 for (const forbidden of ["werift-rtp", "srtpSession.encrypt", "RtpPacket", "sendPacket("])
   assert(!engine.includes(forbidden), `forbidden transport found: ${forbidden}`);
 assert(engine.includes("session.streamAudio(audio)"), "outbound must use RingCentral SDK streamAudio");
-assert(engine.includes('session.on("audioPacket"'), "inbound must use RingCentral SDK audioPacket");
-assert(engine.includes("packet && packet.payload"), "inbound must consume RTP payload, not RTP object");
+assert(engine.includes('session.on("audio"'), "inbound must use RingCentral SDK audio Buffer event");
+assert(engine.includes("Buffer.from(audio)"), "inbound must consume SDK audio Buffer");
 assert(engine.includes('streamer.once("finished"'), "sendAudio must wait for SDK playback completion");
 assert(engine.includes('typeof streamer.stop === "function"') && engine.includes("interrupt"), "playback interruption primitive missing");
 assert(engine.includes("generation++") && engine.includes("mine === generation"), "interruption must invalidate queued speech");

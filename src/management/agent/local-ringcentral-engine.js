@@ -17,10 +17,9 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     bridge = await bridgeFactory({ ...sip, number });
     if (!bridge || !bridge.ok || !bridge.callSession) throw new Error((bridge && bridge.last) || "RingCentral call bridge failed");
     session = bridge.callSession;
-    session.on("audioPacket", packet => {
-      const payload = packet && packet.payload;
-      if (!payload || !payload.length || closed) return;
-      const b = Buffer.from(payload);
+    session.on("audio", audio => {
+      if (!audio || !audio.length || closed) return;
+      const b = Buffer.from(audio);
       bytesIn += b.length;
       onAudio(b);
     });
