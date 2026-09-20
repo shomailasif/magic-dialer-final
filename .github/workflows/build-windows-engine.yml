@@ -161,11 +161,23 @@ jobs:
           if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Exact customer reopen with packaged agent file locked
+        timeout-minutes: 3
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Write-Host "EXACT REOPEN MARKER A: starting silent installer"
+          $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-exact-reopen-setup.log"
+          $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Write-Host "EXACT REOPEN DIAGNOSTIC: setup did not exit within 90 seconds"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $setupLog) { Write-Host "=== EXACT REOPEN INNO LOG TAIL ==="; Get-Content -LiteralPath $setupLog -Tail 120 }
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            throw "Exact reopen setup installer did not return within diagnostic bound"
+          }
+          if ($setup.ExitCode -ne 0) { throw "Exact reopen setup installer exited with code $($setup.ExitCode)" }
+          Write-Host "EXACT REOPEN MARKER B: silent installer returned"
           $launcher = Join-Path $app "MagicDialer.exe"
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
           $healthy = $false
