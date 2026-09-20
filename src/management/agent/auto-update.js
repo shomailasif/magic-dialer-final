@@ -40,6 +40,15 @@ async function validatePendingUpdate(currentVersion,{ready=false}={}){
    writeState({lastGoodVersion:currentVersion,lastGoodInstaller:s.pendingInstaller});
    return{pending:true,healthy:true};
  }
+ // A manually installed/newer recovery build supersedes a stale pending build
+ // left by an older updater that died after launching its installer. Never
+ // roll a newer installed engine back merely because old pending state survived.
+ if(newer(currentVersion,s.pendingVersion)){
+   const recovered={...s,lastGoodVersion:currentVersion,blockedVersion:s.pendingVersion,supersededPendingVersion:s.pendingVersion,pendingVersion:null,pendingInstaller:null,previousVersion:null};
+   const seed=seededInstaller(currentVersion);if(seed)recovered.lastGoodInstaller=seed;
+   writeState(recovered);
+   return{pending:true,superseded:true,healthy:true};
+ }
  return rollbackPendingUpdate(currentVersion);
 }
 async function rollbackPendingUpdate(currentVersion){
