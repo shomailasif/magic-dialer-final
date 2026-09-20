@@ -40,12 +40,12 @@ jobs:
           export DATABASE_URL="file:$RUNNER_TEMP/existing.db"
           npx prisma db push --skip-generate
           sqlite3 "$RUNNER_TEMP/existing.db" "INSERT INTO User (id,email,passwordHash,role,createdAt,updatedAt) VALUES ('baseline-sentinel','baseline@example.invalid','sentinel','BUSINESS_ADMIN',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
-          sqlite3 "$RUNNER_TEMP/existing.db" ".schema" | grep -v '_prisma_migrations' > "$RUNNER_TEMP/schema-before.txt"
+          sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-before.txt"
           DATA_BEFORE=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
           npx prisma migrate resolve --applied 0_init
           npx prisma migrate deploy
           npx prisma migrate status
-          sqlite3 "$RUNNER_TEMP/existing.db" ".schema" | grep -v '_prisma_migrations' > "$RUNNER_TEMP/schema-after.txt"
+          sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-after.txt"
           DATA_AFTER=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
           diff -u "$RUNNER_TEMP/schema-before.txt" "$RUNNER_TEMP/schema-after.txt"
           test "$DATA_BEFORE" = "$DATA_AFTER"
