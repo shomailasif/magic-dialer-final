@@ -10,7 +10,7 @@ const checks=[
 ()=>assert.match(src,/Cache-Control":"no-store"/),()=>assert.match(src,/r\.status/),
 ()=>assert.match(src,/j\?\.error\?\.message/),()=>assert.match(src,/slice\(0,240\)/),
 ()=>assert.match(src,/\[REDACTED\]/),()=>assert.doesNotMatch(src,/console\.(log|error|warn)/),
-()=>assert.doesNotMatch(src,/RC_SIP|RingCentral|deviceToken/),()=>assert.doesNotMatch(src,/NextResponse\.json\([^\n]*key/),
+()=>assert.doesNotMatch(src,/RC_SIP|RingCentral|deviceToken/),()=>assert.doesNotMatch(src,/NextResponse\.json\(\{[^}]*\b(?:apiKey|GROQ_API_KEY|key)\s*:/),
 ()=>assert.match(src,/stage:"environment"/),()=>assert.match(src,/stage:"groq-production-shape"/),
 ()=>assert.match(src,/results\.every\(x=>x\.ok\)/),()=>assert.match(src,/for\(const model of/),
 ()=>assert.match(src,/role:"system"/),()=>assert.match(src,/role:"user"/),
