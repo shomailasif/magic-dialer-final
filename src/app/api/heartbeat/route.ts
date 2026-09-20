@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { prisma } from "@/lib/db";
+import { decryptSecret, encryptSecret, isEncryptedSecret } from "@/lib/credential-crypto";
 const hash=(v:string)=>createHash("sha256").update(v).digest("hex");
 export async function POST(req:Request){
  let b:any; try{b=await req.json()}catch{return NextResponse.json({error:"Invalid body"},{status:400})}
@@ -16,11 +17,16 @@ export async function POST(req:Request){
  await prisma.engineDevice.update({where:{id:d.id},data:{lastSeenAt:now,leaseUntil}});
  const disabled=d.user.subscription?.status==="SUSPENDED"||d.user.subscription?.status==="DEACTIVATED";
  const dc=d.user.dialerConfig;
- const voip=dc?.validated&&dc.sipUsername&&dc.sipPassword&&dc.outboundNumber?{
+ let sipPassword="";
+ if(dc?.sipPassword){ try{sipPassword=decryptSecret(dc.sipPassword)}catch{return NextResponse.json({error:"Dialer credential unavailable"},{status:503})} }
+ if(dc?.sipPassword && !isEncryptedSecret(dc.sipPassword)){
+  await prisma.dialerConfig.update({where:{id:dc.id},data:{sipPassword:encryptSecret(sipPassword)}});
+ }
+ const voip=dc?.validated&&dc.sipUsername&&sipPassword&&dc.outboundNumber?{
   provider:String(dc.provider||"").toLowerCase(),
   number:dc.outboundNumber,
   username:dc.sipUsername,
-  sipPassword:dc.sipPassword,
+  sipPassword,
   authId:dc.sipAuthId||dc.sipUsername,
   domain:dc.sipDomain||"sip.ringcentral.com",
   server:dc.sipProxy||"sip40.ringcentral.com",
