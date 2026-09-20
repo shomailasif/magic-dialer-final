@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Threading;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -35,13 +36,25 @@ static class MagicDialerLauncher
 
         try
         {
+            // Serialize the short startup transition. Health becomes the durable
+            // ownership signal after the watchdog/child pair is established.
+            bool startupOwner;
+            using (var startupMutex = new Mutex(true, @"Local\MagicDialer.Startup.8f40b2c9", out startupOwner))
+            {
+                if (!startupOwner)
+                {
+                    if (!WaitForEngine(10000)) return 3;
+                    if (!HasArg(args, "--no-browser")) OpenDashboard();
+                    return 0;
+                }
+
             // Do not execute agent.exe again when the installed engine already
             // owns its local ports. A packaged Node executable can be locked by
             // the running watchdog/child even when process enumeration is
             // incomplete or access to MainModule is denied.
             if (EngineIsReachable())
             {
-                OpenDashboard();
+                if (!HasArg(args, "--no-browser")) OpenDashboard();
                 return 0;
             }
 
@@ -55,6 +68,8 @@ static class MagicDialerLauncher
                 WindowStyle = ProcessWindowStyle.Hidden
             };
             Process.Start(psi);
+            if (!WaitForEngine(10000)) return 4;
+            }
         }
         catch (Exception ex)
         {
@@ -70,6 +85,24 @@ static class MagicDialerLauncher
             return 1;
         }
         return 0;
+    }
+
+    private static bool WaitForEngine(int timeoutMs)
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < timeoutMs)
+        {
+            if (EngineIsReachable()) return true;
+            Thread.Sleep(200);
+        }
+        return false;
+    }
+
+    private static bool HasArg(string[] args, string wanted)
+    {
+        foreach (var arg in args)
+            if (string.Equals(arg, wanted, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private static bool EngineIsReachable()
