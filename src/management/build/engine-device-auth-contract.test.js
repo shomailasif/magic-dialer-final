@@ -7,7 +7,7 @@ const stt=fs.readFileSync(path.join(root,"src","app","api","engine","ai","stt","
 [
  /revokedAt/,/leaseUntil:\s*true/,/engineLeaseUntil:\s*true/,/activeEngineMachineId:\s*true/,
  /!device\.leaseUntil\s*\|\|\s*device\.leaseUntil\s*<=\s*now/,
- /!device\.user\.engineLeaseUntil\s*\|\|\s*device\.user\.engineLeaseUntil\s*<=\s*now/,
+ /!device\.user\?\.engineLeaseUntil\s*\|\|\s*device\.user\.engineLeaseUntil\s*<=\s*now/,
  /device\.user\.activeEngineMachineId\s*!==\s*device\.machineId/
 ].forEach((re)=>assert.match(helper,re));
 assert.match(chat,/authorizeActiveEngineDevice\(b\.deviceToken\|\|engineBearerToken\(r\)\)/);
