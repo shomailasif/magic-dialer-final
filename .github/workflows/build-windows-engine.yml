@@ -1,5 +1,5 @@
 name: Build Windows Engine
-# CI rerun marker: validate bb370d4 Windows upgrade gate
+# CI rerun marker: reproduce intermittent duplicate-launch lifecycle with diagnostics
 on:
   workflow_dispatch: {}
   pull_request:
@@ -156,14 +156,44 @@ jobs:
           }
           if (-not $healthy) { throw "Complete local engine was not ready before duplicate-launch gate" }
           Write-Host "REOPEN MARKER E: engine healthy"
-          $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          # Capture ownership immediately at the health boundary, before slower CIM/log diagnostics.
+          $healthBoundaryProcs = @(Get-Process agent -ErrorAction SilentlyContinue)
+          $before = $healthBoundaryProcs.Count
+          Write-Host ("HEALTH-BOUNDARY AGENT PIDS: " + (($healthBoundaryProcs | ForEach-Object { $_.Id }) -join ","))
+          $healthBoundaryWatchdogLock = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog.lock"
+          $healthBoundaryAgentLock = Join-Path $env:LOCALAPPDATA "Magic Dialer\agent.lock"
+          if (Test-Path $healthBoundaryWatchdogLock) { Write-Host ("HEALTH-BOUNDARY WATCHDOG LOCK: " + ((Get-Content -LiteralPath $healthBoundaryWatchdogLock -Raw).Trim())) } else { Write-Host "HEALTH-BOUNDARY WATCHDOG LOCK: MISSING" }
+          if (Test-Path $healthBoundaryAgentLock) { Write-Host ("HEALTH-BOUNDARY AGENT LOCK: " + ((Get-Content -LiteralPath $healthBoundaryAgentLock -Raw).Trim())) } else { Write-Host "HEALTH-BOUNDARY AGENT LOCK: MISSING" }
+          $beforeProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
+          Write-Host "REOPEN DIAGNOSTIC BEFORE:"
+          $beforeProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+          $lock = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog.lock"
+          if (Test-Path $lock) { Write-Host "WATCHDOG LOCK BEFORE:"; Get-Content -LiteralPath $lock }
+          $childLog = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog-child.log"
+          if (Test-Path $childLog) { Write-Host "WATCHDOG CHILD LOG BEFORE:"; Get-Content -LiteralPath $childLog -Tail 80 }
           Write-Host "REOPEN MARKER F: starting duplicate launcher"
           $p = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(5000)) { throw "Duplicate launcher did not exit cleanly" }
           if ($p.ExitCode -ne 0) { throw "Duplicate launcher failed with exit code $($p.ExitCode)" }
           Start-Sleep -Milliseconds 500
-          $after = @(Get-Process agent -ErrorAction SilentlyContinue).Count
-          if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
+          $afterProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
+          $after = $afterProcs.Count
+          Write-Host "REOPEN DIAGNOSTIC AFTER:"
+          $afterProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+          if (Test-Path $lock) { Write-Host "WATCHDOG LOCK AFTER:"; Get-Content -LiteralPath $lock }
+          if (Test-Path $childLog) { Write-Host "WATCHDOG CHILD LOG AFTER:"; Get-Content -LiteralPath $childLog -Tail 120 }
+          if ($after -ne $before) {
+            Write-Host "REOPEN TRANSIENT DETECTED: $before -> $after"
+            for ($recoveryProbe=1; $recoveryProbe -le 12; $recoveryProbe++) {
+              Start-Sleep -Milliseconds 500
+              $probeProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
+              Write-Host ("REOPEN RECOVERY PROBE $recoveryProbe COUNT=" + $probeProcs.Count)
+              $probeProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+              if (Test-Path $healthBoundaryWatchdogLock) { Write-Host ("REOPEN RECOVERY WATCHDOG LOCK: " + ((Get-Content -LiteralPath $healthBoundaryWatchdogLock -Raw).Trim())) }
+              if (Test-Path $healthBoundaryAgentLock) { Write-Host ("REOPEN RECOVERY AGENT LOCK: " + ((Get-Content -LiteralPath $healthBoundaryAgentLock -Raw).Trim())) }
+            }
+            throw "Duplicate launcher changed agent process count: $before -> $after"
+          }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Exact customer reopen with packaged agent file locked
         timeout-minutes: 3
