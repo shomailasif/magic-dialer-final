@@ -46,10 +46,25 @@ jobs:
         shell: powershell
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\installer.iss'
       - name: Silent installer smoke test
+        timeout-minutes: 3
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Write-Host "SMOKE MARKER A: starting silent installer"
+          $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-smoke-setup.log"
+          $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Write-Host "SMOKE DIAGNOSTIC: setup did not exit within 90 seconds"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $setupLog) {
+              Write-Host "=== INNO SETUP LOG TAIL ==="
+              Get-Content -LiteralPath $setupLog -Tail 120
+            }
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            throw "Silent installer did not return within diagnostic bound"
+          }
+          if ($setup.ExitCode -ne 0) { throw "Silent installer exited with code $($setup.ExitCode)" }
+          Write-Host "SMOKE MARKER B: silent installer returned"
           if (-not (Test-Path (Join-Path $env:LOCALAPPDATA "Magic Dialer"))) { throw "Installer did not create application directory" }
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
           foreach ($file in @("agent.exe","MagicDialer.exe","logo.ico")) {
@@ -58,7 +73,9 @@ jobs:
           $startup = Join-Path $env:APPDATA "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Magic Dialer.lnk"
           if (-not (Test-Path $startup)) { throw "Missing Windows startup shortcut" }
           $launcher = Join-Path $app "MagicDialer.exe"
+          Write-Host "SMOKE MARKER C: starting launcher verification"
           $proc = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
+          Write-Host "SMOKE MARKER D: launcher process created"
           try {
             $healthy = $false
             for ($i=0; $i -lt 30; $i++) {
@@ -68,7 +85,7 @@ jobs:
                 if ($health.ok -eq $true -and $health.service -eq "magic-dialer-engine") { $healthy = $true; break }
               } catch {}
             }
-            if ($healthy -and $health.version -ne "1.3.4") { throw "Installed engine health reported wrong version: $($health.version)" }
+            if ($healthy -and $health.version -ne "1.3.5") { throw "Installed engine health reported wrong version: $($health.version)" }
           if (-not $healthy) {
               if ($proc.HasExited) { Write-Host "LAUNCHER EXIT CODE: $($proc.ExitCode)" }
               Write-Host "AGENT PROCESSES:"
@@ -89,8 +106,10 @@ jobs:
           }
           $uninstaller = Join-Path $app "unins000.exe"
           if (-not (Test-Path $uninstaller)) { throw "Missing uninstaller" }
+          Write-Host "SMOKE MARKER E: starting silent uninstaller"
           Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
-          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\\updates\\known-good-1.3.4.exe"
+          Write-Host "SMOKE MARKER F: silent uninstaller returned"
+          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\\updates\\known-good-1.3.5.exe"
           if (-not (Test-Path $seed)) { throw "Missing seeded known-good rollback installer" }
           if ((Get-Item $seed).Length -lt 1000000) { throw "Seeded rollback installer is unexpectedly small" }
           $seedHash = (Get-FileHash -Algorithm SHA256 $seed).Hash
@@ -99,15 +118,29 @@ jobs:
           Write-Host "Rollback seed verified byte-for-byte: $seedHash"
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
       - name: Reopen launcher while engine is already running
+        timeout-minutes: 3
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
           # Previous smoke intentionally uninstalls. Install a fresh copy for this independent gate.
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Write-Host "REOPEN MARKER A: starting silent installer"
+          $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-reopen-setup.log"
+          $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Write-Host "REOPEN DIAGNOSTIC: setup did not exit within 90 seconds"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $setupLog) { Write-Host "=== REOPEN INNO LOG TAIL ==="; Get-Content -LiteralPath $setupLog -Tail 120 }
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            throw "Reopen setup installer did not return within diagnostic bound"
+          }
+          if ($setup.ExitCode -ne 0) { throw "Reopen setup installer exited with code $($setup.ExitCode)" }
+          Write-Host "REOPEN MARKER B: silent installer returned"
           $launcher = Join-Path $app "MagicDialer.exe"
           if (-not (Test-Path $launcher)) { throw "Launcher missing before duplicate-launch gate" }
+          Write-Host "REOPEN MARKER C: starting first launcher"
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
+          Write-Host "REOPEN MARKER D: first launcher started"
           $healthy = $false
           for ($i=0; $i -lt 30; $i++) {
             Start-Sleep -Milliseconds 500
@@ -117,7 +150,9 @@ jobs:
             } catch {}
           }
           if (-not $healthy) { throw "Engine was not healthy before duplicate-launch gate" }
+          Write-Host "REOPEN MARKER E: engine healthy"
           $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          Write-Host "REOPEN MARKER F: starting duplicate launcher"
           $p = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(5000)) { throw "Duplicate launcher did not exit cleanly" }
           if ($p.ExitCode -ne 0) { throw "Duplicate launcher failed with exit code $($p.ExitCode)" }
@@ -126,11 +161,23 @@ jobs:
           if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Exact customer reopen with packaged agent file locked
+        timeout-minutes: 3
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Write-Host "EXACT REOPEN MARKER A: starting silent installer"
+          $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-exact-reopen-setup.log"
+          $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Write-Host "EXACT REOPEN DIAGNOSTIC: setup did not exit within 90 seconds"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $setupLog) { Write-Host "=== EXACT REOPEN INNO LOG TAIL ==="; Get-Content -LiteralPath $setupLog -Tail 120 }
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            throw "Exact reopen setup installer did not return within diagnostic bound"
+          }
+          if ($setup.ExitCode -ne 0) { throw "Exact reopen setup installer exited with code $($setup.ExitCode)" }
+          Write-Host "EXACT REOPEN MARKER B: silent installer returned"
           $launcher = Join-Path $app "MagicDialer.exe"
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
           $healthy = $false
@@ -156,8 +203,20 @@ jobs:
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
           # Reinstall once, start the real launcher/watchdog, then install over the running copy.
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Write-Host "UPGRADE MARKER A: starting preparation installer"
+          $prepLog = Join-Path $env:RUNNER_TEMP "magic-dialer-upgrade-prep.log"
+          $prep = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$prepLog`"") -PassThru
+          if (-not $prep.WaitForExit(90000)) {
+            Write-Host "UPGRADE DIAGNOSTIC: preparation installer did not exit"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $prepLog) { Write-Host "=== PREPARATION INNO LOG TAIL ==="; Get-Content -LiteralPath $prepLog -Tail 120 }
+            Stop-Process -Id $prep.Id -Force -ErrorAction SilentlyContinue
+            throw "Preparation installer exceeded 90-second diagnostic bound"
+          }
+          if ($prep.ExitCode -ne 0) { throw "Preparation installer exited with code $($prep.ExitCode)" }
+          Write-Host "UPGRADE MARKER B: preparation installer returned"
           $launcher = Join-Path $app "MagicDialer.exe"
+          Write-Host "UPGRADE MARKER C: starting pre-upgrade launcher"
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
           $oldPid = $null
           for ($i=0; $i -lt 20; $i++) {
@@ -166,13 +225,22 @@ jobs:
             if ($a) { $oldPid = $a.Id; break }
           }
           if (-not $oldPid) { throw "Pre-upgrade engine did not start" }
-          $upgrade = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -PassThru
+          Write-Host "UPGRADE MARKER D: pre-upgrade agent running PID $oldPid"
+          $upgradeLog = Join-Path $env:RUNNER_TEMP "magic-dialer-in-place-upgrade.log"
+          Write-Host "UPGRADE MARKER E: starting in-place installer"
+          $upgrade = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$upgradeLog`"") -PassThru
           if (-not $upgrade.WaitForExit(90000)) {
+            Write-Host "UPGRADE DIAGNOSTIC: in-place installer did not exit"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $upgradeLog) { Write-Host "=== IN-PLACE INNO LOG TAIL ==="; Get-Content -LiteralPath $upgradeLog -Tail 120 }
             try { $upgrade.Kill() } catch {}
             throw "In-place upgrade installer exceeded 90-second hard timeout"
           }
           if ($upgrade.ExitCode -ne 0) { throw "In-place upgrade installer failed with exit code $($upgrade.ExitCode)" }
-          Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
+          Write-Host "UPGRADE MARKER F: in-place installer returned"
+          # The silent installer must restart the launcher/watchdog itself.
+          # Do NOT manually start it here: this gate exists to catch the exact
+          # production defect where skipifsilent left the updater dead.
           $healthy = $false
           for ($i=0; $i -lt 30; $i++) {
             Start-Sleep -Milliseconds 500
@@ -226,7 +294,7 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "Stable installer publish failed" }
           $sha = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
-          $manifest = @{ version = "1.3.4"; sha256 = $sha; url = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/magic-dialer-engine-windows.exe" } | ConvertTo-Json -Compress
+          $manifest = @{ version = "1.3.5"; sha256 = $sha; url = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/magic-dialer-engine-windows.exe" } | ConvertTo-Json -Compress
           Set-Content -LiteralPath (Join-Path $PWD "build\\dist\\engine-manifest.json") -Value $manifest -Encoding UTF8
           gh release upload engine-latest (Join-Path $PWD "build\\dist\\engine-manifest.json") --clobber
           if ($LASTEXITCODE -ne 0) { throw "Stable update manifest publish failed" }

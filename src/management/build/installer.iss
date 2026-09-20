@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.3.4
+AppVersion=1.3.5
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -47,6 +47,9 @@ begin
   { Upgrades must stop the watchdog/agent before replacing agent.exe. }
   Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM MagicDialer.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM agent.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { Forced termination cannot run watchdog cleanup. Once agent.exe is gone,
+    its PID-only lock is stale and must not block the replacement watchdog. }
+  DeleteFile(ExpandConstant('{localappdata}\Magic Dialer\watchdog.lock'));
   Sleep(750);
 end;
 
@@ -59,7 +62,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.3.4.exe';
+    CacheFile := CacheDir + '\\known-good-1.3.5.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;
@@ -70,3 +73,6 @@ end;
 ; the customer's authenticated web portal via "Connect This PC"; no access key
 ; is entered or copied by the customer.
 Filename: "{app}\MagicDialer.exe"; Flags: nowait skipifsilent; Description: "Launch Magic Dialer"
+; Background auto-updates run very silently and deliberately stop the old
+; watchdog before replacing agent.exe. Restart supervision without opening UI.
+Filename: "{app}\MagicDialer.exe"; Parameters: "--no-browser"; Flags: nowait skipifnotsilent
