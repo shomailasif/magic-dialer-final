@@ -1,7 +1,8 @@
 const assert=require("node:assert");const fs=require("node:fs");const os=require("node:os");const path=require("node:path");
 const u=require("./auto-update");
 assert.equal(u.newer("1.3.1","1.3.0"),true);assert.equal(u.newer("1.3.0","1.3.0"),false);assert.equal(u.newer("1.2.9","1.3.0"),false);
-assert.ok(u.DISCOVERY_URL.startsWith("https://api.github.com/"));\nassert.equal(u.newer("1.4.0","1.3.9"),true);
+assert.ok(u.DISCOVERY_URL.startsWith("https://api.github.com/"));
+assert.equal(u.newer("1.4.0","1.3.9"),true);
 const tag="engine-v1.4.0", commit="a".repeat(40), manifestUrl=u.RELEASE_BASE+tag+"/engine-manifest.json", installerUrl=u.RELEASE_BASE+tag+"/magic-dialer-engine-windows.exe";
 assert.equal(u.validRelease({tag_name:tag,assets:[{name:"engine-manifest.json",browser_download_url:manifestUrl}]}),true);
 assert.equal(u.validRelease({tag_name:"engine-latest",assets:[{name:"engine-manifest.json",browser_download_url:u.RELEASE_BASE+"engine-latest/engine-manifest.json"}]}),false);
