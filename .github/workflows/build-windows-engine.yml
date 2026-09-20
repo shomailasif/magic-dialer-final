@@ -118,15 +118,29 @@ jobs:
           Write-Host "Rollback seed verified byte-for-byte: $seedHash"
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
       - name: Reopen launcher while engine is already running
+        timeout-minutes: 3
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
           # Previous smoke intentionally uninstalls. Install a fresh copy for this independent gate.
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Write-Host "REOPEN MARKER A: starting silent installer"
+          $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-reopen-setup.log"
+          $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Write-Host "REOPEN DIAGNOSTIC: setup did not exit within 90 seconds"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $setupLog) { Write-Host "=== REOPEN INNO LOG TAIL ==="; Get-Content -LiteralPath $setupLog -Tail 120 }
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            throw "Reopen setup installer did not return within diagnostic bound"
+          }
+          if ($setup.ExitCode -ne 0) { throw "Reopen setup installer exited with code $($setup.ExitCode)" }
+          Write-Host "REOPEN MARKER B: silent installer returned"
           $launcher = Join-Path $app "MagicDialer.exe"
           if (-not (Test-Path $launcher)) { throw "Launcher missing before duplicate-launch gate" }
+          Write-Host "REOPEN MARKER C: starting first launcher"
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
+          Write-Host "REOPEN MARKER D: first launcher started"
           $healthy = $false
           for ($i=0; $i -lt 30; $i++) {
             Start-Sleep -Milliseconds 500
@@ -136,7 +150,9 @@ jobs:
             } catch {}
           }
           if (-not $healthy) { throw "Engine was not healthy before duplicate-launch gate" }
+          Write-Host "REOPEN MARKER E: engine healthy"
           $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          Write-Host "REOPEN MARKER F: starting duplicate launcher"
           $p = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(5000)) { throw "Duplicate launcher did not exit cleanly" }
           if ($p.ExitCode -ne 0) { throw "Duplicate launcher failed with exit code $($p.ExitCode)" }
