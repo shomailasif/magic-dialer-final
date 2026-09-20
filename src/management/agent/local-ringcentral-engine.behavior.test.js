@@ -10,7 +10,7 @@ const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
   await engine.connect();
   const first=engine.sendAudio(Buffer.alloc(320,0x7f));
   await new Promise(r=>setTimeout(r,5));
-  session.emit("audioPacket",{payload:Buffer.alloc(160,0x22)});
+  session.emit("audio",Buffer.alloc(160,0x22));
   engine.interrupt();
   const result=await Promise.race([first,new Promise((_,reject)=>setTimeout(()=>reject(new Error("interrupted playback promise hung")),100))]);
   assert.strictEqual(result,320); assert.strictEqual(stopped,1); assert.strictEqual(received.length,1); assert.strictEqual(received[0].length,160);
