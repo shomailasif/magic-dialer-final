@@ -8,7 +8,7 @@ assert.match(route,/FALLBACK_MODEL="openai\/gpt-oss-20b"/);
 assert.match(route,/new Set\(\[429,500,502,503,504\]\)/);
 assert.match(route,/a\.status===401/);
 assert.match(route,/a\.status===403\|\|TRANSIENT\.has\(a\.status\)/);
-assert.match(route,/AbortSignal\.timeout\(3200\)/);
+assert.match(route,/AbortSignal\\.timeout\\(timeout\\)/);
 assert.match(route,/upstreamStatus:a\.status/);
 assert.match(route,/GROQ_API_KEY is not configured/);
 assert.match(card,/window\.open\("about:blank", "magicDialerTestCall"/);
