@@ -151,13 +151,25 @@ jobs:
           }
           if (-not $healthy) { throw "Engine was not healthy before duplicate-launch gate" }
           Write-Host "REOPEN MARKER E: engine healthy"
-          $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          $beforeProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
+          $before = $beforeProcs.Count
+          Write-Host "REOPEN DIAGNOSTIC BEFORE:"
+          $beforeProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+          $lock = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog.lock"
+          if (Test-Path $lock) { Write-Host "WATCHDOG LOCK BEFORE:"; Get-Content -LiteralPath $lock }
+          $childLog = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog-child.log"
+          if (Test-Path $childLog) { Write-Host "WATCHDOG CHILD LOG BEFORE:"; Get-Content -LiteralPath $childLog -Tail 80 }
           Write-Host "REOPEN MARKER F: starting duplicate launcher"
           $p = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(5000)) { throw "Duplicate launcher did not exit cleanly" }
           if ($p.ExitCode -ne 0) { throw "Duplicate launcher failed with exit code $($p.ExitCode)" }
           Start-Sleep -Milliseconds 500
-          $after = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          $afterProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
+          $after = $afterProcs.Count
+          Write-Host "REOPEN DIAGNOSTIC AFTER:"
+          $afterProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+          if (Test-Path $lock) { Write-Host "WATCHDOG LOCK AFTER:"; Get-Content -LiteralPath $lock }
+          if (Test-Path $childLog) { Write-Host "WATCHDOG CHILD LOG AFTER:"; Get-Content -LiteralPath $childLog -Tail 120 }
           if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Exact customer reopen with packaged agent file locked
