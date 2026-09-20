@@ -322,3 +322,4 @@ CREATE UNIQUE INDEX "EngineEnrollmentTicket_tokenHash_key" ON "EngineEnrollmentT
 
 -- CreateIndex
 CREATE INDEX "EngineEnrollmentTicket_userId_idx" ON "EngineEnrollmentTicket"("userId");
+
