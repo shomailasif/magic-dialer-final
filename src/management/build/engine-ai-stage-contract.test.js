@@ -5,7 +5,7 @@ const checks=[
 ()=>assert.match(src,/diagnosticStage:"device-auth"/),()=>assert.match(src,/diagnosticStage:"environment"/),()=>assert.match(src,/diagnosticStage:"body"/),()=>assert.match(src,/diagnosticStage:"messages"/),()=>assert.match(src,/diagnosticStage:"groq-final"/),
 ()=>assert.match(src,/status:401/),()=>assert.match(src,/status:503/),()=>assert.match(src,/status:400/),()=>assert.match(src,/status:502/),
 ()=>assert.match(src,/PRIMARY_MODEL="openai\/gpt-oss-120b"/),()=>assert.match(src,/FALLBACK_MODEL="openai\/gpt-oss-20b"/),()=>assert.match(src,/TRANSIENT=new Set\(\[429,500,502,503,504\]\)/),
-()=>assert.match(src,/AbortSignal\.timeout\(3200\)/),()=>assert.match(src,/await sleep\(180\)/),()=>assert.match(src,/prisma\.engineDevice\.findUnique/),()=>assert.match(src,/tokenHash:H\(t\)/),()=>assert.match(src,/revokedAt/),
+()=>assert.match(src,/AbortSignal\.timeout\(3200\)/),()=>assert.match(src,/await sleep\\(180\\)/),()=>assert.match(src,/authorizeActiveEngineDevice/),()=>assert.match(src,/engineBearerToken/),()=>assert.doesNotMatch(src,/prisma\\.engineDevice\\.findUnique/),
 ()=>assert.match(src,/Authorization:"Bearer "\+key/),()=>assert.match(src,/max_tokens:maxTokens/),()=>assert.match(src,/temperature:\.72/),()=>assert.match(src,/stream:false/),()=>assert.match(src,/upstreamStatus:a\.status/),
 ()=>assert.match(src,/slice\(0,240\)/),()=>assert.doesNotMatch(src,/console\.(log|error|warn)/),()=>assert.doesNotMatch(src,/RC_SIP|RingCentral/),()=>assert.doesNotMatch(src,/GROQ_API_KEY\s*[:,]/),
 ()=>assert.match(src,/No messages/),()=>assert.match(src,/Invalid body/),()=>assert.match(src,/Unauthorized/),()=>assert.match(src,/AI provider authentication failed/)
