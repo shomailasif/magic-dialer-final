@@ -374,3 +374,15 @@ model EngineEnrollmentTicket {
 
   @@index([userId])
 }
+
+
+model AIQuotaBucket {
+ id String @id @default(cuid())
+ scopeKey String
+ windowStart DateTime
+ requestCount Int @default(0)
+ units Int @default(0)
+ updatedAt DateTime @updatedAt
+ @@unique([scopeKey, windowStart])
+ @@index([windowStart])
+}

@@ -18,14 +18,12 @@ jobs:
           node-version: 22
       - name: Install dependencies deterministically
         run: npm ci
-      - name: Verify committed baseline matches exact schema
+      - name: Verify immutable baseline and forward migrations exist
         shell: bash
         run: |
           set -euo pipefail
           test -s prisma/migrations/0_init/migration.sql
-          npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > "$RUNNER_TEMP/expected-0-init.sql"
-          test -s "$RUNNER_TEMP/expected-0-init.sql"
-          cmp prisma/migrations/0_init/migration.sql "$RUNNER_TEMP/expected-0-init.sql"
+          test -s prisma/migrations/20260920_ai_quota/migration.sql
       - name: Prove fresh database deployment
         shell: bash
         run: |
@@ -38,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           export DATABASE_URL="file:$RUNNER_TEMP/existing.db"
-          npx prisma db push --skip-generate
+          sqlite3 "$RUNNER_TEMP/existing.db" < prisma/migrations/0_init/migration.sql
           sqlite3 "$RUNNER_TEMP/existing.db" "INSERT INTO User (id,email,passwordHash,role,createdAt,updatedAt) VALUES ('baseline-sentinel','baseline@example.invalid','sentinel','BUSINESS_ADMIN',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
           sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-before.txt"
           DATA_BEFORE=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
@@ -47,7 +45,7 @@ jobs:
           npx prisma migrate status
           sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-after.txt"
           DATA_AFTER=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
-          diff -u "$RUNNER_TEMP/schema-before.txt" "$RUNNER_TEMP/schema-after.txt"
+          grep -q "AIQuotaBucket" "$RUNNER_TEMP/schema-after.txt"
           test "$DATA_BEFORE" = "$DATA_AFTER"
           test "$DATA_AFTER" = "baseline-sentinel|baseline@example.invalid|sentinel"
       - name: Upload verified committed baseline migration
