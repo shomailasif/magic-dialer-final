@@ -12,6 +12,7 @@ $tests = @(
   "build\\groq-direct-probe-contract.test.js",
   "build\\engine-ai-stage-contract.test.js",
   "build\\engine-device-auth-contract.test.js",
+  "build\\engine-device-auth.behavior.test.ts",
   "build\\ai-transport-repair.behavior.test.js"
 )
 $fail = 0
@@ -24,7 +25,7 @@ foreach ($t in $tests) {
     $fail++
     continue
   }
-  & $node $target
+  if ($t.EndsWith(".ts")) { & (Join-Path $PSScriptRoot "..\\..\\..\\node_modules\\.bin\\tsx.cmd") $target } else { & $node $target }
   if ($LASTEXITCODE -eq 0) { Write-Host "  $t : PASS" -ForegroundColor Green }
   else { Write-Host "  $t : FAIL" -ForegroundColor Red; $fail++ }
 }
