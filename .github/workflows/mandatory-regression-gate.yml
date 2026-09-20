@@ -51,9 +51,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install management dependencies
+      - name: Install management dependencies deterministically
         working-directory: src/management
-        run: npm install
+        run: npm ci
       - name: Verify and install committed dependencies
         run: npm ci
       - name: Audit production dependencies
