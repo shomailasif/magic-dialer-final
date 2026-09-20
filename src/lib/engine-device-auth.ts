@@ -18,9 +18,13 @@ export async function authorizeActiveEngineDevice(tokenValue: unknown, now = new
       user: { select: { activeEngineMachineId: true, engineLeaseUntil: true } },
     },
   });
+  return authorizeEngineDeviceRecord(device, now);
+}
+
+export function authorizeEngineDeviceRecord(device: any, now = new Date()) {
   if (!device || device.revokedAt) return null;
   if (!device.leaseUntil || device.leaseUntil <= now) return null;
-  if (!device.user.engineLeaseUntil || device.user.engineLeaseUntil <= now) return null;
+  if (!device.user?.engineLeaseUntil || device.user.engineLeaseUntil <= now) return null;
   if (device.user.activeEngineMachineId !== device.machineId) return null;
   return { deviceId: device.id, userId: device.userId, machineId: device.machineId };
 }
