@@ -77,6 +77,9 @@ jobs:
         shell: powershell
         run: |
           $bad = @()
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($package.scripts.start -ne 'next start') { $bad += 'production start must be non-mutating next start only' }
+          if ($package.scripts.'db:migrate:deploy' -ne 'prisma migrate deploy') { $bad += 'explicit production migration command missing' }
           $orchestration = Get-Content src/lib/orchestration.ts -Raw
           $brain = Get-Content src/lib/free-ai.ts -Raw
           $auth = Get-Content src/lib/auth.ts -Raw
