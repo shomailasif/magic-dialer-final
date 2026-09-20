@@ -10,9 +10,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Magic Dialer")]
 [assembly: AssemblyCompany("Magic Dialer")]
 [assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
-[assembly: AssemblyVersion("1.3.5.0")]
-[assembly: AssemblyFileVersion("1.3.5.0")]
-[assembly: AssemblyInformationalVersion("1.3.5")]
+[assembly: AssemblyVersion("1.3.6.0")]
+[assembly: AssemblyFileVersion("1.3.6.0")]
+[assembly: AssemblyInformationalVersion("1.3.6")]
 [assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
 
 static class MagicDialerLauncher
@@ -36,39 +36,53 @@ static class MagicDialerLauncher
 
         try
         {
-            // Serialize the short startup transition. Health becomes the durable
-            // ownership signal after the watchdog/child pair is established.
-            bool startupOwner;
-            using (var startupMutex = new Mutex(true, @"Local\MagicDialer.Startup.8f40b2c9", out startupOwner))
-            {
-                if (!startupOwner)
-                {
-                    if (!WaitForEngine(10000)) return 3;
-                    if (!HasArg(args, "--no-browser")) OpenDashboard();
-                    return 0;
-                }
-
-            // Do not execute agent.exe again when the installed engine already
-            // owns its local ports. A packaged Node executable can be locked by
-            // the running watchdog/child even when process enumeration is
-            // incomplete or access to MainModule is denied.
-            if (EngineIsReachable())
+            if (EngineIsReady())
             {
                 if (!HasArg(args, "--no-browser")) OpenDashboard();
                 return 0;
             }
 
-            var psi = new ProcessStartInfo
+            bool ownsStartupMutex = false;
+            using (var startupMutex = new Mutex(false, @"Local\MagicDialer.Startup.8f40b2c9"))
             {
-                FileName = agent,
-                Arguments = BuildAgentArgs(args),
-                WorkingDirectory = dir,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-            Process.Start(psi);
-            if (!WaitForEngine(10000)) return 4;
+                try
+                {
+                    try
+                    {
+                        ownsStartupMutex = startupMutex.WaitOne(10000);
+                    }
+                    catch (AbandonedMutexException)
+                    {
+                        // The previous launcher died while owning the startup transition.
+                        // Windows grants this thread ownership when this exception is raised.
+                        ownsStartupMutex = true;
+                    }
+
+                    if (!ownsStartupMutex) return 3;
+
+                    // Another launcher may have completed startup while we waited.
+                    if (EngineIsReady())
+                    {
+                        if (!HasArg(args, "--no-browser")) OpenDashboard();
+                        return 0;
+                    }
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = agent,
+                        Arguments = BuildAgentArgs(args),
+                        WorkingDirectory = dir,
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    };
+                    Process.Start(psi);
+                    if (!WaitForEngine(15000)) return 4;
+                }
+                finally
+                {
+                    if (ownsStartupMutex) startupMutex.ReleaseMutex();
+                }
             }
         }
         catch (Exception ex)
@@ -92,7 +106,7 @@ static class MagicDialerLauncher
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < timeoutMs)
         {
-            if (EngineIsReachable()) return true;
+            if (EngineIsReady()) return true;
             Thread.Sleep(200);
         }
         return false;
@@ -105,15 +119,21 @@ static class MagicDialerLauncher
         return false;
     }
 
-    private static bool EngineIsReachable()
+    private static bool EngineIsReady()
+    {
+        return EndpointContains("http://127.0.0.1:18787/health", "\"service\":\"magic-dialer-engine\"")
+            && EndpointContains("http://127.0.0.1:48771/api/health", "\"ok\":true");
+    }
+
+    private static bool EndpointContains(string url, string expected)
     {
         try
         {
-            var req = System.Net.WebRequest.Create("http://127.0.0.1:18787/health");
+            var req = System.Net.WebRequest.Create(url);
             req.Timeout = 1200;
             using (var res = req.GetResponse())
             using (var reader = new StreamReader(res.GetResponseStream()))
-                return reader.ReadToEnd().Contains("\"service\":\"magic-dialer-engine\"");
+                return reader.ReadToEnd().Contains(expected);
         }
         catch { return false; }
     }

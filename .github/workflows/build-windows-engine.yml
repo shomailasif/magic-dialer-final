@@ -85,10 +85,11 @@ jobs:
               Start-Sleep -Milliseconds 500
               try {
                 $health = Invoke-RestMethod -Uri "http://127.0.0.1:18787/health" -TimeoutSec 1
-                if ($health.ok -eq $true -and $health.service -eq "magic-dialer-engine") { $healthy = $true; break }
+                $customerHealth = Invoke-RestMethod -Uri "http://127.0.0.1:48771/api/health" -TimeoutSec 1
+                if ($health.ok -eq $true -and $health.service -eq "magic-dialer-engine" -and $customerHealth.ok -eq $true) { $healthy = $true; break }
               } catch {}
             }
-            if ($healthy -and $health.version -ne "1.3.5") { throw "Installed engine health reported wrong version: $($health.version)" }
+            if ($healthy -and $health.version -ne "1.3.6") { throw "Installed engine health reported wrong version: $($health.version)" }
           if (-not $healthy) {
               if ($proc.HasExited) { Write-Host "LAUNCHER EXIT CODE: $($proc.ExitCode)" }
               Write-Host "AGENT PROCESSES:"
@@ -102,7 +103,7 @@ jobs:
               if (Test-Path $childLog) { Write-Host "WATCHDOG CHILD LOG:"; Get-Content $childLog -Tail 200 }
               $lock = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog.lock"
               if (Test-Path $lock) { Write-Host "WATCHDOG LOCK:"; Get-Content $lock }
-              throw "Installed customer launcher did not produce a healthy engine on localhost:18787"
+              throw "Installed customer launcher did not produce complete readiness on localhost:18787 and localhost:48771"
             }
           } finally {
             Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -112,7 +113,7 @@ jobs:
           Write-Host "SMOKE MARKER E: starting silent uninstaller"
           Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
           Write-Host "SMOKE MARKER F: silent uninstaller returned"
-          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\\updates\\known-good-1.3.5.exe"
+          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\\updates\\known-good-1.3.6.exe"
           if (-not (Test-Path $seed)) { throw "Missing seeded known-good rollback installer" }
           if ((Get-Item $seed).Length -lt 1000000) { throw "Seeded rollback installer is unexpectedly small" }
           $seedHash = (Get-FileHash -Algorithm SHA256 $seed).Hash
@@ -149,10 +150,11 @@ jobs:
             Start-Sleep -Milliseconds 500
             try {
               $h = Invoke-RestMethod -Uri "http://127.0.0.1:18787/health" -TimeoutSec 1
-              if ($h.ok -eq $true) { $healthy = $true; break }
+              $customerHealth = Invoke-RestMethod -Uri "http://127.0.0.1:48771/api/health" -TimeoutSec 1
+              if ($h.ok -eq $true -and $customerHealth.ok -eq $true) { $healthy = $true; break }
             } catch {}
           }
-          if (-not $healthy) { throw "Engine was not healthy before duplicate-launch gate" }
+          if (-not $healthy) { throw "Complete local engine was not ready before duplicate-launch gate" }
           Write-Host "REOPEN MARKER E: engine healthy"
           $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
           Write-Host "REOPEN MARKER F: starting duplicate launcher"
@@ -188,10 +190,11 @@ jobs:
             Start-Sleep -Milliseconds 500
             try {
               $h = Invoke-RestMethod "http://127.0.0.1:18787/health" -TimeoutSec 1
-              if ($h.service -eq "magic-dialer-engine") { $healthy = $true; break }
+              $customerHealth = Invoke-RestMethod "http://127.0.0.1:48771/api/health" -TimeoutSec 1
+              if ($h.service -eq "magic-dialer-engine" -and $customerHealth.ok -eq $true) { $healthy = $true; break }
             } catch {}
           }
-          if (-not $healthy) { throw "Engine not healthy before exact reopen gate" }
+          if (-not $healthy) { throw "Complete local engine not ready before exact reopen gate" }
           $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
           $p = Start-Process -FilePath $launcher -PassThru -WindowStyle Hidden
           if (-not $p.WaitForExit(5000)) { throw "Launcher did not exit while engine already healthy" }
@@ -249,10 +252,11 @@ jobs:
             Start-Sleep -Milliseconds 500
             try {
               $h = Invoke-RestMethod -Uri "http://127.0.0.1:18787/health" -TimeoutSec 1
-              if ($h.ok -eq $true -and $h.callControl -eq $true) { $healthy = $true; break }
+              $customerHealth = Invoke-RestMethod -Uri "http://127.0.0.1:48771/api/health" -TimeoutSec 1
+              if ($h.ok -eq $true -and $h.callControl -eq $true -and $customerHealth.ok -eq $true) { $healthy = $true; break }
             } catch {}
           }
-          if (-not $healthy) { throw "In-place upgrade did not restart healthy local call-control engine" }
+          if (-not $healthy) { throw "In-place upgrade did not restart complete local engine (18787 + 48771)" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Microsoft Defender security gate
         shell: powershell
@@ -297,7 +301,7 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { throw "Stable installer publish failed" }
           $sha = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
-          $manifest = @{ version = "1.3.5"; sha256 = $sha; url = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/magic-dialer-engine-windows.exe" } | ConvertTo-Json -Compress
+          $manifest = @{ version = "1.3.6"; sha256 = $sha; url = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/magic-dialer-engine-windows.exe" } | ConvertTo-Json -Compress
           Set-Content -LiteralPath (Join-Path $PWD "build\\dist\\engine-manifest.json") -Value $manifest -Encoding UTF8
           gh release upload engine-latest (Join-Path $PWD "build\\dist\\engine-manifest.json") --clobber
           if ($LASTEXITCODE -ne 0) { throw "Stable update manifest publish failed" }

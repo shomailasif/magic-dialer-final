@@ -7,6 +7,7 @@ const { spawn } = require("node:child_process");
 const MANIFEST_URL = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/engine-manifest.json";
 const RELEASE_PREFIX = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/";
 const HEALTH_URL = "http://127.0.0.1:18787/health";
+const CUSTOMER_HEALTH_URL = "http://127.0.0.1:48771/api/health";
 
 function newer(a,b){const x=String(a).split(".").map(Number),y=String(b).split(".").map(Number);for(let i=0;i<3;i++){if((x[i]||0)!==(y[i]||0))return(x[i]||0)>(y[i]||0)}return false}
 function validManifest(m){return !!(m&&/^\d+\.\d+\.\d+$/.test(String(m.version))&&/^[a-f0-9]{64}$/i.test(String(m.sha256))&&typeof m.url==="string"&&m.url.startsWith(RELEASE_PREFIX)&&!m.url.includes(".."))}
@@ -30,13 +31,22 @@ async function checkForUpdate(currentVersion){
  writeState({...s,pendingVersion:m.version,pendingInstaller:installer,previousVersion:currentVersion});launchInstaller(installer);
  return{updated:true,version:m.version};
 }
-async function validatePendingUpdate(currentVersion){
+async function customerHealthy(timeoutMs=15000){const end=Date.now()+timeoutMs;while(Date.now()<end){try{const r=await fetch(CUSTOMER_HEALTH_URL,{cache:"no-store"});const j=await r.json();if(r.ok&&j.ok===true)return true}catch{}await new Promise(r=>setTimeout(r,500))}return false}
+async function validatePendingUpdate(currentVersion,{ready=false}={}){
  const s=readState();if(!s.pendingVersion)return{pending:false};
  if(currentVersion===s.previousVersion)return{pending:true,installing:true};
- if(currentVersion===s.pendingVersion&&await healthy(s.pendingVersion,15000)){writeState({lastGoodVersion:currentVersion,lastGoodInstaller:s.pendingInstaller});return{pending:true,healthy:true}}
+ if(currentVersion===s.pendingVersion){
+   if(!ready)return{pending:true,awaitingReadiness:true};
+   writeState({lastGoodVersion:currentVersion,lastGoodInstaller:s.pendingInstaller});
+   return{pending:true,healthy:true};
+ }
+ return rollbackPendingUpdate(currentVersion);
+}
+async function rollbackPendingUpdate(currentVersion){
+ const s=readState();if(!s.pendingVersion)return{pending:false};
  const prior=s.lastGoodInstaller;
- writeState({...s,blockedVersion:s.pendingVersion,pendingVersion:null,pendingInstaller:null});
+ writeState({...s,blockedVersion:s.pendingVersion,pendingVersion:null,pendingInstaller:null,failedVersion:currentVersion});
  if(prior&&fs.existsSync(prior)){launchInstaller(prior);return{pending:true,healthy:false,rollback:true}}
  return{pending:true,healthy:false,rollback:false};
 }
-module.exports={MANIFEST_URL,RELEASE_PREFIX,HEALTH_URL,newer,validManifest,sha256,healthy,checkForUpdate,validatePendingUpdate,_test:{readState,writeState,stateDir,seededInstaller}};
+module.exports={MANIFEST_URL,RELEASE_PREFIX,HEALTH_URL,CUSTOMER_HEALTH_URL,newer,validManifest,sha256,healthy,customerHealthy,checkForUpdate,validatePendingUpdate,rollbackPendingUpdate,_test:{readState,writeState,stateDir,seededInstaller}};
