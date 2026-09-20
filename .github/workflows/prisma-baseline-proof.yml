@@ -1,0 +1,53 @@
+name: Prisma Baseline Proof
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "prisma/**"
+      - "package.json"
+      - ".github/workflows/prisma-baseline-proof.yml"
+  workflow_dispatch: {}
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies deterministically
+        run: npm ci
+      - name: Generate exact initial migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf prisma/migrations
+          mkdir -p prisma/migrations/0_init
+          npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/0_init/migration.sql
+          test -s prisma/migrations/0_init/migration.sql
+      - name: Prove fresh database deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="file:$RUNNER_TEMP/fresh.db"
+          npx prisma migrate deploy
+          npx prisma migrate status
+      - name: Prove existing database baseline without replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="file:$RUNNER_TEMP/existing.db"
+          npx prisma db push --skip-generate
+          BEFORE=$(sha256sum "$RUNNER_TEMP/existing.db" | cut -d' ' -f1)
+          npx prisma migrate resolve --applied 0_init
+          npx prisma migrate deploy
+          npx prisma migrate status
+          AFTER=$(sha256sum "$RUNNER_TEMP/existing.db" | cut -d' ' -f1)
+          echo "existing-db before=$BEFORE after=$AFTER"
+      - name: Upload generated baseline migration
+        uses: actions/upload-artifact@v4
+        with:
+          name: prisma-0-init
+          path: prisma/migrations/0_init/migration.sql
+          if-no-files-found: error
