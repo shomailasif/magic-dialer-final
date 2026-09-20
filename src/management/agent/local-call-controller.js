@@ -65,9 +65,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     throw new Error("Opening TTS preflight failed; refusing to place call");
   }
   onLog(`[local-media-v2] opening pre-render passed (${openingAudio.engine || "unknown"}, ${openingAudio.buffer.length} bytes PCMU/8000)`);
-  await preflightLocalSip(config, deps);
-  onLog("[local-media-v2] SIP registration preflight passed");
-  const engine = makeEngine({
+  // Do not pre-register and revoke a second RingCentral session here.\n  // engine.connect() owns the single SIP registration + live call session.\n  const engine = makeEngine({
     number: target,
     sip: sipOptions(v),
     onLog,
