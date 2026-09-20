@@ -32,7 +32,7 @@ Rules:
 
 async function complete({ history, config, maxTokens = 140 }) {
   const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||"");
-  if(portal&&deviceToken){const c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+deviceToken},body:JSON.stringify({messages:[{role:"system",content:systemPrompt(config)},...history.slice(-14)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)return{text:"",error:d.error||("AI gateway HTTP "+r.status)};const text=clean(d.text);return text?{text}:{text:"",error:d.error||"empty AI response"};}catch(e){return{text:"",error:e&&e.message?e.message:"AI gateway failed"};}finally{clearTimeout(t);}}
+  if(portal&&deviceToken){const c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-14)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)return{text:"",error:d.error||("AI gateway HTTP "+r.status)};const text=clean(d.text);return text?{text}:{text:"",error:d.error||"empty AI response"};}catch(e){return{text:"",error:e&&e.message?e.message:"AI gateway failed"};}finally{clearTimeout(t);}}
   const key = process.env.GROQ_API_KEY || process.env.AUTODIAL_GROQ_KEY || "";
   if (!key) return { text: "", error: "Secure AI gateway unavailable" };
   const controller = new AbortController();
