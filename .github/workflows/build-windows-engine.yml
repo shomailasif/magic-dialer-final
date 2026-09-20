@@ -151,7 +151,14 @@ jobs:
           }
           if (-not $healthy) { throw "Engine was not healthy before duplicate-launch gate" }
           Write-Host "REOPEN MARKER E: engine healthy"
-          $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
+          # Capture ownership immediately at the health boundary, before slower CIM/log diagnostics.
+          $healthBoundaryProcs = @(Get-Process agent -ErrorAction SilentlyContinue)
+          $before = $healthBoundaryProcs.Count
+          Write-Host ("HEALTH-BOUNDARY AGENT PIDS: " + (($healthBoundaryProcs | ForEach-Object { $_.Id }) -join ","))
+          $healthBoundaryWatchdogLock = Join-Path $env:LOCALAPPDATA "Magic Dialer\watchdog.lock"
+          $healthBoundaryAgentLock = Join-Path $env:LOCALAPPDATA "Magic Dialer\agent.lock"
+          if (Test-Path $healthBoundaryWatchdogLock) { Write-Host ("HEALTH-BOUNDARY WATCHDOG LOCK: " + ((Get-Content -LiteralPath $healthBoundaryWatchdogLock -Raw).Trim())) } else { Write-Host "HEALTH-BOUNDARY WATCHDOG LOCK: MISSING" }
+          if (Test-Path $healthBoundaryAgentLock) { Write-Host ("HEALTH-BOUNDARY AGENT LOCK: " + ((Get-Content -LiteralPath $healthBoundaryAgentLock -Raw).Trim())) } else { Write-Host "HEALTH-BOUNDARY AGENT LOCK: MISSING" }
           $beforeProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
           Write-Host "REOPEN DIAGNOSTIC BEFORE:"
           $beforeProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
