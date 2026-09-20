@@ -15,6 +15,8 @@ $tests = @(
   "build\\engine-device-auth.behavior.test.ts",
   "build\\ai-quota.behavior.test.ts",
   "build\\ai-quota-contract.test.js",
+  "build\\ai-retry.behavior.test.ts",
+  "build\\ai-retry-contract.test.js",
   "build\\ai-transport-repair.behavior.test.js"
 )
 $fail = 0
