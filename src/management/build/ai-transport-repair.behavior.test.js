@@ -36,7 +36,7 @@ const route=fs.readFileSync(routePath,"utf8");
   assert.match(route,/diagnosticStage:"device-auth"/);                                   // 23
   assert.match(route,/PRIMARY_MODEL="openai\/gpt-oss-120b"/);                            // 24
   assert.match(route,/FALLBACK_MODEL="openai\/gpt-oss-20b"/);                            // 25
-  assert.match(route,/AbortSignal\\.timeout\\(timeout\\)/);                                   // 26
+  assert.match(route,/AbortSignal\.timeout\(timeout\)/);                                   // 26
   assert.match(route,/TRANSIENT=new Set\(\[429,500,502,503,504\]\)/);                   // 27
   assert.match(route,/Authorization:"Bearer "\+key/);                                   // 28 provider auth unchanged
   assert.doesNotMatch(route,/RC_SIP|RingCentral/);                                       // 29
