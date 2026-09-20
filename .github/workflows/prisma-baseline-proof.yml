@@ -18,14 +18,14 @@ jobs:
           node-version: 22
       - name: Install dependencies deterministically
         run: npm ci
-      - name: Generate exact initial migration
+      - name: Verify committed baseline matches exact schema
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf prisma/migrations
-          mkdir -p prisma/migrations/0_init
-          npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > prisma/migrations/0_init/migration.sql
           test -s prisma/migrations/0_init/migration.sql
+          npx prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script > "$RUNNER_TEMP/expected-0-init.sql"
+          test -s "$RUNNER_TEMP/expected-0-init.sql"
+          cmp prisma/migrations/0_init/migration.sql "$RUNNER_TEMP/expected-0-init.sql"
       - name: Prove fresh database deployment
         shell: bash
         run: |
@@ -50,7 +50,7 @@ jobs:
           diff -u "$RUNNER_TEMP/schema-before.txt" "$RUNNER_TEMP/schema-after.txt"
           test "$DATA_BEFORE" = "$DATA_AFTER"
           test "$DATA_AFTER" = "baseline-sentinel|baseline@example.invalid|sentinel"
-      - name: Upload generated baseline migration
+      - name: Upload verified committed baseline migration
         uses: actions/upload-artifact@v4
         with:
           name: prisma-0-init
