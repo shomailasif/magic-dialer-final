@@ -15,10 +15,11 @@ function pcmuToWav(audio) {
   return Buffer.concat([h,pcm]);
 }
 
-async function transcribeAuto(audioBuffer,{hint="auto"}={}) {
+async function transcribeAuto(audioBuffer,{hint="auto",portal="",deviceToken=""}={}) {
   if (!audioBuffer || audioBuffer.length < 100) return {text:null,language:null,error:"empty audio"};
+  const base=String(portal||"").replace(/\/+$/,"");if(base&&deviceToken){const c=new AbortController(),t=setTimeout(()=>c.abort(),15000);try{const r=await fetch(base+"/api/engine/ai/stt",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+deviceToken},body:JSON.stringify({audio:Buffer.from(audioBuffer).toString("base64"),hint}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)return{text:null,language:null,error:d.error||("STT gateway HTTP "+r.status)};return{text:d.text||null,language:d.language?normalizeLanguage(d.language,null):(hint!=="auto"?normalizeLanguage(hint,null):null),error:null};}catch(e){return{text:null,language:null,error:e&&e.message?e.message:"STT gateway failed"};}finally{clearTimeout(t);}}
   const key=process.env.GROQ_API_KEY||process.env.AUTODIAL_GROQ_KEY||"";
-  if (!key) return {text:null,language:null,error:"GROQ_API_KEY is not configured on this customer PC"};
+  if (!key) return {text:null,language:null,error:"Secure STT gateway unavailable"};
   const form=new FormData();
   form.append("file",new Blob([pcmuToWav(audioBuffer)],{type:"audio/wav"}),"speech.wav");
   form.append("model",MODEL);

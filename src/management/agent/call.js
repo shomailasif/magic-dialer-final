@@ -134,7 +134,7 @@ async function voiceCall({
   onLog("Starting live call…");
   let result;
   try {
-    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText });
+    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText, portal, deviceToken: token });
   } catch (e) {
     onLog("Call failed: " + e.message);
     if (channel) channel.close();

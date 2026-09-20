@@ -170,12 +170,12 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.3.7";
+const VERSION = "1.3.8";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + e.message));
   setTimeout(run, 15000);
-  const timer = setInterval(run, 5 * 60 * 1000);
+  const timer = setInterval(run, 6 * 60 * 60 * 1000);
   if (timer.unref) timer.unref();
 }
 
@@ -222,6 +222,8 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
       extension: portalCfg.voip.extension || "",
       username: portalCfg.voip.username,
       sipPassword: portalCfg.voip.sipPassword || "",
+      authId: portalCfg.voip.authId || prior.authId || portalCfg.voip.username,
+      domain: portalCfg.voip.domain || prior.domain || "sip.ringcentral.com",
       server: portalCfg.voip.server || prior.server || defaultServer,
       port: portalCfg.voip.port || prior.port || "",
       transport: portalCfg.voip.transport || prior.transport || "",
