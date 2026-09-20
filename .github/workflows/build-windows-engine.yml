@@ -203,8 +203,20 @@ jobs:
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
           # Reinstall once, start the real launcher/watchdog, then install over the running copy.
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          Write-Host "UPGRADE MARKER A: starting preparation installer"
+          $prepLog = Join-Path $env:RUNNER_TEMP "magic-dialer-upgrade-prep.log"
+          $prep = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$prepLog`"") -PassThru
+          if (-not $prep.WaitForExit(90000)) {
+            Write-Host "UPGRADE DIAGNOSTIC: preparation installer did not exit"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $prepLog) { Write-Host "=== PREPARATION INNO LOG TAIL ==="; Get-Content -LiteralPath $prepLog -Tail 120 }
+            Stop-Process -Id $prep.Id -Force -ErrorAction SilentlyContinue
+            throw "Preparation installer exceeded 90-second diagnostic bound"
+          }
+          if ($prep.ExitCode -ne 0) { throw "Preparation installer exited with code $($prep.ExitCode)" }
+          Write-Host "UPGRADE MARKER B: preparation installer returned"
           $launcher = Join-Path $app "MagicDialer.exe"
+          Write-Host "UPGRADE MARKER C: starting pre-upgrade launcher"
           Start-Process -FilePath $launcher -ArgumentList "--no-browser" -WindowStyle Hidden
           $oldPid = $null
           for ($i=0; $i -lt 20; $i++) {
@@ -213,12 +225,19 @@ jobs:
             if ($a) { $oldPid = $a.Id; break }
           }
           if (-not $oldPid) { throw "Pre-upgrade engine did not start" }
-          $upgrade = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -PassThru
+          Write-Host "UPGRADE MARKER D: pre-upgrade agent running PID $oldPid"
+          $upgradeLog = Join-Path $env:RUNNER_TEMP "magic-dialer-in-place-upgrade.log"
+          Write-Host "UPGRADE MARKER E: starting in-place installer"
+          $upgrade = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$upgradeLog`"") -PassThru
           if (-not $upgrade.WaitForExit(90000)) {
+            Write-Host "UPGRADE DIAGNOSTIC: in-place installer did not exit"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $upgradeLog) { Write-Host "=== IN-PLACE INNO LOG TAIL ==="; Get-Content -LiteralPath $upgradeLog -Tail 120 }
             try { $upgrade.Kill() } catch {}
             throw "In-place upgrade installer exceeded 90-second hard timeout"
           }
           if ($upgrade.ExitCode -ne 0) { throw "In-place upgrade installer failed with exit code $($upgrade.ExitCode)" }
+          Write-Host "UPGRADE MARKER F: in-place installer returned"
           # The silent installer must restart the launcher/watchdog itself.
           # Do NOT manually start it here: this gate exists to catch the exact
           # production defect where skipifsilent left the updater dead.
