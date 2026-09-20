@@ -537,60 +537,11 @@ async function runAgent(opts = {}) {
   if (uiServer) log("  Dashboard: " + uiServer.url);
   log("");
 
-  // Optional: run one live voice call before entering the heartbeat loop.
-  // `--call` makes the agent speak through the speakers and listen through
-  // the mic (free). A real phone line plugs in as a different speak/listen.
-  if (opts.call === true) {
-    let voiceCall;
-    try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + err.message); }
-    if (voiceCall) try {
-      // Bind this conversation to the cloud SIP session that actually owns the
-      // phone audio. Never let a telephone call silently fall back to the PC mic.
-      const phoneSession = await ensurePhoneSession({
-        portal,
-        token: config.token,
-        callList: config.callList,
-        post,
-        log,
-      });
-      const sessionId = phoneSession.sessionId;
-      log("Attaching AI to phone media session " + sessionId);
-      const result = await voiceCall({
-        sessionId,
-        product: config.product,
-        leadFields: config.leadFields || [],
-        persona: config.persona,
-        companyName: config.companyName,
-        callbackNumber: config.callbackNumber,
-        callbackIn: config.callbackIn,
-        contactEmail: config.contactEmail,
-        token: config.token,
-        portal,
-        learning: config.learning,
-        locale: config.lang || "en",
-        voiceStyle: config.voiceStyle || "human",
-        onLog: (m) => { log(m); ui({ line: m }); },
-        onMode: (m) => ui({ mode: m }),
-      });
-      config.learning = result.learning;
-      bumpStats(config, result);
-      pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? ". EMAILED to " + (config.contactEmail || "the portal") : ""}`);
-      saveConfig(config, cfgPath);
-      const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;
-      log(finalLine);
-      ui({ mode: config.mode || "on", line: finalLine });
-    } catch (e) {
-      log("Voice call failed: " + e.message);
-      ui({ mode: config.mode || "on", line: "Voice call failed - retrying later." });
-    }
-    if (opts.callOnce === true) {
-      log("Test call finished. Exiting (heartbeat stays with the main agent).");
-      return;
-    }
-  }
+  const enrolledToken = config.deviceToken || config.token;
+  let stopHeartbeat = false;
 
-  // Heartbeat + obey disable loop.
-  while (true) {
+  const heartbeatTask = (async () => {
+    while (!stopHeartbeat) {
     try {
       const syncPayload = sync.buildSyncPayload();
       const heartbeatPortal = String(config.portalUrl || portal).replace(/\/+$/, "");
@@ -622,8 +573,65 @@ async function runAgent(opts = {}) {
       log(`heartbeat failed (${err.code || err.message}) - retrying. Agent continues offline.`);
       ui({ status: "OFFLINE", mode: config.mode || "on", line: "Reconnecting to portal..." });
     }
-    await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+      if (!stopHeartbeat) await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+    }
+  })();
+
+  // Optional call runs while the same heartbeat task keeps the single-PC lease alive.
+  if (opts.call === true) {
+    let voiceCall;
+    try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + err.message); }
+    if (voiceCall) try {
+      // Bind this conversation to the cloud SIP session that actually owns the
+      // phone audio. Never let a telephone call silently fall back to the PC mic.
+      const phoneSession = await ensurePhoneSession({
+        portal,
+        token: enrolledToken,
+        callList: config.callList,
+        post,
+        log,
+      });
+      const sessionId = phoneSession.sessionId;
+      log("Attaching AI to phone media session " + sessionId);
+      const result = await voiceCall({
+        sessionId,
+        product: config.product,
+        leadFields: config.leadFields || [],
+        persona: config.persona,
+        companyName: config.companyName,
+        callbackNumber: config.callbackNumber,
+        callbackIn: config.callbackIn,
+        contactEmail: config.contactEmail,
+        token: enrolledToken,
+        portal,
+        learning: config.learning,
+        locale: config.lang || "en",
+        voiceStyle: config.voiceStyle || "human",
+        onLog: (m) => { log(m); ui({ line: m }); },
+        onMode: (m) => ui({ mode: m }),
+      });
+      config.learning = result.learning;
+      bumpStats(config, result);
+      pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? ". EMAILED to " + (config.contactEmail || "the portal") : ""}`);
+      saveConfig(config, cfgPath);
+      const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;
+      log(finalLine);
+      ui({ mode: config.mode || "on", line: finalLine });
+    } catch (e) {
+      log("Voice call failed: " + e.message);
+      ui({ mode: config.mode || "on", line: "Voice call failed - retrying later." });
+    }
+    if (opts.callOnce === true) {
+      log("Test call finished. Exiting.");
+      stopHeartbeat = true;
+      await heartbeatTask;
+      return;
+    }
   }
+
+
+  // Normal agent lifetime is owned by the one heartbeat task above.
+  await heartbeatTask;
 }
 
 module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity };
