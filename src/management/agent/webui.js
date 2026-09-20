@@ -394,7 +394,7 @@ function notFound(res) {
   res.end("Not found.");
 }
 
-async function escapHtml(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (ch) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch])); }
+function escapHtml(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (ch) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch])); }
 
 function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
