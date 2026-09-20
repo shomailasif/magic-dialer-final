@@ -1,7 +1,7 @@
 "use strict";
 const assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path");
 const brainPath=path.join(__dirname,"..","agent","intelligent-brain.js");
-const routePath=path.resolve(__dirname,"..","..","..","app","api","engine","ai","chat","route.ts");
+const routePath=path.resolve(__dirname,"..","..","..","src","app","api","engine","ai","chat","route.ts");
 const route=fs.readFileSync(routePath,"utf8");
 (async()=>{
  const original=global.fetch; let seen=null;
