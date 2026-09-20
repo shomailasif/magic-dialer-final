@@ -1,5 +1,5 @@
 name: Build Windows Engine
-# CI rerun marker: validate bb370d4 Windows upgrade gate
+# CI rerun marker: reproduce intermittent duplicate-launch lifecycle with diagnostics
 on:
   workflow_dispatch: {}
   pull_request:
