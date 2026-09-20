@@ -47,6 +47,9 @@ begin
   { Upgrades must stop the watchdog/agent before replacing agent.exe. }
   Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM MagicDialer.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM agent.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { Forced termination cannot run watchdog cleanup. Once agent.exe is gone,
+    its PID-only lock is stale and must not block the replacement watchdog. }
+  DeleteFile(ExpandConstant('{localappdata}\Magic Dialer\watchdog.lock'));
   Sleep(750);
 end;
 
