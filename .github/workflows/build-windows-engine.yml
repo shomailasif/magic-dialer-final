@@ -177,7 +177,18 @@ jobs:
           $afterProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
           if (Test-Path $lock) { Write-Host "WATCHDOG LOCK AFTER:"; Get-Content -LiteralPath $lock }
           if (Test-Path $childLog) { Write-Host "WATCHDOG CHILD LOG AFTER:"; Get-Content -LiteralPath $childLog -Tail 120 }
-          if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
+          if ($after -ne $before) {
+            Write-Host "REOPEN TRANSIENT DETECTED: $before -> $after"
+            for ($recoveryProbe=1; $recoveryProbe -le 12; $recoveryProbe++) {
+              Start-Sleep -Milliseconds 500
+              $probeProcs = @(Get-CimInstance Win32_Process -Filter "Name='agent.exe'" -ErrorAction SilentlyContinue)
+              Write-Host ("REOPEN RECOVERY PROBE $recoveryProbe COUNT=" + $probeProcs.Count)
+              $probeProcs | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+              if (Test-Path $healthBoundaryWatchdogLock) { Write-Host ("REOPEN RECOVERY WATCHDOG LOCK: " + ((Get-Content -LiteralPath $healthBoundaryWatchdogLock -Raw).Trim())) }
+              if (Test-Path $healthBoundaryAgentLock) { Write-Host ("REOPEN RECOVERY AGENT LOCK: " + ((Get-Content -LiteralPath $healthBoundaryAgentLock -Raw).Trim())) }
+            }
+            throw "Duplicate launcher changed agent process count: $before -> $after"
+          }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Exact customer reopen with packaged agent file locked
         timeout-minutes: 3
