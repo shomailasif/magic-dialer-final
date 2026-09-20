@@ -51,7 +51,19 @@ jobs:
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           Write-Host "SMOKE MARKER A: starting silent installer"
-          Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
+          $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-smoke-setup.log"
+          $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
+          if (-not $setup.WaitForExit(90000)) {
+            Write-Host "SMOKE DIAGNOSTIC: setup did not exit within 90 seconds"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            if (Test-Path $setupLog) {
+              Write-Host "=== INNO SETUP LOG TAIL ==="
+              Get-Content -LiteralPath $setupLog -Tail 120
+            }
+            Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
+            throw "Silent installer did not return within diagnostic bound"
+          }
+          if ($setup.ExitCode -ne 0) { throw "Silent installer exited with code $($setup.ExitCode)" }
           Write-Host "SMOKE MARKER B: silent installer returned"
           if (-not (Test-Path (Join-Path $env:LOCALAPPDATA "Magic Dialer"))) { throw "Installer did not create application directory" }
           $app = Join-Path $env:LOCALAPPDATA "Magic Dialer"
