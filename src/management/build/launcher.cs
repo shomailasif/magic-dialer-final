@@ -10,9 +10,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Magic Dialer")]
 [assembly: AssemblyCompany("Magic Dialer")]
 [assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
-[assembly: AssemblyVersion("1.3.9.0")]
-[assembly: AssemblyFileVersion("1.3.9.0")]
-[assembly: AssemblyInformationalVersion("1.3.9")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyInformationalVersion("1.4.0")]
 [assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
 
 static class MagicDialerLauncher
