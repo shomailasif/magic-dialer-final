@@ -13,7 +13,7 @@ const { emailQualifiedLead } = require("./email");
 const { ensurePhoneSession } = require("./call-start");
 const { runLocalCall } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
-const { checkForUpdate, validatePendingUpdate } = require("./auto-update");
+const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate } = require("./auto-update");
 
 /**
  * Customer PC agent.
@@ -170,7 +170,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.3.5";
+const VERSION = "1.3.6";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + e.message));
@@ -338,15 +338,25 @@ function ask(question) {
  * machines on one computer. `opts.setup` opens the web setup/dashboard.
  */
 async function runAgent(opts = {}) {
+  let pendingValidation = { pending: false };
   if (isPacked()) {
-    const validation = await validatePendingUpdate(VERSION).catch((e) => ({ error: e.message }));
-    if (validation && validation.rollback) { log("Pending update failed health validation; known-good rollback launched."); setTimeout(() => process.exit(0), 1500); return; }
-    if (validation && validation.error) log("Update validation failed safely: " + validation.error);
-    scheduleAutoUpdate();
+    pendingValidation = await validatePendingUpdate(VERSION).catch((e) => ({ error: e.message }));
+    if (pendingValidation && pendingValidation.rollback) { log("Pending update rejected; known-good rollback launched."); setTimeout(() => process.exit(0), 1500); return; }
+    if (pendingValidation && pendingValidation.error) log("Update validation failed safely: " + pendingValidation.error);
   }
   const cfgPath = opts.configPath || defaultConfigPath();
   const configDir = path.dirname(cfgPath);
   let config = loadConfig(cfgPath);
+
+  // Ownership must be established before either fixed local port is bound.
+  // A duplicate child must never create a partial 18787-only engine.
+  if (!takeAgentLock()) {
+    log("Magic Dialer is already running - opening its dashboard...");
+    if (!openDashboardExternal()) openBrowser("http://127.0.0.1:48771/");
+    setTimeout(() => process.exit(0), 800);
+    return;
+  }
+
   let engineHealthServer = null;
   try {
     const portalOrigin = config && config.portalUrl ? new URL(config.portalUrl).origin : "*";
@@ -367,13 +377,10 @@ async function runAgent(opts = {}) {
       },
     });
     log("Local engine call control: http://127.0.0.1:18787");
-  } catch (e) { log("Local engine call control unavailable: " + e.message); }
-
-  if (!takeAgentLock()) {
-    log("Magic Dialer is already running - opening its dashboard...");
-    if (!openDashboardExternal()) openBrowser("http://127.0.0.1:48771/");
-    setTimeout(() => process.exit(0), 800);
-    return;
+  } catch (e) {
+    log("Local engine call control unavailable: " + e.message);
+    if (pendingValidation && pendingValidation.awaitingReadiness) await rollbackPendingUpdate(VERSION).catch(() => {});
+    throw e;
   }
 
   // Initialize local database for offline resilience
@@ -479,10 +486,26 @@ async function runAgent(opts = {}) {
   }
 
   if (useWebUi) {
-    const srv = await ensureWebUi();
-    if (!opts.noBrowser && (opts.setup === true || opts.open === true || isPacked())) {
-      maybeOpen(srv.url);
+    try {
+      const srv = await ensureWebUi();
+      if (!opts.noBrowser && (opts.setup === true || opts.open === true || isPacked())) {
+        maybeOpen(srv.url);
+      }
+    } catch (e) {
+      log("Customer local endpoint unavailable: " + e.message);
+      try { if (engineHealthServer) engineHealthServer.close(); } catch {}
+      if (pendingValidation && pendingValidation.awaitingReadiness) await rollbackPendingUpdate(VERSION).catch(() => {});
+      throw e;
     }
+  }
+
+  // A pending release becomes known-good only after BOTH fixed local services
+  // have successfully bound: 18787 call-control health and 48771 customer UI/enrollment.
+  if (isPacked()) {
+    const finalized = await validatePendingUpdate(VERSION, { ready: !!engineHealthServer && !!uiServer }).catch((e) => ({ error: e.message }));
+    if (finalized && finalized.rollback) { log("Pending update failed complete local readiness; known-good rollback launched."); setTimeout(() => process.exit(0), 1500); return; }
+    if (finalized && finalized.error) throw new Error("Pending update finalization failed: " + finalized.error);
+    scheduleAutoUpdate();
   }
 
   tryCockpit(configDir);
