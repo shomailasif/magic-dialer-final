@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const { runLocalCall } = require("./local-call-controller");
 
 async function main() {
-  let onAudio, interrupted = 0, sttBytes = 0, closed = 0;
+  let onAudio, interrupted = 0, sttBytes = 0, closed = 0, sipSeen = null, sttOpts = null;
   let finishPlayback;
   const engine = {
     async connect() {},
@@ -17,7 +17,7 @@ async function main() {
   const deps = {
     async preflightBrain() { return true; },
     async opening() { return { text: "Hello" }; },
-    async registerSession() { return { ok: true, last: "SIP/2.0 200 OK", host: "test.invalid:5096" }; },
+    async registerSession(opts) { sipSeen = opts; return { ok: true, last: "SIP/2.0 200 OK", host: "test.invalid:5096" }; },
     createLocalRingCentralEngine(opts) { onAudio = opts.onAudio; return engine; },
     createVad() {
       return { push() {
@@ -27,7 +27,7 @@ async function main() {
       }};
     },
     async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
-    async transcribeAuto(audio) { sttBytes = audio.length; return { text: "please wait", language: "en" }; },
+    async transcribeAuto(audio, opts) { sttBytes = audio.length; sttOpts = opts; return { text: "please wait", language: "en" }; },
     async voiceCall({ speakFn, listenFn }) {
       const speaking = speakFn("Hello");
       await new Promise(r => setImmediate(r));
@@ -40,7 +40,7 @@ async function main() {
   };
 
   const result = await runLocalCall({
-    config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
+    config: { voip: { ready: true, username: "u", sipPassword: "p", authId: "auth-7", domain: "sip.example.test", server: "proxy.example.test", port: 5096, number: "1" }, product: "test", portalUrl: "https://portal.example.test", deviceToken: "device-secret" },
     number: "2", deps
   });
   assert.equal(interrupted, 1, "sustained prospect speech must interrupt playback exactly once");
@@ -49,6 +49,8 @@ async function main() {
   assert.equal(result.heard, "please wait");
   assert.equal(sttBytes, 2240, "captured turn must retain every expected 20ms frame through barge-in");
   assert.equal(closed, 1, "engine must close");
+  assert.equal(sipSeen.authId, "auth-7"); assert.equal(sipSeen.domain, "sip.example.test"); assert.equal(sipSeen.proxy, "proxy.example.test");
+  assert.equal(sttOpts.portal, "https://portal.example.test"); assert.equal(sttOpts.deviceToken, "device-secret");
 
   let sipAttempted = false;
   await assert.rejects(

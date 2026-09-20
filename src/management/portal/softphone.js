@@ -15,7 +15,7 @@
  * whose encoder/decoder in the SDK are pass-through.
  */
 let Softphone;
-try { Softphone = require("ringcentral-softphone"); } catch { Softphone = null; }
+try { const mod = require("ringcentral-softphone"); Softphone = mod && (mod.default || mod); } catch { Softphone = null; }
 
 /* ------------------------------------------------------------------ helpers */
 

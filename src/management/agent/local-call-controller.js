@@ -52,6 +52,8 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     callbackNumber: config.callbackNumber,
     callbackIn: config.callbackIn,
     locale: activeLocale,
+    portal: config.portalUrl,
+    deviceToken: config.deviceToken,
   };
   await brainCheck(brainConfig);
   onLog("[local-media-v2] AI brain preflight passed");
@@ -138,7 +140,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     if (!captured.started || !captured.chunks.length) return null;
     const audio = Buffer.concat(captured.chunks);
     onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
-    const stt = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale) });
+    const stt = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale), portal: config.portalUrl, deviceToken: config.deviceToken });
     if (stt.language) { activeLocale = stt.language; onLog(`[local-media-v2] detected language ${activeLocale}`); }
     if (stt.error) onLog(`[local-media-v2] STT ${stt.error}`);
     return stt.text ? { text: stt.text, language: stt.language || activeLocale } : null;
@@ -157,6 +159,8 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
       locale: config.lang || "auto",
       voiceStyle: config.voiceStyle || "friendly",
       preparedOpeningText: openingText,
+      portal: config.portalUrl,
+      token: config.deviceToken,
       speakFn,
       listenFn,
       onLog,
