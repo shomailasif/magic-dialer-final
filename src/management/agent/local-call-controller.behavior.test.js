@@ -17,8 +17,7 @@ async function main() {
   const deps = {
     async preflightBrain() { return true; },
     async opening() { return { text: "Hello" }; },
-    async registerSession(opts) { sipSeen = opts; return { ok: true, last: "SIP/2.0 200 OK", host: "test.invalid:5096" }; },
-    createLocalRingCentralEngine(opts) { onAudio = opts.onAudio; return engine; },
+    createLocalRingCentralEngine(opts) { sipSeen = opts.sip; onAudio = opts.onAudio; return engine; },
     createVad() {
       return { push() {
         pushes++;
@@ -52,7 +51,7 @@ async function main() {
   assert.equal(sipSeen.authId, "auth-7"); assert.equal(sipSeen.domain, "sip.example.test"); assert.equal(sipSeen.proxy, "proxy.example.test");
   assert.equal(sttOpts.portal, "https://portal.example.test"); assert.equal(sttOpts.deviceToken, "device-secret");
 
-  let sipAttempted = false;
+  let engineAttempted = false;
   await assert.rejects(
     () => runLocalCall({
       config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
@@ -61,12 +60,12 @@ async function main() {
         async preflightBrain() { return true; },
         async opening() { return { text: "Hello" }; },
         async speakToBuffer() { return null; },
-        async registerSession() { sipAttempted = true; return { ok: true }; },
+        createLocalRingCentralEngine() { engineAttempted = true; return engine; },
       },
     }),
     /TTS preflight failed/
   );
-  assert.equal(sipAttempted, false, "failed TTS preflight must block SIP registration and dialing");
+  assert.equal(engineAttempted, false, "failed TTS preflight must block engine creation and dialing");
 
   let engineCreated = false;
   await assert.rejects(
@@ -77,13 +76,15 @@ async function main() {
         async preflightBrain() { return true; },
         async opening() { return { text: "Hello" }; },
         async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
-        async registerSession() { return { ok: false, last: "403 Forbidden" }; },
-        createLocalRingCentralEngine() { engineCreated = true; return engine; },
+        createLocalRingCentralEngine() {
+          engineCreated = true;
+          return { ...engine, async connect() { throw new Error("403 Forbidden"); } };
+        },
       },
     }),
-    /SIP registration failed: 403 Forbidden/
+    /403 Forbidden/
   );
-  assert.equal(engineCreated, false, "failed SIP registration must block engine/call creation");
-  console.log("PASS: controller SIP preflight + barge-in -> capture -> STT");
+  assert.equal(engineCreated, true, "live engine must own SIP registration attempt");
+  console.log("PASS: controller single SIP engine + barge-in -> capture -> STT");
 }
 main().catch(e => { console.error(e); process.exit(1); });
