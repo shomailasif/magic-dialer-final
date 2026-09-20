@@ -42,6 +42,9 @@ assert(controller.includes("state.playing && event.speaking") && controller.incl
 assert(controller.includes("state && state.ended"), "listen phase must reuse speech captured during playback");
 assert(controller.includes("transcribeAuto"), "captured telephone audio must reach multilingual transcription");
 assert(!controller.includes("mediaConnect("), "local fallback must not route live audio through Suga WSS");
+assert(!controller.includes("await preflightLocalSip(config, deps)"), "live local call must not register/revoke a disposable SIP session before engine.connect");
+const webui = fs.readFileSync(path.join(__dirname, "webui.js"), "utf8");
+assert(webui.includes("function escapHtml(v)") && !webui.includes("async function escapHtml(v)"), "call failure renderer must escape synchronously and never stringify a Promise");
 
 // Production keeps the previously proven shared/cloud call setup instead of forcing
 // the second local SIP registration path that returned 401 in the live test.
