@@ -1,0 +1,123 @@
+name: Mandatory Regression Gate
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/management/**"
+      - "src/app/api/engine/**"
+      - "src/app/api/heartbeat/**"
+      - "src/app/api/health/**"
+      - "src/app/api/dialer/**"
+      - "src/app/**/dialer/**"
+      - "src/app/api/auth/**"
+      - "src/app/**/dashboard/test-call-card.tsx"
+      - "src/app/**/dashboard/runtime-readiness-card.tsx"
+      - "src/app/**/dashboard/page.tsx"
+      - "src/lib/**"
+      - "src/lib/auth.ts"
+      - "prisma/schema.prisma"
+      - ".github/workflows/mandatory-regression-gate.yml"
+      - ".github/workflows/build-windows-engine.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/production-db-bootstrap.cjs"
+      - "src/app/robots.ts"
+      - ".regression-trigger"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "src/management/**"
+      - "src/app/api/engine/**"
+      - "src/app/api/heartbeat/**"
+      - "src/app/api/health/**"
+      - "src/app/api/dialer/**"
+      - "src/app/**/dialer/**"
+      - "src/app/api/auth/**"
+      - "src/app/**/dashboard/test-call-card.tsx"
+      - "src/app/**/dashboard/runtime-readiness-card.tsx"
+      - "src/app/**/dashboard/page.tsx"
+      - "src/lib/**"
+      - "src/lib/auth.ts"
+      - "prisma/schema.prisma"
+      - ".github/workflows/mandatory-regression-gate.yml"
+      - ".github/workflows/build-windows-engine.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/production-db-bootstrap.cjs"
+      - "src/app/robots.ts"
+  workflow_dispatch: {}
+
+jobs:
+  regression:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install management dependencies deterministically
+        working-directory: src/management
+        run: npm ci
+      - name: Verify and install committed dependencies
+        run: npm ci
+      - name: Audit production dependencies
+        shell: powershell
+        run: |
+          $temp = Join-Path $env:RUNNER_TEMP "runtime-audit"
+          New-Item -ItemType Directory -Force -Path $temp | Out-Null
+          Copy-Item package.json (Join-Path $temp "package.json")
+          Push-Location $temp
+          node -e "const fs=require('fs');const p=require('./package.json');delete p.devDependencies;fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
+          npm install --package-lock-only --ignore-scripts
+          npm audit --omit=dev --audit-level=high
+          Pop-Location
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Type-check application and enrollment APIs
+        run: npx tsc --noEmit
+      - name: Production build
+        run: npm run build
+      - name: Verify production safety invariants
+        shell: powershell
+        run: |
+          $bad = @()
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($package.scripts.start -ne 'node scripts/production-db-bootstrap.cjs && next start') { $bad += 'production start must gate application startup on verified database readiness' }
+          $dbBootstrap = Get-Content scripts/production-db-bootstrap.cjs -Raw
+          if ($dbBootstrap -match '--accept-data-loss|--force-reset|migrate reset') { $bad += 'production database bootstrap contains destructive override' }
+          if ($dbBootstrap -notmatch '\["migrate", "deploy"\]' -or $dbBootstrap -notmatch '\["migrate", "status"\]') { $bad += 'production database bootstrap does not verify tracked migrations' }
+          if ($package.scripts.'db:migrate:deploy' -ne 'prisma migrate deploy') { $bad += 'explicit production migration command missing' }
+          $orchestration = Get-Content src/lib/orchestration.ts -Raw
+          $brain = Get-Content src/lib/free-ai.ts -Raw
+          $auth = Get-Content src/lib/auth.ts -Raw
+          $dialer = Get-Content src/lib/dialer.ts -Raw
+          $sip = Get-Content src/lib/sip-conversation.ts -Raw
+          $testCall = Get-Content -LiteralPath 'src/app/[locale]/(portal)/dashboard/test-call-card.tsx' -Raw
+          $connectPc = Get-Content -LiteralPath 'src/app/[locale]/(portal)/dashboard/connect-pc-card.tsx' -Raw
+          if ($orchestration -match 'runAIagent') { $bad += 'simulated AI agent referenced by production orchestration' }
+          if ($brain -match 'Sarah|Dispatch Solutions|save up to 30%|smartFallback|623-400-1991') { $bad += 'hard-coded scripted sales content returned to live brain' }
+          if ($auth -match 'process\.env\.AUTH_SECRET \|\| "dev-fallback-secret-change-me"') { $bad += 'production auth can silently fall back to development secret' }
+          if ($dialer -match 'Math\.random|seed.*phone|simulat') { $bad += 'dialer contains simulation/fake-call behavior' }
+          if ($sip -match 'call you back within 30 minutes|Are you still there\?') { $bad += 'SIP runtime contains prohibited scripted call behavior' }
+          if ($testCall -match 'window\.location\.assign') { $bad += 'customer Test Call navigates away from the portal' }
+          if ($testCall -notmatch '127\.0\.0\.1:48771') { $bad += 'customer Test Call is not handed to the fixed local engine popup' }
+          if ($testCall -notmatch 'magic-dialer-call-complete' -or $testCall -notmatch 'magic-dialer-call-failed') { $bad += 'customer Test Call does not consume local popup result messages' }
+          if ($testCall -match 'targetAddressSpace') { $bad += 'customer Test Call still depends on browser Local Network Access fetch permission' }
+          if ($connectPc -notmatch 'window\.open') { $bad += 'Connect this PC no longer preserves the portal with a popup' }
+          if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }
+          Write-Host 'Production safety invariants PASS'
+      - name: Run complete regression suite
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File src/management/build/run-all-tests.ps1
+      - name: Verify deployed runtime when configured
+        shell: powershell
+        env:
+          PRODUCTION_HEALTH_URL: ${{ secrets.PRODUCTION_HEALTH_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PRODUCTION_HEALTH_URL)) { Write-Host 'Production health URL not configured; skipping deployed runtime check'; exit 0 }
+          $response = Invoke-RestMethod -Uri $env:PRODUCTION_HEALTH_URL -Method Get -TimeoutSec 20
+          if ($response.ok -ne $true -or $response.service -ne 'magic-dialer' -or $response.status -ne 'online') {
+            Write-Error 'Production health response failed validation'
+            exit 1
+          }
+          Write-Host 'Deployed runtime health PASS'

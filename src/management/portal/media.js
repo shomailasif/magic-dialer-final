@@ -3,174 +3,31 @@
  * Customer PCs connect over WSS/443; carrier SIP/RTP stays in the portal.
  */
 const crypto = require("node:crypto");
-
 const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const TEXT = 0x1, BINARY = 0x2, CLOSE = 0x8, PING = 0x9, PONG = 0xA;
-
+const PCMU_FRAME_BYTES = 160;
+const PCMU_FRAME_MS = 20;
 class Framer {
   constructor(onMessage, onClose) { this._buf = Buffer.alloc(0); this._onMessage = onMessage; this._onClose = onClose; this.closed = false; }
-  push(chunk) {
-    if (this.closed) return;
-    this._buf = this._buf.length ? Buffer.concat([this._buf, chunk]) : chunk;
-    for (;;) {
-      const frame = this._parse(); if (!frame) return;
-      switch (frame.opcode) {
-        case TEXT: this._onMessage(frame.payload, false); break;
-        case BINARY: this._onMessage(frame.payload, true); break;
-        case PING: this._onMessage(frame.payload, "ping"); break;
-        case PONG: break;
-        case CLOSE: this._close(); return;
-        default: this._close(); return;
-      }
-      if (frame.fin !== undefined && !frame.fin) { this._close(); return; }
-    }
-  }
-  _parse() {
-    const b = this._buf; if (b.length < 2) return null;
-    const fin = (b[0] & 0x80) !== 0, opcode = b[0] & 0x0f, masked = (b[1] & 0x80) !== 0;
-    let len = b[1] & 0x7f, off = 2;
-    if (len === 126) { if (b.length < 4) return null; len = b.readUInt16BE(2); off = 4; }
-    else if (len === 127) { if (b.length < 10) return null; len = b.readUInt32BE(2) * 0x100000000 + b.readUInt32BE(6); off = 10; }
-    if (len > 128 * 1024) { this._close(); return null; }
-    const maskBytes = masked ? 4 : 0;
-    if (b.length < off + maskBytes + len) return null;
-    const mask = masked ? b.subarray(off, off + 4) : null;
-    const payload = Buffer.from(b.subarray(off + maskBytes, off + maskBytes + len));
-    if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
-    this._buf = b.subarray(off + maskBytes + len);
-    return { fin, opcode, payload };
-  }
+  push(chunk) { if (this.closed) return; this._buf = this._buf.length ? Buffer.concat([this._buf, chunk]) : chunk; for (;;) { const frame = this._parse(); if (!frame) return; switch (frame.opcode) { case TEXT: this._onMessage(frame.payload, false); break; case BINARY: this._onMessage(frame.payload, true); break; case PING: this._onMessage(frame.payload, "ping"); break; case PONG: break; case CLOSE: this._close(); return; default: this._close(); return; } if (!frame.fin) { this._close(); return; } } }
+  _parse() { const b = this._buf; if (b.length < 2) return null; const fin = (b[0] & 0x80) !== 0, opcode = b[0] & 0x0f, masked = (b[1] & 0x80) !== 0; let len = b[1] & 0x7f, off = 2; if (len === 126) { if (b.length < 4) return null; len = b.readUInt16BE(2); off = 4; } else if (len === 127) { if (b.length < 10) return null; len = b.readUInt32BE(2) * 0x100000000 + b.readUInt32BE(6); off = 10; } if (len > 128 * 1024) { this._close(); return null; } const maskBytes = masked ? 4 : 0; if (b.length < off + maskBytes + len) return null; const mask = masked ? b.subarray(off, off + 4) : null; const payload = Buffer.from(b.subarray(off + maskBytes, off + maskBytes + len)); if (mask) for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3]; this._buf = b.subarray(off + maskBytes + len); return { fin, opcode, payload }; }
   _close() { this.closed = true; this._buf = Buffer.alloc(0); this._onClose(); }
 }
-
-function encodeFrame(opcode, payload, mask = false) {
-  const pay = Buffer.isBuffer(payload) ? payload : Buffer.from(payload), len = pay.length;
-  const head = [0x80 | opcode]; let ext = null;
-  if (len < 126) head.push((mask ? 0x80 : 0) | len);
-  else if (len < 65536) { head.push((mask ? 0x80 : 0) | 126); ext = Buffer.alloc(2); ext.writeUInt16BE(len, 0); }
-  else { head.push((mask ? 0x80 : 0) | 127); ext = Buffer.alloc(8); ext.writeUInt32BE(0, 0); ext.writeUInt32BE(len >>> 0, 4); }
-  let out = Buffer.concat([Buffer.from(head), ext || Buffer.alloc(0), pay]);
-  if (mask) {
-    const k = crypto.randomBytes(4), masked = Buffer.alloc(pay.length);
-    for (let i = 0; i < pay.length; i++) masked[i] = pay[i] ^ k[i & 3];
-    out = Buffer.concat([Buffer.from(head), ext || Buffer.alloc(0), k, masked]);
-  }
-  return out;
-}
-
-const TONE_8K_16BIT = (() => {
-  const n = 0.7 * 8000, b = Buffer.alloc(n * 2);
-  for (let i = 0; i < n; i++) { const t = i / 8000, v = t < 0.35 ? Math.sin(2 * Math.PI * 440 * t) * 0.4 : 0; b.writeInt16LE(Math.round(v * 32767), i * 2); }
-  return b;
-})();
-
-/*
- * Safe RingCentral outbound media path.
- * Agent sends 160-byte PCMU/20ms frames. Queue every frame immediately,
- * including frames generated while SIP is still dialing. Once the SDK call
- * session exists, serialize the complete queue through streamAudio(). This
- * prevents the opening greeting from being discarded before answer and keeps
- * manual RTP/SRTP in trunk.js completely bypassed by the active WSS path.
- */
-function sendRingCentralSipAudio(session, payload) {
-  if (!session) return false;
-  if (!session._sdkAudioQueue) session._sdkAudioQueue = [];
-  session._sdkAudioQueue.push(Buffer.from(payload));
-  if (session._sdkAudioPumping) return true;
-  session._sdkAudioPumping = true;
-
-  const pump = () => {
-    const cs = session._sipCallSession;
-    if (!session._sdkAudioQueue || !session._sdkAudioQueue.length) {
-      session._sdkAudioPumping = false;
-      return;
-    }
-    // Dialing is asynchronous. Keep the queued greeting intact until the
-    // answered RingCentral SDK call session is attached by trunk.js.
-    if (!cs || cs.disposed || typeof cs.streamAudio !== "function") {
-      if (session.status === "error" || session.status === "completed") {
-        session._sdkAudioPumping = false;
-        return;
-      }
-      setTimeout(pump, 20);
-      return;
-    }
-    const frame = session._sdkAudioQueue.shift();
-    let streamer;
-    try { streamer = cs.streamAudio(frame); }
-    catch {
-      session._sdkAudioQueue.unshift(frame);
-      setTimeout(pump, 20);
-      return;
-    }
-    session.mediaBytesOut = (session.mediaBytesOut || 0) + frame.length;
-    if (streamer && typeof streamer.once === "function") {
-      streamer.once("finished", pump);
-      streamer.once("error", () => setTimeout(pump, 20));
-    } else {
-      setTimeout(pump, 20);
-    }
-  };
-  pump();
-  return true;
-}
-
-function install(server, { getSession }) {
-  server.on("upgrade", (req, socket, head) => {
-    const url = new URL(req.url, "http://localhost"), m = String(url.pathname).match(/^\/ws\/media\/([^/]+)$/);
-    if (!m) { socket.destroy(); return; }
-    const sessionId = decodeURIComponent(m[1]), key = req.headers["sec-websocket-key"];
-    if (!key) { socket.destroy(); return; }
-    const session = getSession(sessionId), token = (url.searchParams.get("token") || "").toString();
-    const accept = crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
-    socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\nAccess-Control-Allow-Origin: *\r\n\r\n");
-    if (!session || !token || session.token !== token) {
-      socket.write(encodeFrame(TEXT, JSON.stringify({ type: "error", error: "forbidden" })));
-      socket.end(encodeFrame(CLOSE, Buffer.from([0x03, 0xf0]))); return;
-    }
-
-    const media = {
-      attachedAt: Date.now(), bytesIn: 0, bytesOut: 0, ended: false,
-      send(payload, binary = true) { if (media.ended) return; const frame = encodeFrame(binary ? BINARY : TEXT, payload); media.bytesOut += frame.length; socket.write(frame); },
-    };
-    session.media = media; session.mediaActive = true;
-
-    const framer = new Framer((payload, kind) => {
-      if (kind === "ping") { socket.write(encodeFrame(PONG, payload)); return; }
-      if (kind === true) {
-        media.bytesIn += payload.length;
-        session.mediaBytesIn = (session.mediaBytesIn || 0) + payload.length;
-        if (session.provider === "sim") {
-          const p = payload; setTimeout(() => { media.send(p); }, 250);
-        } else if (session.provider === "ringcentral-sip") {
-          // Always queue through the SDK path, even before the SIP call has
-          // answered. The queue pump waits for _sipCallSession and then sends.
-          sendRingCentralSipAudio(session, payload);
-          session._agentAudioAt = Date.now();
-        } else if (session.provider === "ringcentral" || session.provider === "twilio") {
-          if (session.agentAudioHandler) { try { session.agentAudioHandler(payload); } catch {} }
-          session._agentAudio = payload; session._agentAudioAt = Date.now();
-        }
-        return;
-      }
-      try {
-        const j = JSON.parse(String(payload));
-        if (j.type === "bye") { socket.write(encodeFrame(CLOSE, Buffer.from([0x03, 0xe8]))); socket.end(); }
-        else if (j.type === "status") socket.write(encodeFrame(TEXT, JSON.stringify({ type: "status", status: session.status })));
-      } catch {}
-    }, () => {});
-
-    socket.on("data", (d) => framer.push(d)); socket.on("end", teardown); socket.on("error", teardown); socket.on("close", teardown);
-    function teardown() {
-      if (media.ended) return; media.ended = true; session.mediaActive = false;
-      session.mediaBytesIn = session.mediaBytesIn || 0; session.mediaBytesOut = session.mediaBytesOut || 0;
-      session._sdkAudioQueue = []; session._sdkAudioPumping = false;
-    }
-    if (session.provider === "sim") setTimeout(() => { if (!media.ended) media.send(TONE_8K_16BIT); }, 200);
-  });
-}
-
+function encodeFrame(opcode, payload, mask = false) { const pay = Buffer.isBuffer(payload) ? payload : Buffer.from(payload), len = pay.length; const head = [0x80 | opcode]; let ext = null; if (len < 126) head.push((mask ? 0x80 : 0) | len); else if (len < 65536) { head.push((mask ? 0x80 : 0) | 126); ext = Buffer.alloc(2); ext.writeUInt16BE(len, 0); } else { head.push((mask ? 0x80 : 0) | 127); ext = Buffer.alloc(8); ext.writeUInt32BE(0, 0); ext.writeUInt32BE(len >>> 0, 4); } let out = Buffer.concat([Buffer.from(head), ext || Buffer.alloc(0), pay]); if (mask) { const k = crypto.randomBytes(4), masked = Buffer.alloc(pay.length); for (let i = 0; i < pay.length; i++) masked[i] = pay[i] ^ k[i & 3]; out = Buffer.concat([Buffer.from(head), ext || Buffer.alloc(0), k, masked]); } return out; }
+const TONE_8K_16BIT = (() => { const n = 0.7 * 8000, b = Buffer.alloc(n * 2); for (let i = 0; i < n; i++) { const t = i / 8000, v = t < 0.35 ? Math.sin(2 * Math.PI * 440 * t) * 0.4 : 0; b.writeInt16LE(Math.round(v * 32767), i * 2); } return b; })();
+function pcmuFrames(payload) { const b = Buffer.isBuffer(payload) ? payload : Buffer.from(payload || []); const out = []; for (let i = 0; i + PCMU_FRAME_BYTES <= b.length; i += PCMU_FRAME_BYTES) out.push(b.subarray(i, i + PCMU_FRAME_BYTES)); return out; }
+function sendRingCentralSipAudio(session, payload) { if (!session) return false; if (!session._sdkAudioQueue) session._sdkAudioQueue = []; for (const frame of pcmuFrames(payload)) session._sdkAudioQueue.push(Buffer.from(frame)); if (session._sdkAudioPumping) return true; session._sdkAudioPumping = true; const pump = () => { const cs = session._sipCallSession; if (!session._sdkAudioQueue || !session._sdkAudioQueue.length) { session._sdkAudioPumping = false; return; } if (!cs || cs.disposed || typeof cs.streamAudio !== "function") { if (session.status === "error" || session.status === "completed") { session._sdkAudioPumping = false; return; } setTimeout(pump, PCMU_FRAME_MS); return; } const frame = session._sdkAudioQueue.shift(); let streamer; try { streamer = cs.streamAudio(frame); } catch { session._sdkAudioQueue.unshift(frame); setTimeout(pump, PCMU_FRAME_MS); return; } session.mediaBytesOut = (session.mediaBytesOut || 0) + frame.length; if (streamer && typeof streamer.once === "function") { streamer.once("finished", pump); streamer.once("error", () => { session._sdkAudioQueue.unshift(frame); setTimeout(pump, PCMU_FRAME_MS); }); } else setTimeout(pump, PCMU_FRAME_MS); }; pump(); return true; }
+function install(server, { getSession }) { server.on("upgrade", (req, socket, head) => { const url = new URL(req.url, "http://localhost"), m = String(url.pathname).match(/^\/ws\/media\/([^/]+)$/); if (!m) { socket.destroy(); return; } const sessionId = decodeURIComponent(m[1]), key = req.headers["sec-websocket-key"]; if (!key) { socket.destroy(); return; } const session = getSession(sessionId), token = (url.searchParams.get("token") || "").toString(); const accept = crypto.createHash("sha1").update(key + WS_GUID).digest("base64"); socket.write("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\nAccess-Control-Allow-Origin: *\r\n\r\n"); if (!session || !token || session.token !== token) { socket.write(encodeFrame(TEXT, JSON.stringify({ type: "error", error: "forbidden" }))); socket.end(encodeFrame(CLOSE, Buffer.from([0x03, 0xf0]))); return; }
+let wsOutQueue = [], wsOutPumping = false;
+const media = { attachedAt: Date.now(), bytesIn: 0, bytesOut: 0, ended: false, send(payload, binary = true) { if (media.ended) return; if (binary && session.provider !== "sim") { for (const frame of pcmuFrames(payload)) wsOutQueue.push(Buffer.from(frame)); if (!wsOutPumping) { wsOutPumping = true; const pump = () => { if (media.ended || !wsOutQueue.length) { wsOutPumping = false; return; } const frame = wsOutQueue.shift(); socket.write(encodeFrame(BINARY, frame)); media.bytesOut += frame.length; setTimeout(pump, PCMU_FRAME_MS); }; pump(); } return; } const frame = encodeFrame(binary ? BINARY : TEXT, payload); media.bytesOut += Buffer.isBuffer(payload) ? payload.length : Buffer.byteLength(payload); socket.write(frame); } };
+session.media = media; session.mediaActive = true; session._carrierAudioQueue = []; session._carrierAudioPumping = false;
+const pumpCarrierToAgent = () => { if (media.ended || !session._carrierAudioQueue.length) { session._carrierAudioPumping = false; return; } const frame = session._carrierAudioQueue.shift(); media.send(frame, true); setTimeout(pumpCarrierToAgent, PCMU_FRAME_MS); };
+const queueCarrierAudio = (payload) => { for (const frame of pcmuFrames(payload)) session._carrierAudioQueue.push(Buffer.from(frame)); if (!session._carrierAudioPumping) { session._carrierAudioPumping = true; pumpCarrierToAgent(); } };
+const framer = new Framer((payload, kind) => { if (kind === "ping") { socket.write(encodeFrame(PONG, payload)); return; } if (kind === true) { const frames = pcmuFrames(payload); if (!frames.length) return; media.bytesIn += frames.length * PCMU_FRAME_BYTES; session.mediaBytesIn = (session.mediaBytesIn || 0) + frames.length * PCMU_FRAME_BYTES; if (session.provider === "sim") { for (const p of frames) setTimeout(() => { media.send(p); }, 250); } else if (session.provider === "ringcentral-sip") { sendRingCentralSipAudio(session, Buffer.concat(frames)); session._agentAudioAt = Date.now(); } else if (session.provider === "ringcentral" || session.provider === "twilio") { if (session.agentAudioHandler) for (const p of frames) { try { session.agentAudioHandler(p); } catch {} } session._agentAudio = frames[frames.length - 1]; session._agentAudioAt = Date.now(); } return; } try { const j = JSON.parse(String(payload)); if (j.type === "bye") { socket.write(encodeFrame(CLOSE, Buffer.from([0x03, 0xe8]))); socket.end(); } else if (j.type === "status") socket.write(encodeFrame(TEXT, JSON.stringify({ type: "status", status: session.status }))); } catch {} }, () => {});
+socket.on("data", (d) => framer.push(d)); socket.on("end", teardown); socket.on("error", teardown); socket.on("close", teardown);
+function teardown() { if (media.ended) return; media.ended = true; session.mediaActive = false; session.mediaBytesIn = session.mediaBytesIn || 0; session.mediaBytesOut = session.mediaBytesOut || 0; session._sdkAudioQueue = []; session._sdkAudioPumping = false; session._carrierAudioQueue = []; session._carrierAudioPumping = false; wsOutQueue = []; wsOutPumping = false; }
+if (session.provider === "sim") setTimeout(() => { if (!media.ended) media.send(TONE_8K_16BIT); }, 200);
+}); }
 function sendFrames(socket, frames) { for (const f of frames) socket.write(f); }
-function sendCarrierAudio(session, audioBuffer) { if (!session || !session.media || session.media.ended) return; session.media.send(audioBuffer, true); }
-
+function sendCarrierAudio(session, audioBuffer) { if (!session || !session.media || session.media.ended) return; for (const frame of pcmuFrames(audioBuffer)) session.media.send(frame, true); }
 module.exports = { install, encodeFrame, sendCarrierAudio, sendRingCentralSipAudio };

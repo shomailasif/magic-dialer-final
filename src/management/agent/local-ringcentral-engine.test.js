@@ -18,24 +18,40 @@ const voice = fs.readFileSync(path.join(__dirname, "voice.js"), "utf8");
 const stt = fs.readFileSync(path.join(__dirname, "multilingual-stt.js"), "utf8");
 const runner = fs.readFileSync(path.join(__dirname, "call-runner.js"), "utf8");
 const trunk = fs.readFileSync(path.join(__dirname, "../portal/trunk.js"), "utf8");
+const softphone = fs.readFileSync(path.join(__dirname, "../portal/softphone.js"), "utf8");
 
 for (const forbidden of ["werift-rtp", "srtpSession.encrypt", "RtpPacket", "sendPacket("])
   assert(!engine.includes(forbidden), `forbidden transport found: ${forbidden}`);
 assert(engine.includes("session.streamAudio(audio)"), "outbound must use RingCentral SDK streamAudio");
+assert(softphone.includes('require("ringcentral-softphone").default') || softphone.includes("(mod.default || mod)"), "CommonJS must resolve RingCentral Softphone default export");
 assert(engine.includes('session.on("audioPacket"'), "inbound must use RingCentral SDK audioPacket");
 assert(engine.includes("packet && packet.payload"), "inbound must consume RTP payload, not RTP object");
 assert(engine.includes('streamer.once("finished"'), "sendAudio must wait for SDK playback completion");
+assert(engine.includes('typeof streamer.stop === "function"') && engine.includes("interrupt"), "playback interruption primitive missing");
+assert(engine.includes("generation++") && engine.includes("mine === generation"), "interruption must invalidate queued speech");
+assert(engine.includes("sendChain = Promise.resolve()"), "interruption must reset outbound queue");
+assert(engine.includes("let sendChain = Promise.resolve()"), "outbound utterances must be serialized");
+assert(engine.includes("sendChain = sendChain.catch(() => 0).then(() => mine === generation ? play(audio) : 0)"), "outbound audio must not overlap and interrupted queued speech must be discarded");
+assert(engine.includes("const rem = b.length % FRAME_BYTES"), "PCMU must be normalized to 20ms frame boundaries");
+assert(engine.includes("Buffer.alloc(FRAME_BYTES - rem, SILENCE)"), "partial PCMU frame must be padded with mu-law silence");
 
 assert(controller.includes("await engine.connect()"), "local fallback call must connect/answer before conversation starts");
 assert(controller.includes("await engine.sendAudio"), "complete TTS utterance must be awaited before listening");
 assert(controller.includes("createVad"), "inbound speech must pass through VAD");
+assert(controller.includes("state.playing && event.speaking") && controller.includes("engine.interrupt()"), "controller must listen while outbound speech is playing and interrupt on barge-in");
+assert(controller.includes("state && state.ended"), "listen phase must reuse speech captured during playback");
 assert(controller.includes("transcribeAuto"), "captured telephone audio must reach multilingual transcription");
 assert(!controller.includes("mediaConnect("), "local fallback must not route live audio through Suga WSS");
+assert(!controller.includes("await preflightLocalSip(config, deps);"), "live call must not create and revoke a disposable SIP registration before engine.connect");
+const webui = fs.readFileSync(path.join(__dirname, "webui.js"), "utf8");
+assert(webui.includes("function escapHtml(v)") && !webui.includes("async function escapHtml(v)"), "call error HTML escaping must be synchronous");
 
 // Production keeps the previously proven shared/cloud call setup instead of forcing
 // the second local SIP registration path that returned 401 in the live test.
 assert(agent.includes('require("./call")'), "production agent must preserve shared call module");
 assert(agent.includes("voiceCall"), "production agent must preserve shared voice-call integration");
+assert(agent.includes("authId: portalCfg.voip.authId"), "heartbeat SIP authorization ID must survive into local config");
+assert(agent.includes("domain: portalCfg.voip.domain"), "heartbeat SIP domain must survive into local config");
 
 // The shared production media boundary must use RingCentral SDK primitives only.
 assert(trunk.includes("cs.streamAudio(Buffer.from(audioBuffer))"), "production outbound audio must use RingCentral SDK streamAudio");

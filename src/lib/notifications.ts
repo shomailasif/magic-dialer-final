@@ -3,6 +3,7 @@ import { sendNotification } from "@/lib/mailer";
 import { getMessage } from "@/lib/i18n";
 import type { MailPayload } from "@/lib/mailer";
 import type { Lead } from "@prisma/client";
+import { redactDiagnostic } from "@/lib/safe-diagnostic";
 
 export interface LeadOutcomeEmailData {
   leadName: string;
@@ -128,7 +129,7 @@ export async function attemptDelivery(notificationId: string): Promise<boolean> 
     });
     return true;
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = redactDiagnostic(err);
     const attempts = notif.attempts + 1;
     const status: NotificationStatus = attempts >= 5 ? "FAILED" : "QUEUED";
     await prisma.notification.update({

@@ -21,7 +21,7 @@ const os = require("node:os");
  * ASCII banner as the customer-facing face of the product.
  */
 
-/** Preferred dashboard port; falls back to a random free port if taken. */
+/** Fixed loopback port used by the cloud portal for secure PC enrollment. */
 const PREFERRED_PORT = 48771;
 
 function localDataDir() {
@@ -146,7 +146,7 @@ const PAGE = `<!doctype html>
     <div class="steps">
       <div class="step done"><div class="n">1</div><div class="t">Your company</div></div>
       <div class="step"><div class="n">2</div><div class="t">Contact &amp; leads</div></div>
-      <div class="step"><div class="n">3</div><div class="t">Connect to portal</div></div>
+      <div class="step"><div class="n">3</div><div class="t">Finish setup</div></div>
     </div>
     <div class="card" style="padding:22px 24px">
       <div class="warn-box">One-time setup. After you save, this PC starts as your agent and appears ONLINE in your portal within a few seconds.</div>
@@ -230,18 +230,8 @@ const PAGE = `<!doctype html>
           </div>
         </div>
         <div class="sec" style="border-bottom:0;padding-bottom:0">
-          <h2>Connect to portal</h2>
-          <div class="desc">Provided by your Magic Dialer administrator.</div>
-          <div class="row">
-            <div>
-              <label for="fPortal">Portal URL</label>
-              <input id="fPortal" inputmode="url" placeholder="https://....suga.run">
-            </div>
-            <div>
-              <label for="fToken">Access key</label>
-              <input id="fToken" placeholder="from your admin">
-            </div>
-          </div>
+          <h2>Finish local setup</h2>
+          <div class="desc">Account connection is handled securely from your logged-in Magic Dialer portal. No access key is required here.</div>
           <div class="inl" style="margin-top:18px">
             <button type="submit" id="saveBtn" class="btn primary">Save &amp; start</button>
             <button type="button" id="cancelBtn" class="btn ghost">Cancel</button>
@@ -374,15 +364,11 @@ $id("setupForm").addEventListener("submit",async function(ev){
     voipUser:$id("fVoipUser").value.trim(),
     voipPass:$id("fVoipPass").value.trim(),
     voipServer:$id("fVoipServer").value.trim(),
-    voipExt:$id("fVoipExt").value.trim(),
-    portalUrl:$id("fPortal").value.trim(),
-    token:$id("fToken").value.trim()};
+    voipExt:$id("fVoipExt").value.trim()};
   $id("setupErr").textContent="";
   var missing=[];
   if(!body.companyName)missing.push("company name");
   if(!body.product)missing.push("what you sell");
-  if(!body.portalUrl)missing.push("portal URL");
-  if(!body.token)missing.push("access key");
   if(missing.length){$id("setupErr").textContent="Please fill in: "+missing.join(", ")+".";return}
   var btn=$id("saveBtn");btn.disabled=true;btn.textContent="Starting agent…";
   try{
@@ -408,7 +394,9 @@ function notFound(res) {
   res.end("Not found.");
 }
 
-async function sendJson(res, code, obj) {
+function escapHtml(v) { return String(v == null ? "" : v).replace(/[&<>"']/g, (ch) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[ch])); }
+
+function sendJson(res, code, obj) {
   const body = JSON.stringify(obj);
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
   res.end(body);
@@ -432,18 +420,13 @@ function readJson(req) {
  *   statusPath : string|null (path to status.json the dashboard should read)
  *   onSetup    : (fields) -> void   (persist onboarding, called once)
  *   onMode     : (mode) -> void     ("on"|"off")
+ *   onCall     : (number) -> Promise<any>
  *   serviceName: string (title/version seed)
  * Returns { port, url, close }.
  */
-function listenWithFallback(server, port, cb) {
-  const tryPort = (p) => {
-    server.once("error", (e) => {
-      if (e && e.code === "EADDRINUSE" && p !== 0) { tryPort(0); return; }
-      cb(null, null);
-    });
-    server.listen(p, "127.0.0.1", () => cb(server.address().port, null));
-  };
-  tryPort(port);
+function listenOnFixedPort(server, port, cb) {
+  server.once("error", (e) => cb(null, e));
+  server.listen(port, "127.0.0.1", () => cb(server.address().port, null));
 }
 
 async function startWebUi(opts) {
@@ -451,7 +434,55 @@ async function startWebUi(opts) {
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://127.0.0.1");
     const p = u.pathname;
+    // The cloud customer portal is the only cross-origin caller allowed to invoke
+    // local call control. Enrollment persists that exact portal origin in config.
+    const origin = String(req.headers.origin || "");
+    const cfgForOrigin = opts.readConfig ? (opts.readConfig() || {}) : {};
+    const allowedOrigin = String(cfgForOrigin.portalUrl || "").replace(/\/+$/, "");
+    const crossOriginAllowed = !!origin && !!allowedOrigin && origin === allowedOrigin;
+    const isCallRoute = p === "/api/call";
+    if (isCallRoute && origin && !crossOriginAllowed) { sendJson(res, 403, { ok: false, error: "Origin not allowed." }); return; }
+    if (isCallRoute && crossOriginAllowed) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    }
+    if (isCallRoute && req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
+    if (req.method === "GET" && p === "/" && u.searchParams.get("enroll")) {
+      const ticket = String(u.searchParams.get("enroll") || "");
+      const portal = String(u.searchParams.get("portal") || "").replace(/\/+$/, "");
+      const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
+      if (!ticket || !/^https?:\/\//.test(portal)) { res.writeHead(400, { "Content-Type": "text/plain" }); res.end("Invalid enrollment request."); return; }
+      try {
+        if (typeof opts.onEnroll !== "function") throw new Error("Enrollment unavailable");
+        await opts.onEnroll({ ticket, portal });
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#15803d'>This PC is connected.</h3><p>Returning to the portal...</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrolled'}, "+JSON.stringify(portal)+");setTimeout(function(){window.close()},250)}}catch(e){}</script></body>");
+      } catch (e) {
+        res.writeHead(409, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        const msg = e && e.message ? e.message : "Enrollment rejected";
+        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#b91c1c'>PC connection failed.</h3><p>"+escapHtml(msg)+"</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrollment-failed',error:"+JSON.stringify(String(msg))+"}, "+JSON.stringify(portal)+")}}catch(e){}</script></body>");
+      }
+      return;
+    }
+    if (req.method === "GET" && p === "/" && u.searchParams.get("call")) {
+      const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
+      if (!/^\+?[0-9]{7,15}$/.test(number)) { res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Invalid phone number."); return; }
+      if (typeof opts.onCall !== "function") { res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Local call control unavailable."); return; }
+      const portalOrigin = allowedOrigin && /^https?:\/\//.test(allowedOrigin) ? allowedOrigin : "";
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.write("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><p>Starting local-engine test call...</p>");
+      try {
+        await opts.onCall(number);
+        res.end("<p style='color:#15803d'>Test call completed. Returning to the portal...</p><script>try{if(window.opener&&"+JSON.stringify(!!portalOrigin)+"){window.opener.postMessage({type:'magic-dialer-call-complete'}, "+JSON.stringify(portalOrigin)+");setTimeout(function(){window.close()},350)}}catch(e){}</script></body>");
+      } catch (e) {
+        const msg = e && e.message ? e.message : "Local call failed";
+        res.end("<p style='color:#b91c1c'>Call failed: "+escapHtml(msg)+"</p><script>try{if(window.opener&&"+JSON.stringify(!!portalOrigin)+"){window.opener.postMessage({type:'magic-dialer-call-failed',error:"+JSON.stringify(String(msg))+"}, "+JSON.stringify(portalOrigin)+")}}catch(e){}</script></body>");
+      }
+      return;
+    }
     if (req.method === "GET" && p === "/") {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
       res.end(PAGE);
@@ -464,7 +495,7 @@ async function startWebUi(opts) {
     }
     if (req.method === "GET" && p === "/api/state") {
       const cfg = opts.readConfig();
-      sendJson(res, 200, { configured: !!(cfg && cfg.token && cfg.portalUrl) });
+      sendJson(res, 200, { configured: !!(cfg && (cfg.deviceToken || cfg.token) && cfg.portalUrl) });
       return;
     }
     if (req.method === "GET" && p === "/api/status") {
@@ -482,12 +513,10 @@ async function startWebUi(opts) {
     if (req.method === "POST" && p === "/api/setup") {
       const body = await readJson(req);
       if (!body || typeof body !== "object") { sendJson(res, 400, { ok: false, error: "Bad request." }); return; }
-      const portalUrl = String(body.portalUrl || "").trim();
-      const token = String(body.token || "").trim();
       const companyName = String(body.companyName || "").trim();
       const product = String(body.product || "").trim();
-      if (!portalUrl || !token || !companyName || !product) {
-        sendJson(res, 400, { ok: false, error: "Company name, product, portal URL and access key are required." });
+      if (!companyName || !product) {
+        sendJson(res, 400, { ok: false, error: "Company name and product are required." });
         return;
       }
       const persona = String(body.persona || "").trim() || "Atlas";
@@ -502,8 +531,6 @@ async function startWebUi(opts) {
       const voipServer = String(body.voipServer || "").trim();
       const voipExt = String(body.voipExt || "").trim();
       const cfg = opts.readConfig() || {};
-      cfg.portalUrl = portalUrl;
-      cfg.token = token;
       cfg.companyName = companyName;
       cfg.product = product;
       cfg.persona = persona;
@@ -528,6 +555,19 @@ async function startWebUi(opts) {
       sendJson(res, 200, { ok: true, configured: true });
       return;
     }
+    if (req.method === "POST" && p === "/api/call") {
+      const body = await readJson(req);
+      const number = String(body && body.number || "").replace(/[^0-9+]/g, "");
+      if (!/^\+?[0-9]{7,15}$/.test(number)) { sendJson(res, 400, { ok: false, error: "Invalid phone number." }); return; }
+      if (typeof opts.onCall !== "function") { sendJson(res, 503, { ok: false, error: "Local call control unavailable." }); return; }
+      try {
+        const result = await opts.onCall(number);
+        sendJson(res, 200, { ok: true, engine: "local", result });
+      } catch (e) {
+        sendJson(res, 500, { ok: false, engine: "local", error: e && e.message || "Local call failed." });
+      }
+      return;
+    }
     if (req.method === "POST" && (p === "/api/pause" || p === "/api/resume")) {
       const mode = p === "/api/pause" ? "off" : "on";
       try {
@@ -549,8 +589,9 @@ async function startWebUi(opts) {
     notFound(res);
   });
 
-  const actualPort = await new Promise((resolve) => {
-    listenWithFallback(server, opts.port === 0 ? 0 : (opts.port || PREFERRED_PORT), (port) => resolve(port));
+  const requestedPort = opts.port === 0 ? 0 : (opts.port || PREFERRED_PORT);
+  const actualPort = await new Promise((resolve, reject) => {
+    listenOnFixedPort(server, requestedPort, (port, err) => err ? reject(err) : resolve(port));
   });
   const url = `http://127.0.0.1:${actualPort}/`;
   return {

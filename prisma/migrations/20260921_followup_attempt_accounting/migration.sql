@@ -1,0 +1,1 @@
+ALTER TABLE "Lead" ADD COLUMN "followUpAttemptsMade" INTEGER NOT NULL DEFAULT 0;

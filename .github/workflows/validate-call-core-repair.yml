@@ -1,0 +1,27 @@
+name: Validate call core repair
+
+on:
+  push:
+    branches: [repair-call-core]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Verify committed repair invariants
+        run: |
+          grep -F 'Buffer.alloc(FRAME, 0xff)' src/lib/sip-conversation.ts
+          grep -F 'const greetingFrames = await textToFramesLocal(greeting);' src/lib/sip-conversation.ts
+          grep -F 'const media = createMediaState(cs);' src/lib/sip-conversation.ts
+          grep -F 'function drainAudioQueue(media: MediaState)' src/lib/sip-conversation.ts
+          grep -F 'while (media.pendingAudio.length > 3' src/lib/sip-conversation.ts
+          ! grep -F 'Promise.all([callPromise, greetingFramesPromise])' src/lib/sip-conversation.ts
+          ! grep -F 'let pendingAudio: Buffer[] = []' src/lib/sip-conversation.ts
+          ! grep -F 'let csRef: any = null' src/lib/sip-conversation.ts
+      - run: npm ci
+      - run: npm run build

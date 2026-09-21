@@ -1,0 +1,39 @@
+name: Deploy validated call core
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/hotfix-inbound-vad.yml"
+
+# Deployment trigger: outbound audio continuity instrumentation 75ac2ff
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Verify repaired call core
+        run: |
+          grep -F 'Buffer.alloc(FRAME, 0xff)' src/lib/sip-conversation.ts
+          grep -F 'const greetingFrames = await textToFramesLocal(greeting);' src/lib/sip-conversation.ts
+          grep -F 'const GROQ_API_KEY = process.env.GROQ_API_KEY || "";' src/lib/sip-conversation.ts
+          grep -F 'scripted fallback is disabled' src/lib/free-ai.ts
+          ! grep -F 'Using smart pattern fallback (LLM unavailable)' src/lib/free-ai.ts
+          grep -F 'await new Promise(r => setTimeout(r, 300));' src/lib/sip-conversation.ts
+          grep -F 'const media = createMediaState(cs);' src/lib/sip-conversation.ts
+          grep -F 'function drainAudioQueue(media: MediaState)' src/lib/sip-conversation.ts
+          grep -F "audio stream start:" src/lib/sip-conversation.ts
+          grep -F "elapsedMs=" src/lib/sip-conversation.ts
+          grep -F 'const partFrames = await legacyToFramesFromAudio(part);' src/lib/sip-conversation.ts
+          grep -F 'listenForSpeech(cs, start, heardRef, 15000, media)' src/lib/sip-conversation.ts
+          grep -F 'now-lastVoice>=500' src/lib/sip-conversation.ts
+          ! grep -F 'let pendingAudio: Buffer[] = []' src/lib/sip-conversation.ts
+          ! grep -F 'Promise.all([callPromise, greetingFramesPromise])' src/lib/sip-conversation.ts
+          ! grep -F 'const combined = Buffer.concat(allParts)' src/lib/sip-conversation.ts
+          ! grep -F 'listenForSpeech(cs, start, heardRef, 3000)' src/lib/sip-conversation.ts
+      - run: npm ci
+      - run: npm run build

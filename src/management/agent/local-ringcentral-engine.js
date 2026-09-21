@@ -9,11 +9,12 @@ function normalizePcmu(input) {
   const rem = b.length % FRAME_BYTES;
   return rem ? Buffer.concat([b, Buffer.alloc(FRAME_BYTES - rem, SILENCE)]) : b;
 }
-function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {} }) {
-  let bridge, session, streamer, closed = false, bytesIn = 0, bytesOut = 0;
+function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {}, bridgeFactory = sipCallBridge }) {
+  let bridge, session, streamer, activePlayback, closed = false, bytesIn = 0, bytesOut = 0;
   let sendChain = Promise.resolve();
+  let generation = 0;
   async function connect() {
-    bridge = await sipCallBridge({ ...sip, number });
+    bridge = await bridgeFactory({ ...sip, number });
     if (!bridge || !bridge.ok || !bridge.callSession) throw new Error((bridge && bridge.last) || "RingCentral call bridge failed");
     session = bridge.callSession;
     session.on("audioPacket", packet => {
@@ -30,10 +31,11 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     return new Promise((resolve, reject) => {
       if (!session || closed) return reject(new Error("local media is not connected"));
       let settled = false;
-      const finish = () => { if (!settled) { settled = true; resolve(audio.length); } };
-      const fail = err => { if (!settled) { settled = true; reject(err instanceof Error ? err : new Error(String(err || "audio stream failed"))); } };
+      const finish = () => { if (!settled) { settled = true; if (activePlayback && activePlayback.finish === finish) activePlayback = null; resolve(audio.length); } };
+      const fail = err => { if (!settled) { settled = true; if (activePlayback && activePlayback.finish === finish) activePlayback = null; reject(err instanceof Error ? err : new Error(String(err || "audio stream failed"))); } };
       try {
         streamer = session.streamAudio(audio);
+        activePlayback = { finish };
         bytesOut += audio.length;
         if (!streamer || typeof streamer.once !== "function") return finish();
         streamer.once("finished", finish);
@@ -44,8 +46,18 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   function sendAudio(input) {
     const audio = normalizePcmu(input);
     if (!audio.length) return Promise.resolve(0);
-    sendChain = sendChain.then(() => play(audio));
+    const mine = generation;
+    sendChain = sendChain.catch(() => 0).then(() => mine === generation ? play(audio) : 0);
     return sendChain;
+  }
+  function interrupt() {
+    generation++;
+    const interrupted = activePlayback;
+    try { if (streamer && typeof streamer.stop === "function") streamer.stop(); } catch {}
+    if (interrupted && typeof interrupted.finish === "function") interrupted.finish();
+    streamer = null;
+    sendChain = Promise.resolve();
+    onLog("[local-media-v2] outbound playback interrupted");
   }
   function status() { return { connected: !!session && !closed, bytesIn, bytesOut, frameBytes: FRAME_BYTES, codec: "PCMU/8000" }; }
   function close() {
@@ -55,6 +67,6 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     try { if (bridge && bridge.cleanup) bridge.cleanup(); } catch {}
     session = null;
   }
-  return { connect, sendAudio, status, close };
+  return { connect, sendAudio, interrupt, status, close };
 }
 module.exports = { createLocalRingCentralEngine, normalizePcmu, FRAME_BYTES };

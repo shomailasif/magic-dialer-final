@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE_NAME, verifySession, deleteDeviceSession, generateDeviceFingerprint } from "@/lib/auth";
+import { SESSION_COOKIE_NAME, verifySession } from "@/lib/auth";
+import { prisma } from "@/lib/db";
 
 export async function POST(request: Request) {
   // Try to delete device session
@@ -10,10 +11,9 @@ export async function POST(request: Request) {
       const token = sessionMatch[1];
       const verified = verifySession(token);
       if (verified) {
-        const userAgent = request.headers.get("user-agent") || "unknown";
-        const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown";
-        const deviceFingerprint = generateDeviceFingerprint(userAgent, ip);
-        await deleteDeviceSession(verified.userId, deviceFingerprint);
+        if (verified.sessionId) {
+          await prisma.session.deleteMany({ where: { id: verified.sessionId, userId: verified.userId } });
+        }
       }
     }
   } catch {

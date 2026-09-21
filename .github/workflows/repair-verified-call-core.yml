@@ -1,0 +1,15 @@
+name: Historical verified call repair (disabled)
+
+# Historical recovery workflow. Source mutation is intentionally disabled.
+# Production changes must pass Mandatory Regression Gate before deployment.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-only:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Historical repair retained for audit only; no source mutation is permitted."

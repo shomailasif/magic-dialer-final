@@ -1,0 +1,15 @@
+name: Historical promote no overlap source (disabled)
+
+# Historical recovery workflow retained for audit only.
+# Automatic source mutation is disabled; production changes use the mandatory regression gate.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-only:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Historical workflow only; source mutation and git push are disabled."

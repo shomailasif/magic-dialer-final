@@ -8,6 +8,8 @@ import {
   type ConversationState,
 } from "@/lib/free-ai";
 import { GUARD_EDGE_TTS_BROKEN_INIT, GUARD_GOOGLE_TTS_CLIENT, logGuardStatus } from "@/lib/guards";
+import { isSpokenOptOut } from "@/lib/call-compliance";
+import { redactDiagnostic } from "@/lib/safe-diagnostic";
 
 // GUARD: runtimeRequire hides CJS imports from Turbopack static analysis.
 // DO NOT replace with `import` - it will crash the build.
@@ -34,6 +36,10 @@ export interface AgentConfig {
   productName?: string;
   pitch?: string;
   pricing?: string;
+  strategyId?: string | null;
+  strategyVersion?: number;
+  experimentId?: string | null;
+  experimentName?: string;
 }
 
 export interface ConversationResult {
@@ -46,43 +52,69 @@ export interface ConversationResult {
   collectedName: string | null;
   collectedCompany: string | null;
   collectedEmail: string | null;
+  doNotCall: boolean;
 }
 
 const MAX_CALL_MS = 120000;
 const RATE = 8000;
 const FRAME = 160;
-let pendingAudio: Buffer[] = [];
-let streamActive = false;
-let csRef: any = null;
-
-function drainAudioQueue() {
-  if (streamActive || pendingAudio.length === 0 || !csRef) return;
-  if (csRef.disposed) { pendingAudio = []; streamActive = false; return; }
-  streamActive = true;
-  const next = pendingAudio.shift()!;
-  const streamer = csRef.streamAudio(next);
-  streamer.once("finished", () => {
-    streamActive = false;
-    drainAudioQueue();
-  });
+type MediaState = { pendingAudio: Buffer[]; streamActive: boolean; csRef: any; turnSpeechEndedAt: number; firstAudioAt: number };
+function latencyMark(media: MediaState, stage: string, startedAt?: number) {
+  const now = Date.now();
+  const fromSpeech = media.turnSpeechEndedAt ? now - media.turnSpeechEndedAt : null;
+  const stageMs = startedAt ? now - startedAt : null;
+  console.log("[sip-latency]", stage, { fromSpeechEndMs: fromSpeech, stageMs });
+}
+function createMediaState(csRef: any = null): MediaState {
+  return { pendingAudio: [], streamActive: false, csRef, turnSpeechEndedAt: 0, firstAudioAt: 0 };
 }
 
-function enqueueAudio(audio: Buffer) {
-  pendingAudio.push(audio);
-  drainAudioQueue();
+function drainAudioQueue(media: MediaState) {
+  if (media.streamActive || media.pendingAudio.length === 0 || !media.csRef) return;
+  if (media.csRef.disposed) { media.pendingAudio = []; media.streamActive = false; return; }
+  media.streamActive = true;
+  const next = media.pendingAudio.shift()!;
+  let settled = false;
+  let streamer: any;
+  const streamStart = Date.now();
+  const settle = (reason: string) => {
+    if (settled) return;
+    settled = true;
+    media.streamActive = false;
+    console.log('[sip-conv] audio stream complete:', reason, next.length, 'bytes', 'elapsedMs=', Date.now() - streamStart);
+    drainAudioQueue(media);
+  };
+  try {
+    console.log('[sip-conv] audio stream start:', next.length, 'bytes', 'queue=', media.pendingAudio.length);
+    streamer = media.csRef.streamAudio(next);
+    streamer.once('finished', () => settle('finished'));
+    streamer.once('error', (e: any) => {
+      console.error('[sip-conv] audio stream error:', redactDiagnostic(e));
+      settle('error');
+    });
+  } catch (e: any) {
+    console.error('[sip-conv] streamAudio threw:', redactDiagnostic(e));
+    settle('throw');
+  }
 }
 
-function waitForQueue(): Promise<void> {
+function enqueueAudio(media: MediaState, audio: Buffer) {
+  if (media.turnSpeechEndedAt && !media.firstAudioAt) { media.firstAudioAt = Date.now(); latencyMark(media, "first-audio-enqueued"); }
+  media.pendingAudio.push(audio);
+  drainAudioQueue(media);
+}
+
+function waitForQueue(media: MediaState): Promise<void> {
   return new Promise((resolve) => {
     const check = setInterval(() => {
-      if (!streamActive && pendingAudio.length === 0) { clearInterval(check); resolve(); }
+      if (!media.streamActive && media.pendingAudio.length === 0) { clearInterval(check); resolve(); }
     }, 50);
   });
 }
 
 const ULAW_SEG_END = [0x0ff, 0x1ff, 0x3ff, 0x7ff, 0x0fff, 0x1fff, 0x3fff, 0x7fff];
 
-const GROQ_API_KEY = "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";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 
 function ulawEncode(sample: number): number {
   let s = sample | 0;
@@ -135,7 +167,7 @@ function pcm16ToWav(pcm: Int16Array, sampleRate: number): Buffer {
   return buf;
 }
 
-async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
+async function transcribeWithWhisper(audioChunks: Buffer[], media?: MediaState): Promise<string> {
   if (!audioChunks.length) { console.log("[sip-conv] Whisper: no audio chunks collected"); return ""; }
   const raw = Buffer.concat(audioChunks);
   console.log("[sip-conv] Whisper: collected", audioChunks.length, "chunks,", raw.length, "total bytes");
@@ -149,6 +181,7 @@ async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
     form.append("model", "whisper-large-v3-turbo");
     form.append("language", "en");
     form.append("temperature", "0");
+    const sttStartedAt = Date.now();
     const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
@@ -157,10 +190,11 @@ async function transcribeWithWhisper(audioChunks: Buffer[]): Promise<string> {
     });
     const d = await r.json();
     const text = (d?.text || "").trim();
-    console.log("[sip-conv] Whisper STT:", text || "(empty)");
+    console.log("[sip-conv] Whisper STT:", text ? "captured" : "empty");
+    if (media) latencyMark(media, "stt-complete", sttStartedAt);
     return text;
   } catch (e: any) {
-    console.error("[sip-conv] Whisper error:", e?.message);
+    console.error("[sip-conv] Whisper error:", redactDiagnostic(e));
     return "";
   }
 }
@@ -170,7 +204,7 @@ function toUlawFrames(pcm16: Int16Array): Buffer[] {
   const n = pcm16.length;
   for (let off = 0; off < n; off += FRAME) {
     const end = Math.min(off + FRAME, n);
-    const b = Buffer.alloc(FRAME);
+    const b = Buffer.alloc(FRAME, 0xff);
     for (let i = off; i < end; i++) b[i - off] = ulawEncode(pcm16[i]);
     frames.push(b);
   }
@@ -240,16 +274,18 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
     const ratio = Math.round(fmt.sampleRate / RATE);
     if (ratio > 1) {
       pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;
-      const outLen = Math.ceil(pcm.length / ratio);
-      const out = new Int16Array(outLen);
-      for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
-      pcm = out;
     }
   }
   return pcm;
 }
 
 const EDGE_VOICE = "en-US-JennyNeural";
+const EDGE_FRIENDLY_VOICE = "en-US-AvaNeural";
+const EDGE_DIRECT_VOICE = "en-US-GuyNeural";
+export function voiceForTone(tone?:string){
+ const t=String(tone||"").toUpperCase();
+ return t==="FRIENDLY"?EDGE_FRIENDLY_VOICE:t==="DIRECT"?EDGE_DIRECT_VOICE:EDGE_VOICE;
+}
 const EDGE_HOST = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_GEC_VERSION = "1-143.0.3650.75";
@@ -300,18 +336,18 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
       const url = `${EDGE_HOST}?TrustedClientToken=${EDGE_TOKEN}&ConnectionId=${edgeMakeId()}&Sec-MS-GEC=${edgeSecMsGec()}&Sec-MS-GEC-Version=${EDGE_GEC_VERSION}`;
       console.log("[sip-conv] edgeTts connecting WS...");
       ws = new WS(url, { headers: { ...EDGE_WS_HEADERS, Cookie: `muid=${require("node:crypto").randomBytes(16).toString("hex").toUpperCase()};` }, perMessageDeflate: true });
-    } catch (e: any) { console.error("[sip-conv] WS create failed:", e?.message); finish(null); return; }
+    } catch (e: any) { console.error("[sip-conv] WS create failed:", redactDiagnostic(e)); finish(null); return; }
     const chunks: Buffer[] = [];
     const stamp = edgeDateString();
     ws.on("open", () => {
       console.log("[sip-conv] edgeTts WS open, sending config...");
       ws.send(`X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`, (err: any) => {
-        if (err) { console.error("[sip-conv] TTS config send error:", err); finish(null); return; }
+        if (err) { console.error("[sip-conv] TTS config send error:", redactDiagnostic(err)); finish(null); return; }
         ws.send(
           `X-RequestId:${edgeMakeId()}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
           `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
           `<voice name='${voice}'><prosody pitch='+0Hz' rate='+0%' volume='+0%'>${edgeClean(text)}</prosody></voice></speak>`,
-          (e2: any) => { if (e2) { console.error("[sip-conv] SSML send error:", e2); finish(null); } }
+          (e2: any) => { if (e2) { console.error("[sip-conv] SSML send error:", redactDiagnostic(e2)); finish(null); } }
         );
       });
     });
@@ -327,11 +363,11 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
         const hl = buf.readUInt16BE(0);
         const head = buf.toString("ascii", 2, 2 + hl);
         if (!head.includes("Path:audio")) return;
-        chunks.push(buf.subarray(2 + hl + 2));
+        chunks.push(buf.subarray(2 + hl));
       } catch { finish(null); }
     });
-    ws.on("error", (e: any) => { console.error("[sip-conv] TTS WS error:", e?.code, e?.message); finish(null); });
-    ws.on("close", (code: any, reason: any) => { console.log("[sip-conv] edgeTts WS closed:", code, reason?.toString()?.slice(0, 100)); });
+    ws.on("error", (e: any) => { console.error("[sip-conv] TTS WS error:", redactDiagnostic(e)); finish(null); });
+    ws.on("close", (code: any, reason: any) => { console.log("[sip-conv] edgeTts WS closed:", code); });
   });
 }
 
@@ -373,6 +409,18 @@ function toneWav(ms = 1000): Buffer {
 }
 
 async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
+  // Edge TTS is requested as raw PCMU/8000: exactly what RingCentral expects.
+  // Bypass MP3 decode, resampling and custom mu-law encoding entirely.
+  const native: Buffer[] = [];
+  for (let off = 0; off < mp3.length; off += FRAME) {
+    const part = mp3.subarray(off, Math.min(off + FRAME, mp3.length));
+    if (part.length === FRAME) native.push(Buffer.from(part));
+    else if (part.length) native.push(Buffer.concat([part, Buffer.alloc(FRAME - part.length, 0xff)]));
+  }
+  return native;
+}
+
+async function legacyToFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
   const wav = wavToPcm16(mp3);
   if (wav && wav.length > 0) {
     console.log("[sip-conv] decoded as WAV:", wav.length, "samples");
@@ -398,79 +446,52 @@ async function toFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
         const ratio = Math.round(rate / RATE);
         if (ratio > 1) {
           pcm = antiAliasLowPass(pcm, ratio) as Int16Array<ArrayBuffer>;
-          const outLen = Math.ceil(pcm.length / ratio);
-          const out = new Int16Array(outLen);
-          for (let i = 0; i < outLen; i++) out[i] = pcm[i * ratio] || 0;
-          pcm = out;
         }
       }
       console.log("[sip-conv] TTS final pcm:", pcm.length, "samples");
       return toUlawFrames(pcm);
     }
-  } catch (e: any) { console.error("[sip-conv] decode error:", e?.message); }
+  } catch (e: any) { console.error("[sip-conv] decode error:", redactDiagnostic(e)); }
   return [];
 }
 
-async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer[]> {
+async function textToFramesLocal(text: string, skipEdge = false, voice = EDGE_VOICE): Promise<Buffer[]> {
   const chunks = splitForTts(text);
-  console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
+  console.log("[sip-conv] TTS chunks:", chunks.length);
 
   const allParts: Buffer[] = [];
   for (const chunk of chunks) {
     let mp3: Buffer | null = null;
 
-    // 1) Try Edge TTS (JennyNeural voice - human-sounding, 8kHz native)
+    // 1) Try Edge TTS (JennyNeural voice; returned MP3 is decoded/resampled to 8 kHz PCMU below)
     if (!skipEdge) {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          mp3 = await edgeTts(chunk, EDGE_VOICE);
+          mp3 = await edgeTts(chunk, voice);
           if (mp3 && mp3.length > 100) {
             allParts.push(mp3);
             console.log("[sip-conv] Edge TTS OK:", mp3.length, "bytes");
             break;
           }
-          console.error("[sip-conv] Edge TTS returned null/tiny (attempt " + (attempt + 1) + ") for:", chunk.slice(0, 40));
-        } catch (e: any) { console.error("[sip-conv] Edge TTS error (attempt " + (attempt + 1) + "):", e?.message); }
-        // Small delay before retry
+          console.error("[sip-conv] Edge TTS returned null/tiny (attempt " + (attempt + 1) + ")");
+        } catch (e: any) { console.error("[sip-conv] Edge TTS error (attempt " + (attempt + 1) + "):", redactDiagnostic(e)); }
         if (attempt === 0) await new Promise(r => setTimeout(r, 200));
       }
       if (mp3 && mp3.length > 100) continue;
     }
 
-    // 2) Fallback: Google Translate TTS (plain HTTP)
-    try {
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&tl=en&client=${GUARD_GOOGLE_TTS_CLIENT}&q=${encodeURIComponent(chunk)}`;
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-      const resp = await fetch(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win6; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-          "Referer": "https://translate.google.com/",
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      const ct = resp.headers.get("content-type") || "";
-      if (resp.ok && ct.includes("audio")) {
-        const arr = Buffer.from(await resp.arrayBuffer());
-        if (arr.length > 100) {
-          allParts.push(arr);
-          console.log("[sip-conv] Google TTS OK:", arr.length, "bytes, type:", ct);
-          continue;
-        }
-      }
-      console.error("[sip-conv] Google TTS failed:", resp.status, "content-type:", ct);
-    } catch (e: any) { console.error("[sip-conv] Google TTS error:", e?.message); }
+    // Edge is the only production voice. Do not substitute a robotic fallback.
+    console.error("[sip-conv] Edge voice unavailable; refusing alternate voice");
 
-    // 3) Fallback: pre-recorded tone
-    console.error("[sip-conv] All TTS failed for chunk, generating tone");
-    allParts.push(toneWav(800));
+    // No tone/robot fallback in customer calls.
   }
 
   if (!allParts.length) { console.error("[sip-conv] TTS: no audio parts at all"); return []; }
-  const combined = Buffer.concat(allParts);
-  console.log("[sip-conv] TTS combined:", combined.length, "bytes");
-  const frames = await toFramesFromAudio(combined);
+  const frames: Buffer[] = [];
+  for (const part of allParts) {
+    const partFrames = await legacyToFramesFromAudio(part);
+    frames.push(...partFrames);
+  }
   console.log("[sip-conv] TTS final frames:", frames.length, "frames,", frames.reduce((a, b) => a + b.length, 0), "total bytes");
   return frames;
 }
@@ -480,99 +501,97 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
 let edgeTtsBroken = GUARD_EDGE_TTS_BROKEN_INIT;
 
 function listenForSpeech(
-  cs: any,
-  callStart: number,
-  heardRef: { current: boolean },
-  maxMs: number,
+  cs: any, callStart: number, heardRef: { current: boolean }, maxMs: number, media?: MediaState,
 ): Promise<{ spoke: boolean; durationMs: number; transcript: string }> {
   return new Promise((resolve) => {
-    let got = false;
-    let last = 0;
-    let first = 0;
-    const start = Date.now();
-    const audioChunks: Buffer[] = [];
-    const on = (d: any) => {
-      heardRef.current = true;
-      if (!got) first = Date.now();
-      got = true;
-      last = Date.now();
-      // audioPacket event passes an rtpPacket object; audio data is in .payload
-      const payload = d?.payload || d;
-      if (Buffer.isBuffer(payload)) audioChunks.push(payload);
-      else if (payload && typeof payload.length === "number") audioChunks.push(Buffer.from(payload));
+    let got=false, first=0, lastVoice=0, baseline=0, baselineN=0, finished=false;
+    const start=Date.now();
+    const audioChunks: Buffer[]=[];
+    const preRoll: Buffer[]=[];
+    const on=(d:any) => {
+      const raw=d?.payload || d;
+      const payload=Buffer.isBuffer(raw) ? raw : (raw && typeof raw.length === "number" ? Buffer.from(raw) : null);
+      if (!payload || !payload.length) return;
+      let sum=0, peak=0;
+      for (let i=0;i<payload.length;i++) { const amp=Math.abs(ulawDecode(payload[i])); sum+=amp; if (amp>peak) peak=amp; }
+      const avg=sum/payload.length;
+      const now=Date.now();
+      if (!got && baselineN<25) { baseline=((baseline*baselineN)+avg)/(baselineN+1); baselineN++; }
+      const threshold=Math.max(260,baseline*3.2);
+      const voice=avg>=threshold && peak>=Math.max(1400,threshold*3);
+      preRoll.push(payload); if (preRoll.length>15) preRoll.shift();
+      if (voice) { heardRef.current=true; if (!got) { got=true; first=now; audioChunks.push(...preRoll); } lastVoice=now; }
+      if (got) audioChunks.push(payload);
     };
-    cs.on("audioPacket", on);
-
-    // Keepalive: enqueue silent PCMU audio every 3s so SBC doesn't kill the session
-    // Uses the queue mechanism (correct RTP via SDK) instead of manual packet construction
-    const SILENT_FRAME = Buffer.alloc(160, 0xFF); // 0xFF = silence in PCMU
+    cs.on("audioPacket",on);
+    const SILENT_FRAME = Buffer.alloc(160, 0xFF);
     let keepaliveActive = true;
     const keepaliveIv = setInterval(() => {
       if (!keepaliveActive || cs.disposed) { clearInterval(keepaliveIv); return; }
       try { enqueueAudio(SILENT_FRAME); } catch {}
     }, 3000);
-
-    const finish = async () => {
-      clearInterval(iv);
-      clearInterval(keepaliveIv);
-      keepaliveActive = false;
-      cs.removeListener("audioPacket", on);
-      if (!got) { resolve({ spoke: false, durationMs: 0, transcript: "" }); return; }
-      const dur = Date.now() - first;
-      if (dur < 300) { resolve({ spoke: true, durationMs: dur, transcript: "" }); return; }
-      const transcript = await transcribeWithWhisper(audioChunks);
-      resolve({ spoke: true, durationMs: dur, transcript });
+    const finish=async () => {
+      if (finished) return; finished=true; clearInterval(iv); clearInterval(keepaliveIv); keepaliveActive = false; cs.removeListener("audioPacket",on);
+      if (!got) { resolve({spoke:false,durationMs:0,transcript:""}); return; }
+      if (media) { media.turnSpeechEndedAt = Date.now(); media.firstAudioAt = 0; latencyMark(media, "speech-end"); }
+      const transcript=await transcribeWithWhisper(audioChunks, media);
+      resolve({spoke:true,durationMs:Date.now()-first,transcript});
     };
-    const iv = setInterval(() => {
-      if (Date.now() - callStart > MAX_CALL_MS) { finish(); return; }
-      if (got && Date.now() - last > 1000) { finish(); return; }
-      if (!got && Date.now() - start > maxMs) { finish(); return; }
-    }, 100);
+    const iv=setInterval(() => {
+      const now=Date.now();
+      if (cs.disposed || now-callStart>MAX_CALL_MS) { void finish(); return; }
+      if (got && lastVoice && now-lastVoice>=500) { void finish(); return; }
+      if (got && first && now-first>=6000) { void finish(); return; }
+      if (!got && now-start>=maxMs) { void finish(); return; }
+    },50);
   });
 }
 
-async function speak(cs: any, text: string, heardRef: { current: boolean }, skipEdge = false): Promise<void> {
-  console.log("[sip-conv] speak:", text.slice(0, 80));
+async function speak(cs: any, media: MediaState, text: string, heardRef: { current: boolean }, skipEdge = false, voice = EDGE_VOICE): Promise<void> {
+  console.log("[sip-conv] speak:", text.length, "chars");
   let frames: Buffer[];
-  try { frames = await textToFramesLocal(text, skipEdge); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
-  if (!frames || !frames.length) {
-    console.error("[sip-conv] speak: no frames generated, trying tone fallback");
-    try { frames = toUlawFrames(new Int16Array([0])); } catch { return; }
-  }
+  try { frames = await textToFramesLocal(text, skipEdge, voice); } catch (e: any) { console.error("[sip-conv] speak TTS error:", redactDiagnostic(e)); return; }
+  if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
   const audio = Buffer.concat(frames);
   console.log("[sip-conv] speak: audio", audio.length, "bytes, cs.disposed=", cs.disposed);
   if (cs.disposed) return;
   try {
-    enqueueAudio(audio);
-    return waitForQueue();
+    enqueueAudio(media, audio);
+    return waitForQueue(media);
   } catch (e: any) {
-    console.error("[sip-conv] speak: enqueueAudio failed:", e?.message);
+    console.error("[sip-conv] speak: enqueueAudio failed:", redactDiagnostic(e));
   }
 }
 
 // Stream sentences: speak each sentence as TTS completes, don't wait for all
-async function speakStreaming(cs: any, text: string, heardRef: { current: boolean }): Promise<void> {
+async function speakStreaming(cs: any, media: MediaState, text: string, heardRef: { current: boolean }, voice = EDGE_VOICE): Promise<void> {
   if (!text || !text.trim()) return;
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
-  console.log("[sip-conv] speakStreaming:", sentences.length, "sentences from:", text.slice(0, 60));
-  for (const sentence of sentences) {
+  console.log("[sip-conv] speakStreaming:", sentences.length, "sentences");
+  // Synthesize sentence chunks concurrently so later sentences do not add
+  // serial network/TTS delay. Playback order is still preserved below.
+  const prepared = sentences.map(async (sentence) => {
     const trimmed = sentence.trim();
-    if (!trimmed) continue;
+    if (!trimmed) return null;
+    try {
+      const frames = await textToFramesLocal(trimmed, false, voice);
+      return frames?.length ? { trimmed, audio: Buffer.concat(frames) } : null;
+    } catch (e: any) {
+      console.error("[sip-conv] speakStreaming TTS error:", redactDiagnostic(e));
+      return null;
+    }
+  });
+  for (const pending of prepared) {
     if (cs.disposed) break;
-    let frames: Buffer[];
-    try { frames = await textToFramesLocal(trimmed); } catch (e: any) { console.error("[sip-conv] speakStreaming TTS error:", e?.message); continue; }
-    if (!frames || !frames.length) continue;
-    const audio = Buffer.concat(frames);
-    console.log("[sip-conv] speakStreaming: sentence '" + trimmed.slice(0, 30) + "' → " + audio.length + " bytes");
-    if (cs.disposed) break;
-    enqueueAudio(audio);
-    // Don't wait for queue to drain — start TTS for next sentence immediately
-    // But wait if queue is getting too deep (>3 pending)
-    while (pendingAudio.length > 3 && !cs.disposed) await new Promise(r => setTimeout(r, 100));
+    const ready = await pending;
+    if (!ready || cs.disposed) continue;
+    console.log("[sip-conv] speakStreaming: sentence audio", ready.audio.length, "bytes");
+    enqueueAudio(media, ready.audio);
+    while (media.pendingAudio.length > 3 && !cs.disposed) await new Promise(r => setTimeout(r, 100));
   }
   // Wait for all remaining audio to finish
-  await waitForQueue();
+  await waitForQueue(media);
 }
 
 export async function runConversation(
@@ -583,8 +602,9 @@ export async function runConversation(
   const start = Date.now();
   const lines: string[] = [];
   const heardRef = { current: false };
+  let doNotCall = false;
 
-  console.log("[sip-conv] Starting conversation with", sipConfig.number);
+  console.log("[sip-conv] Starting conversation");
 
   // Edge TTS broken state persists from guard - do NOT reset per call
 
@@ -593,29 +613,43 @@ export async function runConversation(
     productName: agentConfig.productName,
     pitch: agentConfig.pitch,
     pricing: agentConfig.pricing,
+    strategyId: agentConfig.strategyId,
+    strategyVersion: agentConfig.strategyVersion,
+    experimentId: agentConfig.experimentId,
+    experimentName: agentConfig.experimentName,
   });
 
+  const greeting = getInitialGreeting(state);
+  const callVoice = voiceForTone(agentConfig.tone);
+  // Opening audio must be ready before dialing so answer never waits on TTS.
+  const greetingFrames = await textToFramesLocal(greeting, false, callVoice);
   const call = await sipCallBridge(sipConfig);
   if (!call.ok) {
     console.error("[sip-conv] SIP call failed:", call.last);
-    return { ok: false, durationSecs: 0, connected: false, interested: false, disposition: "FAILED", transcript: [], collectedName: null, collectedCompany: null, collectedEmail: null };
+    return { ok: false, durationSecs: 0, connected: false, interested: false, disposition: "FAILED", transcript: [], collectedName: null, collectedCompany: null, collectedEmail: null, doNotCall: false };
   }
 
   console.log("[sip-conv] SIP call connected, steps:", call.steps?.slice(-3));
   const cs = call.callSession;
   const cleanup = call.cleanup;
-  csRef = cs;
-  pendingAudio = [];
-  streamActive = false;
+  const media = createMediaState(cs);
 
   // Log when call is disposed so we know WHY
   cs.on("disposed", () => console.log("[sip-conv] *** CALL DISPOSED ***"));
   cs.on("busy", () => console.log("[sip-conv] *** CALL BUSY ***"));
 
-  // Speak greeting immediately
-  const greeting = getInitialGreeting(state);
+  // Greeting audio was prepared while the call connected.
+  // Give the remote RTP path a brief settle window after answer before sending
+  // the first packet; this protects the beginning of the greeting from being
+  // transmitted before the far end is actually rendering media.
+  await new Promise(r => setTimeout(r, 300));
   lines.push(`Agent: ${greeting}`);
-  await speak(cs, greeting, heardRef);
+  if (greetingFrames && greetingFrames.length && !cs.disposed) {
+    enqueueAudio(media, Buffer.concat(greetingFrames));
+    await waitForQueue(media);
+  } else {
+    await speak(cs, media, greeting, heardRef);
+  }
 
   for (let turn = 0; turn < 20; turn++) {
     if (Date.now() - start > maxDurationMs) break;
@@ -623,62 +657,62 @@ export async function runConversation(
     console.log("[sip-conv] turn", turn, "elapsed", Math.round((Date.now() - start) / 1000), "s");
 
     // Listen for speech — 1s silence = done speaking
-    const r = await listenForSpeech(cs, start, heardRef, 3000);
-    console.log("[sip-conv] listen result:", { spoke: r.spoke, transcript: r.transcript?.slice(0, 50) });
+    let r = await listenForSpeech(cs, start, heardRef, 15000, media);
+    console.log("[sip-conv] listen result:", { spoke: r.spoke, transcriptChars: r.transcript?.length || 0 });
     if (cs.disposed) { console.log("[sip-conv] call disposed during listen, ending"); break; }
     if (!r.spoke) {
       if (cs.disposed) break;
-      await speak(cs, "Are you still there?", heardRef);
-      const retry = await listenForSpeech(cs, start, heardRef, 2000);
+      // Do not inject scripted dialogue during silence; briefly keep listening.
+      const retry = await listenForSpeech(cs, start, heardRef, 4000, media);
       if (!retry.spoke) break;
+      r = retry;
     }
     if (Date.now() - start > maxDurationMs) break;
     if (cs.disposed) break;
 
     let txt = r.transcript;
     if (!txt || txt.trim().length === 0) {
-      console.log("[sip-conv] Whisper empty but prospect spoke, using smart fallback");
-      const fallbackResp = await processProspectInput(state, "");
-      let fallbackText = fallbackResp.text || "Sorry, could you repeat that?";
-      // Block error-like responses from being spoken
-      const ERROR_PATTERNS = ["budget", "rate limit", "api key", "error", "limit reached"];
-      if (ERROR_PATTERNS.some(p => fallbackText.toLowerCase().includes(p))) {
-        fallbackText = "Sorry, could you repeat that?";
-      }
+      // Speech was detected but STT produced no usable words. Do not mutate
+      // conversation state or let the scripted fallback advance to a new topic.
+      console.log("[sip-conv] Whisper empty after detected speech; requesting exact retry without advancing state");
+      const fallbackText = "Sorry, I didn't catch that. Could you say that again?";
       lines.push(`Agent: ${fallbackText}`);
-      await speak(cs, fallbackText, heardRef);
+      await speak(cs, media, fallbackText, heardRef);
       continue;
     }
     txt = txt.trim();
-    console.log("[sip-conv] Prospect said:", txt);
+    if (isSpokenOptOut(txt)) doNotCall = true;
+    console.log("[sip-conv] Prospect speech captured", txt.length, "chars");
     lines.push(`Prospect: ${txt}`);
     const resp = await processProspectInput(state, txt);
     let responseText = resp.text || "I'm sorry, could you repeat that?";
     const ERROR_PATTERNS = ["budget", "rate limit", "api key", "error", "limit reached"];
     if (ERROR_PATTERNS.some(p => responseText.toLowerCase().includes(p))) {
-      console.error("[sip-conv] Error text blocked from TTS:", responseText.slice(0, 80));
+      console.error("[sip-conv] Error-like text blocked from TTS");
       responseText = "I'm sorry, could you repeat that?";
     }
     lines.push(`Agent: ${responseText}`);
     // Stream sentences — first sentence plays while rest generates
-    await speakStreaming(cs, responseText, heardRef);
+    await speakStreaming(cs, media, responseText, heardRef, callVoice);
     if (resp.shouldEnd) break;
   }
 
   const data = getCollectedData(state);
-  const closing = `Thank${data.name ? " you, " + data.name : " you"}! That's everything I needed. One of our dispatch managers will call you back within 30 minutes at 623-400-1991. Have a great day!`;
-  lines.push(`Agent: ${closing}`);
-  if (!cs.disposed) await speakStreaming(cs, closing, heardRef);
+  // Do not invent a callback, role, phone number, or scripted closing.
+  // The conversational brain owns spoken closing language when it chooses to end.
+  if (!cs.disposed && state.phase !== "done") {
+    console.log("[sip-conv] conversation ended without scripted closing");
+  }
 
   // Wait for final audio then hangup
-  await waitForQueue();
+  await waitForQueue(media);
   const dur = Math.round((Date.now() - start) / 1000);
   try { cs.hangup(); } catch {}
 
-  // Cleanup queue state
-  pendingAudio = [];
-  streamActive = false;
-  csRef = null;
+  // Cleanup only this call's media state.
+  media.pendingAudio = [];
+  media.streamActive = false;
+  media.csRef = null;
 
   setTimeout(() => { cleanup(); }, 500);
 
@@ -695,5 +729,6 @@ export async function runConversation(
     collectedName: data.name,
     collectedCompany: data.company,
     collectedEmail: data.email,
+    doNotCall,
   };
 }

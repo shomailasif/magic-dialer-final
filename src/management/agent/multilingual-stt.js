@@ -1,5 +1,6 @@
 "use strict";
 const { normalizeLanguage } = require("./language");
+const { requestId, safeError } = require("./safe-diagnostic");
 
 const GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 const MODEL = process.env.AUTODIAL_WHISPER_MODEL || "whisper-large-v3-turbo";
@@ -15,10 +16,11 @@ function pcmuToWav(audio) {
   return Buffer.concat([h,pcm]);
 }
 
-async function transcribeAuto(audioBuffer,{hint="auto"}={}) {
+async function transcribeAuto(audioBuffer,{hint="auto",portal="",deviceToken="",callId=""}={}) {
   if (!audioBuffer || audioBuffer.length < 100) return {text:null,language:null,error:"empty audio"};
+  const base=String(portal||"").replace(/\/+$/,"");if(base&&deviceToken){const reqId=requestId(),cid=callId||requestId(),c=new AbortController(),t=setTimeout(()=>c.abort(),15000);try{const r=await fetch(base+"/api/engine/ai/stt",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+deviceToken,"x-request-id":reqId,"x-call-id":cid},body:JSON.stringify({audio:Buffer.from(audioBuffer).toString("base64"),hint}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)return{text:null,language:null,error:safeError(d.error||("STT gateway HTTP "+r.status),[deviceToken]),requestId:d.requestId||reqId,callId:d.callId||cid};return{text:d.text||null,language:d.language?normalizeLanguage(d.language,null):(hint!=="auto"?normalizeLanguage(hint,null):null),error:null,requestId:d.requestId||reqId,callId:d.callId||cid};}catch(e){return{text:null,language:null,error:safeError(e||"STT gateway failed",[deviceToken]),requestId:reqId,callId:cid};}finally{clearTimeout(t);}}
   const key=process.env.GROQ_API_KEY||process.env.AUTODIAL_GROQ_KEY||"";
-  if (!key) return {text:null,language:null,error:"GROQ_API_KEY is not configured on this customer PC"};
+  if (!key) return {text:null,language:null,error:"Secure STT gateway unavailable"};
   const form=new FormData();
   form.append("file",new Blob([pcmuToWav(audioBuffer)],{type:"audio/wav"}),"speech.wav");
   form.append("model",MODEL);
@@ -34,7 +36,7 @@ async function transcribeAuto(audioBuffer,{hint="auto"}={}) {
     const text=String(d.text||"").trim()||null;
     const language=d.language ? normalizeLanguage(d.language,null) : (hint!=="auto"?normalizeLanguage(hint,null):null);
     return {text,language,error:null};
-  } catch(e) { return {text:null,language:null,error:e&&e.message?e.message:"STT request failed"}; }
+  } catch(e) { return {text:null,language:null,error:safeError(e||"STT request failed",[key]),requestId:requestId(),callId:callId||null}; }
   finally { clearTimeout(timer); }
 }
 

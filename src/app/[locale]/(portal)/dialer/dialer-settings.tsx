@@ -12,6 +12,12 @@ interface Props {
     apiKey: string;
     accountSid: string;
     outboundNumber: string;
+    sipUsername: string;
+    sipPassword: string;
+    sipAuthId: string;
+    sipDomain: string;
+    sipProxy: string;
+    sipPort: string;
     validated: boolean;
   };
   active: boolean;
@@ -25,6 +31,12 @@ export function DialerSettings({ initial, active }: Props) {
   const [apiKey, setApiKey] = useState(initial.apiKey);
   const [accountSid, setAccountSid] = useState(initial.accountSid);
   const [outboundNumber, setOutboundNumber] = useState(initial.outboundNumber);
+  const [sipUsername, setSipUsername] = useState(initial.sipUsername);
+  const [sipPassword, setSipPassword] = useState(initial.sipPassword);
+  const [sipAuthId, setSipAuthId] = useState(initial.sipAuthId);
+  const [sipDomain, setSipDomain] = useState(initial.sipDomain || "sip.ringcentral.com");
+  const [sipProxy, setSipProxy] = useState(initial.sipProxy || "sip40.ringcentral.com");
+  const [sipPort, setSipPort] = useState(initial.sipPort || "5096");
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -35,7 +47,7 @@ export function DialerSettings({ initial, active }: Props) {
     const res = await fetch("/api/dialer/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, apiKey, accountSid, outboundNumber }),
+      body: JSON.stringify({ provider, apiKey, accountSid, outboundNumber, sipUsername, sipPassword, sipAuthId, sipDomain, sipProxy, sipPort }),
     });
     const data = await res.json();
     setTesting(false);
@@ -52,7 +64,7 @@ export function DialerSettings({ initial, active }: Props) {
     const res = await fetch("/api/dialer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider, apiKey, accountSid, outboundNumber }),
+      body: JSON.stringify({ provider, apiKey, accountSid, outboundNumber, sipUsername, sipPassword, sipAuthId, sipDomain, sipProxy, sipPort }),
     });
     const data = await res.json();
     setSaving(false);
@@ -121,6 +133,33 @@ export function DialerSettings({ initial, active }: Props) {
               placeholder={t("outboundPlaceholder")}
             />
           </FormField>
+
+          {provider === "RINGCENTRAL" && (
+            <div className="grid gap-4 rounded-lg border border-slate-200 p-4">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">RingCentral SIP for the local calling engine</div>
+                <div className="mt-1 text-xs text-slate-500">These credentials are delivered only to your enrolled PC. The password is never shown again after saving.</div>
+              </div>
+              <FormField label="SIP username">
+                <Input value={sipUsername} onChange={(e) => setSipUsername(e.target.value)} autoComplete="off" />
+              </FormField>
+              <FormField label="SIP password">
+                <Input value={sipPassword} onChange={(e) => setSipPassword(e.target.value)} type="password" autoComplete="new-password" />
+              </FormField>
+              <FormField label="Authorization ID">
+                <Input value={sipAuthId} onChange={(e) => setSipAuthId(e.target.value)} placeholder="Defaults to SIP username" />
+              </FormField>
+              <FormField label="SIP domain">
+                <Input value={sipDomain} onChange={(e) => setSipDomain(e.target.value)} />
+              </FormField>
+              <FormField label="Outbound proxy">
+                <Input value={sipProxy} onChange={(e) => setSipProxy(e.target.value)} />
+              </FormField>
+              <FormField label="TLS port">
+                <Input value={sipPort} onChange={(e) => setSipPort(e.target.value)} inputMode="numeric" />
+              </FormField>
+            </div>
+          )}
 
           <div className="flex gap-3 pt-2">
             <Button variant="outline" onClick={testConnection} loading={testing}>

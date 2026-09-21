@@ -34,6 +34,12 @@ export default async function DialerPage({
           apiKey: config?.apiKey || "",
           accountSid: config?.accountSid || "",
           outboundNumber: config?.outboundNumber || "",
+          sipUsername: config?.sipUsername || "",
+          sipPassword: config?.sipPassword ? "••••••••" : "",
+          sipAuthId: config?.sipAuthId || "",
+          sipDomain: config?.sipDomain || "",
+          sipProxy: config?.sipProxy || "",
+          sipPort: config?.sipPort || "",
           validated: config?.validated || false,
         }}
         active={active}

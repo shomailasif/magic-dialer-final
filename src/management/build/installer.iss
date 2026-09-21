@@ -12,12 +12,12 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.2.0
+AppVersion=1.4.0
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=MagicDialer-Setup
+OutputBaseFilename=magic-dialer-engine-windows
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
@@ -32,14 +32,48 @@ WizardStyle=modern
 ; the real corporate GUI launcher the customer clicks. Both must ship.
 Source: "dist\agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\MagicDialer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\logo-256.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
+Name: "{userstartup}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 Name: "{commondesktop}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 Name: "{group}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 
+[Code]
+procedure StopRunningMagicDialer();
+var ResultCode: Integer;
+begin
+  { Upgrades must stop the watchdog/agent before replacing agent.exe. }
+  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM MagicDialer.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM agent.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { Forced termination cannot run watchdog cleanup. Once agent.exe is gone,
+    its PID-only lock is stale and must not block the replacement watchdog. }
+  DeleteFile(ExpandConstant('{localappdata}\Magic Dialer\watchdog.lock'));
+  Sleep(750);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var CacheDir, CacheFile: string;
+begin
+  if CurStep = ssInstall then
+    StopRunningMagicDialer();
+
+  if CurStep = ssPostInstall then begin
+    CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
+    ForceDirectories(CacheDir);
+    CacheFile := CacheDir + '\\known-good-1.4.0.exe';
+    if not FileExists(CacheFile) then
+      FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
+  end;
+end;
+
 [Run]
-; Open the app window: the agent runs its dashboard locally and the customer
-; completes the one-time setup right there (portal URL + access key).
+; Open the local engine dashboard. Account pairing is performed securely from
+; the customer's authenticated web portal via "Connect This PC"; no access key
+; is entered or copied by the customer.
 Filename: "{app}\MagicDialer.exe"; Flags: nowait skipifsilent; Description: "Launch Magic Dialer"
+; Background auto-updates run very silently and deliberately stop the old
+; watchdog before replacing agent.exe. Restart supervision without opening UI.
+Filename: "{app}\MagicDialer.exe"; Parameters: "--no-browser"; Flags: nowait skipifnotsilent

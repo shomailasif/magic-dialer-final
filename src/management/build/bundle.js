@@ -6,7 +6,7 @@
  * Run: node build/bundle.js
  * Output: build/dist/agent-bundle.js
  */
-const esbuild = require("C:/Users/USER/Documents/Default Project/autodial-ai/node_modules/esbuild");
+const esbuild = require("esbuild");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
@@ -18,6 +18,8 @@ esbuild
     platform: "node",
     target: ["node18"],
     format: "cjs",
+    loader: { ".node": "copy" },
+    assetNames: "native/[name]-[hash]",
     outfile: path.join(__dirname, "dist", "agent-bundle.js"),
     banner: { js: "#!/usr/bin/env node" },
   })

@@ -5,24 +5,29 @@ import { prisma } from "@/lib/db";
 import type { User, Subscription } from "@prisma/client";
 
 const SESSION_COOKIE = "autodial_session";
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // maximum session lifetime
+const DEVICE_LOCK_MS = 1000 * 60 * 10; // stale device locks recover automatically
 
 function secret(): string {
-  const s = process.env.AUTH_SECRET || "dev-fallback-secret-change-me";
-  return s;
+  const configured = process.env.AUTH_SECRET?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("AUTH_SECRET is required in production");
+  }
+  return "dev-fallback-secret-change-me";
 }
 
-export function signSession(userId: string): string {
-  const payload = `${userId}.${Date.now()}`;
+export function signSession(userId: string, sessionId = ""): string {
+  const payload = `${userId}.${Date.now()}.${sessionId}`;
   const sig = createHmac("sha256", secret()).update(payload).digest("hex");
   return `${payload}.${sig}`;
 }
 
-export function verifySession(token: string): { userId: string } | null {
+export function verifySession(token: string): { userId: string; sessionId: string } | null {
   const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  const payload = `${parts[0]}.${parts[1]}`;
-  const sig = parts[2];
+  if (parts.length !== 4) return null;
+  const payload = `${parts[0]}.${parts[1]}.${parts[2]}`;
+  const sig = parts[3];
   const expected = createHmac("sha256", secret()).update(payload).digest("hex");
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);
@@ -31,7 +36,7 @@ export function verifySession(token: string): { userId: string } | null {
   const ts = Number(parts[1]);
   if (Number.isNaN(ts)) return null;
   if (Date.now() - ts > SESSION_TTL_MS) return null;
-  return { userId: parts[0] };
+  return { userId: parts[0], sessionId: parts[2] };
 }
 
 export const SESSION_COOKIE_NAME = SESSION_COOKIE;
@@ -61,14 +66,23 @@ export async function createDeviceSession(
   deviceFingerprint: string,
   ipAddress: string,
   userAgent: string
-): Promise<void> {
-  // Delete any existing sessions for this user (one device at a time)
-  await prisma.session.deleteMany({
-    where: { userId },
+): Promise<string> {
+  const now = new Date();
+  await prisma.session.deleteMany({ where: { userId, expiresAt: { lte: now } } });
+  const lockCutoff = new Date(now.getTime() - DEVICE_LOCK_MS);
+  const active = await prisma.session.findFirst({
+    where: { userId, expiresAt: { gt: now }, lastActiveAt: { gt: lockCutoff } },
+    orderBy: { lastActiveAt: "desc" },
   });
+  if (active) {
+    if (active.deviceFingerprint !== deviceFingerprint) throw new Error("ACCOUNT_ACTIVE_ON_ANOTHER_PC");
+    await prisma.session.update({ where: { id: active.id }, data: { lastActiveAt: now } });
+    return active.id;
+  }
 
-  // Create new session
-  await prisma.session.create({
+  await prisma.session.deleteMany({ where: { userId } });
+
+  const session = await prisma.session.create({
     data: {
       userId,
       deviceFingerprint,
@@ -77,6 +91,7 @@ export async function createDeviceSession(
       expiresAt: new Date(Date.now() + SESSION_TTL_MS),
     },
   });
+  return session.id;
 }
 
 /**
@@ -135,6 +150,15 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
   if (!token) return null;
   const verified = verifySession(token);
   if (!verified) return null;
+  if (!verified.sessionId) return null;
+  const now = new Date();
+  const active = await prisma.session.findFirst({ where: { id: verified.sessionId, userId: verified.userId, expiresAt: { gt: now } } });
+  if (!active) return null;
+  // Authenticated activity renews the device lease. This keeps a genuinely active PC locked
+  // while still allowing abandoned/crashed sessions to recover after DEVICE_LOCK_MS.
+  if (now.getTime() - active.lastActiveAt.getTime() > 60_000) {
+    await prisma.session.update({ where: { id: active.id }, data: { lastActiveAt: now } });
+  }
   const user = await prisma.user.findUnique({
     where: { id: verified.userId },
     include: { subscription: true },

@@ -1,0 +1,12 @@
+name: Fix SIP voice and reply
+# Media repair already applied. This workflow is retained only as recovery history.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Media repair is already on main; no source mutation."

@@ -6,6 +6,8 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { Link } from "@/i18n/navigation";
 import { routing } from "@/i18n/routing";
 import { TestCallCard } from "./test-call-card";
+import { ConnectPcButton } from "./connect-pc-card";
+import { RuntimeReadinessCard } from "./runtime-readiness-card";
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
@@ -58,6 +60,8 @@ export default async function DashboardPage({
     ]);
 
   const active = user?.subscription?.status === "ACTIVE";
+  const engineDevice = user ? await prisma.engineDevice.findFirst({ where: { userId: user.id, revokedAt: null }, orderBy: { lastSeenAt: "desc" } }) : null;
+  const engineOnline = !!engineDevice?.lastSeenAt && Date.now() - engineDevice.lastSeenAt.getTime() < 2 * 60 * 1000;
 
   return (
     <div className="space-y-6">
@@ -74,6 +78,18 @@ export default async function DashboardPage({
         </div>
       </div>
 
+      <RuntimeReadinessCard />
+
+      <Card className="border-indigo-200 bg-indigo-50 p-5">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-indigo-700">One-time PC setup</p>
+            <h2 className="mt-1 text-lg font-bold text-slate-900">Download Magic Dialer</h2>
+            <p className="mt-1 text-sm text-slate-600">Install the Windows engine on this PC once. After installation, use Magic Dialer from this panel normally.</p>
+          </div>
+          <ConnectPcButton connected={engineOnline} lastSeenAt={engineDevice?.lastSeenAt?.toISOString() || null} />
+        </div>
+      </Card>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
         <StatCard label={t("statTotalLeads")} value={totalLeads} tone="indigo" />
         <StatCard label={t("statCallsMade")} value={calls} />

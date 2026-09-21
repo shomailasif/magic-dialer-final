@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { runCampaign } from "@/lib/orchestration";
+import { diagnosticId, safeDiagnostic, redactDiagnostic } from "@/lib/safe-diagnostic";
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
@@ -22,8 +23,8 @@ export async function POST(request: Request) {
     }
     return NextResponse.json(result);
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : "Campaign failed unexpectedly.";
-    console.error("[campaign] error", err);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    const requestId=diagnosticId(request.headers.get("x-request-id"));
+    console.error("[campaign] error", requestId, redactDiagnostic(err));
+    return NextResponse.json({ error:"Campaign failed unexpectedly.", diagnostic:safeDiagnostic("campaign","CAMPAIGN_FAILED",500,requestId) }, { status: 500 });
   }
 }

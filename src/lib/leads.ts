@@ -1,6 +1,7 @@
 import Papa from "papaparse";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { prisma } from "@/lib/db";
+import { normalizePhoneForSuppression } from "@/lib/call-compliance";
 
 export interface ImportRowError {
   row: number;
@@ -35,9 +36,20 @@ export async function parseAndImportLeads(
     lower.endsWith(".xlsx") ||
     lower.endsWith(".xls")
   ) {
-    const wb = XLSX.read(buffer, { type: "buffer" });
-    const sheet = wb.Sheets[wb.SheetNames[0]];
-    rows = XLSX.utils.sheet_to_json(sheet) as Record<string, unknown>[];
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(buffer) as unknown as ExcelJS.Buffer);
+    const sheet = workbook.worksheets[0];
+    if (!sheet) throw new Error("Excel file contains no worksheets.");
+    const headers = sheet.getRow(1).values as unknown[];
+    sheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const record: Record<string, unknown> = {};
+      row.eachCell((cell, colNumber) => {
+        const header = String(headers[colNumber] ?? "").trim();
+        if (header) record[header] = cell.text;
+      });
+      rows.push(record);
+    });
   } else {
     throw new Error("Unsupported file type. Please upload a CSV or Excel file.");
   }
@@ -63,6 +75,8 @@ export async function parseAndImportLeads(
       continue;
     }
 
+    const normalizedPhone=normalizePhoneForSuppression(r.phone);
+    const suppression=normalizedPhone?await prisma.phoneSuppression.findUnique({where:{userId_normalizedPhone:{userId,normalizedPhone}}}):null;
     await prisma.lead.create({
       data: {
         userId,
@@ -72,6 +86,12 @@ export async function parseAndImportLeads(
         company: r.company || null,
         extraData: r.extra ? JSON.stringify(r.extra) : null,
         status: "PENDING",
+        doNotCall: !!suppression,
+        doNotCallAt: suppression ? suppression.createdAt : null,
+        doNotCallReason: suppression ? "TENANT_PHONE_SUPPRESSION" : null,
+        consentStatus: suppression ? "DENIED" : "UNKNOWN",
+        consentSource: suppression ? "TENANT_PHONE_SUPPRESSION" : null,
+        consentUpdatedAt: suppression ? suppression.createdAt : null,
       },
     });
     imported++;

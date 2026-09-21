@@ -39,10 +39,17 @@ export async function POST(request: Request) {
   const ip = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "unknown";
   const deviceFingerprint = generateDeviceFingerprint(userAgent, ip);
 
-  // Create device session (invalidates any existing sessions for this user)
-  await createDeviceSession(user.id, deviceFingerprint, ip, userAgent);
+  let sessionId: string;
+  try {
+    sessionId = await createDeviceSession(user.id, deviceFingerprint, ip, userAgent);
+  } catch (e) {
+    if (e instanceof Error && e.message === "ACCOUNT_ACTIVE_ON_ANOTHER_PC") {
+      return NextResponse.json({ error: "This account is already active on another PC. Log out there before signing in here." }, { status: 409 });
+    }
+    throw e;
+  }
 
-  const token = signSession(user.id);
+  const token = signSession(user.id, sessionId);
   const response = NextResponse.json({
     ok: true,
     role: user.role,
