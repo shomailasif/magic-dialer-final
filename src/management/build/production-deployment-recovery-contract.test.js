@@ -30,7 +30,7 @@ const checks=[
  ["history adoption uses resolve applied",b.includes('"resolve", "--applied"')],
  ["post adoption migrate deploy",b.lastIndexOf('["migrate", "deploy"]')>b.indexOf('"resolve", "--applied"')],
  ["missing prisma fails closed",b.includes("Prisma CLI is unavailable")&&b.includes("throw new Error")],
- ["command failure fails closed",b.includes("result.status !== 0")],
+ ["command failure fails closed",b.includes("!allowedStatuses.includes(result.status)")&&b.includes("throw new Error")],
  ["app start impossible after bootstrap failure",b.includes("process.exit(1)")],
  ["fresh db supported",b.includes("appTables.length === 0")],
  ["tracked db supported",b.includes("hasHistory || appTables.length === 0")],
