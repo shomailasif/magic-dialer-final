@@ -32,6 +32,7 @@ WizardStyle=modern
 ; the real corporate GUI launcher the customer clicks. Both must ship.
 Source: "dist\agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\MagicDialer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\logo-256.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
