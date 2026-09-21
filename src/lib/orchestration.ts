@@ -8,6 +8,7 @@ import { ensureSalesFoundation, recordCallAttribution, effectiveAgentConfig } fr
 import { learnFromAttributedOutcome, proposeStrategyVersion } from "@/lib/controlled-learning";
 import { decideCallCompliance } from "@/lib/call-compliance";
 import { redactDiagnostic } from "@/lib/safe-diagnostic";
+import { decryptSecret } from "@/lib/credential-crypto";
 
 /**
  * Execute a campaign run for a business admin.
@@ -45,8 +46,14 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       return { ok: false as const, error: "Dialer integration not configured." };
     }
   }
-  if (user.dialerConfig) {
-    const dialValid = await validateProvider(user.dialerConfig);
+  let runtimeDialer=user.dialerConfig;
+  if(runtimeDialer){
+    try{
+      runtimeDialer={...runtimeDialer,apiKey:decryptSecret(runtimeDialer.apiKey),accountSid:decryptSecret(runtimeDialer.accountSid),sipPassword:decryptSecret(runtimeDialer.sipPassword)};
+    }catch{return {ok:false as const,error:"Stored dialer credentials cannot be decrypted."};}
+  }
+  if (runtimeDialer) {
+    const dialValid = await validateProvider(runtimeDialer);
     if (!dialValid.ok) {
       return { ok: false as const, error: dialValid.error as string };
     }
@@ -77,7 +84,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     data: { userId, name: `Campaign ${new Date().toISOString().slice(0, 16)}`, strategyId: foundation.strategy.id, experimentId: foundation.experiment.id },
   });
 
-  const selectedProvider = user.dialerConfig?.provider || "RINGCENTRAL";
+  const selectedProvider = runtimeDialer?.provider || "RINGCENTRAL";
   const hasSIP = certifiedLiveProvider(selectedProvider) && !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
 
   for (const lead of dueLeads) {
@@ -112,11 +119,11 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
 
     if (!sipResult) {
       dialResult = await placeCall({
-        from: user.dialerConfig?.outboundNumber || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "Unknown Caller",
+        from: runtimeDialer?.outboundNumber || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "Unknown Caller",
         to: lead.phone || "",
-        provider: user.dialerConfig?.provider || "RINGCENTRAL",
-        apiKey: user.dialerConfig?.apiKey || process.env.RC_API_KEY || null,
-        accountSid: user.dialerConfig?.accountSid || process.env.RC_ACCOUNT_SID || null,
+        provider: runtimeDialer?.provider || "RINGCENTRAL",
+        apiKey: runtimeDialer?.apiKey || process.env.RC_API_KEY || null,
+        accountSid: runtimeDialer?.accountSid || process.env.RC_ACCOUNT_SID || null,
       });
 
       if (dialResult.connected) {
@@ -155,7 +162,8 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
           status: resultStatus as any,
           lastCallAt: new Date(),
           disposition,
-          followUpDueAt: sipResult?.doNotCall ? null : scheduleFollowUp(resultStatus, user.agentConfig?.followUpAttempts ?? 2, user.agentConfig?.followUpIntervalHours ?? 24),
+          followUpDueAt: sipResult?.doNotCall ? null : scheduleFollowUp(resultStatus, lead.followUpAttemptsMade, user.agentConfig?.followUpAttempts ?? 2, user.agentConfig?.followUpIntervalHours ?? 24),
+          followUpAttemptsMade: resultStatus==="FAILED" ? {increment:1} : lead.followUpAttemptsMade,
           doNotCall: sipResult?.doNotCall ? true : lead.doNotCall,
           doNotCallAt: sipResult?.doNotCall ? new Date() : lead.doNotCallAt,
           doNotCallReason: sipResult?.doNotCall ? "SPOKEN_OPT_OUT" : lead.doNotCallReason,
@@ -227,11 +235,13 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
 
 function scheduleFollowUp(
   status: string,
-  attempts: number,
+  attemptsMade: number,
+  maxAttempts: number,
   intervalHours: number,
 ): Date | null {
   if (status === "PENDING" || status === "FAILED") {
-    return new Date(Date.now() + intervalHours * 3600 * 1000);
+    if(attemptsMade>=Math.max(0,maxAttempts-1))return null;
+    return new Date(Date.now() + Math.max(1,intervalHours) * 3600 * 1000);
   }
   return null;
 }

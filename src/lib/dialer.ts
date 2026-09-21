@@ -1,4 +1,5 @@
 import type { DialerConfig, DialerProvider } from "@prisma/client";
+import { redactDiagnostic } from "@/lib/safe-diagnostic";
 
 export interface DialResult {
   connected: boolean;
@@ -115,7 +116,7 @@ export async function placeCall(input: PlaceCallInput): Promise<DialResult> {
       }
       return { connected: false, outcome: "NO_ANSWER", durationSecs: 0 };
     } catch (e: unknown) {
-      console.error("[dialer] RingCentral error:", e instanceof Error ? e.message : e);
+      console.error("[dialer] RingCentral error:", redactDiagnostic(e, [process.env.RC_CLIENT_SECRET, process.env.RC_JWT, process.env.RC_SIP_PASSWORD]));
       return { connected: false, outcome: "FAILED", durationSecs: 0 };
     }
   }
