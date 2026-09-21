@@ -7,6 +7,7 @@ import type { SubscriptionStatus } from "@prisma/client";
 import { ensureSalesFoundation, recordCallAttribution, effectiveAgentConfig } from "@/lib/sales-foundation";
 import { learnFromAttributedOutcome, proposeStrategyVersion } from "@/lib/controlled-learning";
 import { decideCallCompliance } from "@/lib/call-compliance";
+import { redactDiagnostic } from "@/lib/safe-diagnostic";
 
 /**
  * Execute a campaign run for a business admin.
@@ -101,7 +102,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
           durationSecs: sipResult.durationSecs,
         };
       } catch (e) {
-        console.error("[campaign] SIP call failed, falling back to RingOut:", e);
+        console.error("[campaign] SIP call failed; attempting provider fallback:", redactDiagnostic(e));
         sipResult = null;
       }
     }
