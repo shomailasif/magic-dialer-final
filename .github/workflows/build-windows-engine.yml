@@ -347,7 +347,7 @@ jobs:
             $releaseCommit = (gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" --jq '.target_commitish').Trim()
             if (-not $releaseCommit) { throw "Existing immutable release has no target commit" }
             git fetch origin $releaseCommit --depth=1
-            git diff --quiet $releaseCommit $env:GITHUB_SHA -- src/management
+            git diff --quiet $releaseCommit $env:GITHUB_SHA -- src/management ':(glob,exclude)src/management/**/*.test.js' ':(glob,exclude)src/management/**/*.test.ts' ':(exclude)src/management/build/run-all-tests.ps1'
             if ($LASTEXITCODE -eq 0) {
               Write-Host "Immutable release $tag already exists and engine sources are unchanged; preserving release and skipping republish."
               exit 0

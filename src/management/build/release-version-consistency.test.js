@@ -26,7 +26,7 @@ const manifestVersion = one(workflow, /\$version = "(\d+\.\d+\.\d+)"/g, "release
 assert.equal((workflow.match(/gh release create \$tag/g) || []).length, 1, "immutable versioned release must be created exactly once");
 assert.ok(workflow.includes("Immutable release $tag already exists and engine sources are unchanged; preserving release and skipping republish."), "unchanged engine must preserve existing immutable release");
 assert.ok(workflow.includes("Engine sources changed after immutable $tag; bump engine version before publishing."), "changed engine must require a version bump");
-assert.ok(workflow.includes("git diff --quiet $releaseCommit $env:GITHUB_SHA -- src/management"), "immutable reuse must be limited to unchanged engine sources");
+assert.ok(workflow.includes(":(glob,exclude)src/management/**/*.test.js")&&workflow.includes(":(exclude)src/management/build/run-all-tests.ps1"), "immutable reuse must be limited to unchanged engine sources");
 assert.equal((workflow.match(/\$tag = "engine-v\$version"/g) || []).length, 1, "versioned immutable tag must be derived from release version");
 assert.equal((workflow.match(/--clobber/g) || []).length, 1, "only the legacy 1.3.9 migration bridge may use clobber");
 assert.ok(workflow.includes("sourceCommit = $env:GITHUB_SHA"), "immutable manifest must bind source commit");
