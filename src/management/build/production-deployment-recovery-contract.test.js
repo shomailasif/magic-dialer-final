@@ -9,8 +9,14 @@ const checks=[
  ["normal production path uses migrate deploy",b.includes('["migrate", "deploy"]')],
  ["migration status verified",b.includes('["migrate", "status"]')],
  ["legacy detection requires no migration history",b.includes('!name.startsWith("sqlite_")')&&b.includes('tables.has("_prisma_migrations")')],
- ["legacy reconciliation uses db push",b.includes('["db", "push", "--skip-generate"]')],
+ ["legacy reconciliation avoids db push",!b.includes('["db", "push"')],
  ["no accept data loss",!b.includes("--accept-data-loss")],
+ ["allow list add column",b.includes("ALTER\\\\s+TABLE")&&b.includes("ADD\\\\s+COLUMN")],
+ ["allow list create table",b.includes("CREATE\\\\s+TABLE")],
+ ["allow list create index",b.includes("UNIQUE\\\\s+)?INDEX")],
+ ["unknown migration fails closed",b.includes("non-additive or unsupported migration statement")],
+ ["live schema diff verification",b.includes('"migrate", "diff"')&&b.includes('"--exit-code"')],
+ ["sqlite integrity verified",b.includes("PRAGMA integrity_check")],
  ["no force reset",!b.includes("--force-reset")&&!b.includes("migrate reset")],
  ["all checked in migrations enumerated",b.includes("readdirSync(migrationRoot")&&b.includes('migration.sql')],
  ["migration adoption sorted",b.includes(".sort()")],
@@ -28,7 +34,7 @@ const checks=[
  ["robots blocks admin crawl",robots.includes('"/admin/"')],
  ["robots blocks api crawl",robots.includes('"/api/"')],
  ["robots is not locale import",!robots.includes("next-intl")&&!robots.includes("messages/")],
- ["bootstrap has no destructive SQL",!b.match(/DROP TABLE|DELETE FROM|TRUNCATE|ALTER TABLE/i)]
+ ["bootstrap has no destructive SQL",!b.match(/DROP TABLE|DELETE FROM|TRUNCATE/i)]
 ];
 for(const [name,ok] of checks) assert.ok(ok,name);
 console.log("production deployment recovery contract: "+checks.length+"/"+checks.length+" checks PASS");
