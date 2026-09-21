@@ -23,7 +23,7 @@ export async function proposeStrategyVersion(input:{userId:string;strategyId:str
  if(!current)return null;
  const eligible=await prisma.strategyLearningEvent.count({where:{userId:input.userId,strategyId:input.strategyId,action:"ELIGIBLE_FOR_STRATEGY_REVIEW"}});
  if(eligible<1)return null;
- const latest=await prisma.salesStrategy.findFirst({where:{userId:input.userId},orderBy:{version:"desc"}});
+ const pending=await prisma.salesStrategy.findFirst({where:{userId:input.userId,active:false,strategyJson:current.strategyJson,knowledgeVersion:current.knowledgeVersion},orderBy:{version:"desc"}});\n if(pending)return pending;\n const latest=await prisma.salesStrategy.findFirst({where:{userId:input.userId},orderBy:{version:"desc"}});
  const nextVersion=(latest?.version||current.version)+1;
  const exists=await prisma.salesStrategy.findFirst({where:{userId:input.userId,version:nextVersion}});
  if(exists)return exists;

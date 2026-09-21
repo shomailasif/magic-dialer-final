@@ -278,7 +278,7 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
   return pcm;
 }
 
-const EDGE_VOICE = "en-US-JennyNeural";
+const EDGE_VOICE = "en-US-JennyNeural";\nconst EDGE_FRIENDLY_VOICE = "en-US-AvaNeural";\nconst EDGE_DIRECT_VOICE = "en-US-GuyNeural";\nexport function voiceForTone(tone?:string){\n const t=String(tone||"").toUpperCase();\n return t==="FRIENDLY"?EDGE_FRIENDLY_VOICE:t==="DIRECT"?EDGE_DIRECT_VOICE:EDGE_VOICE;\n}
 const EDGE_HOST = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_GEC_VERSION = "1-143.0.3650.75";
@@ -448,7 +448,7 @@ async function legacyToFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
   return [];
 }
 
-async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer[]> {
+async function textToFramesLocal(text: string, skipEdge = false, voice = EDGE_VOICE): Promise<Buffer[]> {
   const chunks = splitForTts(text);
   console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
 
@@ -459,7 +459,7 @@ async function textToFramesLocal(text: string, skipEdge = false): Promise<Buffer
     // 1) Try Edge TTS (JennyNeural voice; returned MP3 is decoded/resampled to 8 kHz PCMU below)
     if (!skipEdge) {
       try {
-        mp3 = await edgeTts(chunk, EDGE_VOICE);
+        mp3 = await edgeTts(chunk, voice);
         if (mp3 && mp3.length > 100) {
           allParts.push(mp3);
           console.log("[sip-conv] Edge TTS OK:", mp3.length, "bytes");
@@ -530,10 +530,10 @@ function listenForSpeech(
   });
 }
 
-async function speak(cs: any, media: MediaState, text: string, heardRef: { current: boolean }, skipEdge = false): Promise<void> {
+async function speak(cs: any, media: MediaState, text: string, heardRef: { current: boolean }, skipEdge = false, voice = EDGE_VOICE): Promise<void> {
   console.log("[sip-conv] speak:", text.slice(0, 80));
   let frames: Buffer[];
-  try { frames = await textToFramesLocal(text, skipEdge); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
+  try { frames = await textToFramesLocal(text, skipEdge, voice); } catch (e: any) { console.error("[sip-conv] speak TTS error:", e?.message); return; }
   if (!frames || !frames.length) { console.error("[sip-conv] speak: no frames generated"); return; }
   console.log("[sip-conv] speak: got", frames.length, "frames");
   const audio = Buffer.concat(frames);
@@ -544,7 +544,7 @@ async function speak(cs: any, media: MediaState, text: string, heardRef: { curre
 }
 
 // Stream sentences: speak each sentence as TTS completes, don't wait for all
-async function speakStreaming(cs: any, media: MediaState, text: string, heardRef: { current: boolean }): Promise<void> {
+async function speakStreaming(cs: any, media: MediaState, text: string, heardRef: { current: boolean }, voice = EDGE_VOICE): Promise<void> {
   if (!text || !text.trim()) return;
   const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
   console.log("[sip-conv] speakStreaming:", sentences.length, "sentences from:", text.slice(0, 60));
@@ -554,7 +554,7 @@ async function speakStreaming(cs: any, media: MediaState, text: string, heardRef
     const trimmed = sentence.trim();
     if (!trimmed) return null;
     try {
-      const frames = await textToFramesLocal(trimmed);
+      const frames = await textToFramesLocal(trimmed, false, voice);
       return frames?.length ? { trimmed, audio: Buffer.concat(frames) } : null;
     } catch (e: any) {
       console.error("[sip-conv] speakStreaming TTS error:", e?.message);
@@ -598,9 +598,9 @@ export async function runConversation(
     experimentName: agentConfig.experimentName,
   });
 
-  const greeting = getInitialGreeting(state);
+  const greeting = getInitialGreeting(state);\n  const callVoice = voiceForTone(agentConfig.tone);
   // Opening audio must be ready before dialing so answer never waits on TTS.
-  const greetingFrames = await textToFramesLocal(greeting);
+  const greetingFrames = await textToFramesLocal(greeting, false, callVoice);
   const call = await sipCallBridge(sipConfig);
   if (!call.ok) {
     console.error("[sip-conv] SIP call failed:", call.last);
@@ -671,7 +671,7 @@ export async function runConversation(
     }
     lines.push(`Agent: ${responseText}`);
     // Stream sentences — first sentence plays while rest generates
-    await speakStreaming(cs, media, responseText, heardRef);
+    await speakStreaming(cs, media, responseText, heardRef, callVoice);
     if (resp.shouldEnd) break;
   }
 

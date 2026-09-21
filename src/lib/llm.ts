@@ -2,7 +2,7 @@
  * LLM Client - Groq API
  */
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+import { redactDiagnostic } from "@/lib/safe-diagnostic";\n\nconst GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || "qwen/qwen3.8-27b";
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 3500);
@@ -29,7 +29,7 @@ export async function chatCompletion(messages: LLMMessage[], options: { maxToken
     clearTimeout(timeout);
     if (!resp.ok) {
       const errorText = await resp.text().catch(() => "unknown");
-      console.error(`[llm] Groq HTTP ${resp.status}:`, errorText.slice(0, 100));
+      console.error("[llm] Groq HTTP", resp.status, redactDiagnostic(errorText, [GROQ_KEY]));
       return { content: "", error: `Groq HTTP ${resp.status}` };
     }
     const data = await resp.json();
@@ -38,8 +38,8 @@ export async function chatCompletion(messages: LLMMessage[], options: { maxToken
     console.log(`[llm] Groq OK:`, content.slice(0, 60));
     return { content };
   } catch (e: any) {
-    console.error(`[llm] Groq error:`, e?.message);
-    return { content: "", error: e?.message || "Unknown error" };
+    console.error("[llm] Groq error:", redactDiagnostic(e, [GROQ_KEY]));
+    return { content: "", error: "LLM_REQUEST_FAILED" };
   }
 }
 

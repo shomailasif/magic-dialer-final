@@ -5,7 +5,7 @@ import { createTelephonySession, certifiedLiveProvider } from "@/lib/telephony-s
 import type { SIPCallResult } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
 import { ensureSalesFoundation, recordCallAttribution, effectiveAgentConfig } from "@/lib/sales-foundation";
-import { learnFromAttributedOutcome } from "@/lib/controlled-learning";
+import { learnFromAttributedOutcome, proposeStrategyVersion } from "@/lib/controlled-learning";
 import { decideCallCompliance } from "@/lib/call-compliance";
 
 /**
@@ -182,7 +182,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       },
     });
     await recordCallAttribution({userId,callId:storedCall.id,strategyId:foundation.strategy.id,experimentId:foundation.experiment.id,outcome:resultStatus,evidence:{dialOutcome:dialResult.outcome,disposition}});
-    await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});
+    const learningEvent = await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});\n    if(learningEvent.action==="ELIGIBLE_FOR_STRATEGY_REVIEW"){\n      await proposeStrategyVersion({userId,strategyId:foundation.strategy.id,reason:"evidence-threshold"});\n    }
 
     callsMade++;
     if (resultStatus === "INTERESTED") interested++;
