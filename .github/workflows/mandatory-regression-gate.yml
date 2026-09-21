@@ -18,7 +18,10 @@ on:
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
       - ".github/workflows/build-windows-engine.yml"
-      - "package.json"\n      - "scripts/prepare-production-db.js"\n      - "src/i18n/request.ts"\n      - "src/app/robots.ts"
+      - "package.json"
+      - "scripts/prepare-production-db.js"
+      - "src/i18n/request.ts"
+      - "src/app/robots.ts"
       - "package-lock.json"
       - ".regression-trigger"
   pull_request:
@@ -78,7 +81,10 @@ jobs:
         run: |
           $bad = @()
           $package = Get-Content package.json -Raw | ConvertFrom-Json
-          if ($package.scripts.start -ne 'node scripts/prepare-production-db.js && next start') { $bad += 'production start must prepare verified migrations before Next.js' }\n          $dbPrepare = Get-Content scripts/prepare-production-db.js -Raw\n          if ($dbPrepare -match 'db[ :]+push') { $bad += 'production DB preparation must never use prisma db push' }\n          if ($dbPrepare -notmatch 'migrate.*deploy' -or $dbPrepare -notmatch 'migrate.*diff' -or $dbPrepare -notmatch 'integrity_check' -or $dbPrepare -notmatch 'pre-migrate') { $bad += 'production DB preparation is missing migrate/diff/backup/integrity safeguards' }
+          if ($package.scripts.start -ne 'node scripts/prepare-production-db.js && next start') { $bad += 'production start must prepare verified migrations before Next.js' }
+          $dbPrepare = Get-Content scripts/prepare-production-db.js -Raw
+          if ($dbPrepare -match 'db[ :]+push') { $bad += 'production DB preparation must never use prisma db push' }
+          if ($dbPrepare -notmatch 'migrate.*deploy' -or $dbPrepare -notmatch 'migrate.*diff' -or $dbPrepare -notmatch 'integrity_check' -or $dbPrepare -notmatch 'pre-migrate') { $bad += 'production DB preparation is missing migrate/diff/backup/integrity safeguards' }
           if ($package.scripts.'db:migrate:deploy' -ne 'prisma migrate deploy') { $bad += 'explicit production migration command missing' }
           $orchestration = Get-Content src/lib/orchestration.ts -Raw
           $brain = Get-Content src/lib/free-ai.ts -Raw

@@ -4,7 +4,8 @@ on:
     branches: ["main"]
     paths:
       - "prisma/**"
-      - "package.json"\n      - "scripts/prepare-production-db.js"
+      - "package.json"
+      - "scripts/prepare-production-db.js"
       - ".github/workflows/prisma-baseline-proof.yml"
   workflow_dispatch: {}
 
