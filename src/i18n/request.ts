@@ -5,19 +5,16 @@ import { hasLocale } from "next-intl";
 import { routing } from "./routing";
 
 export default getRequestConfig(async ({ locale }) => {
-  if (!locale) {
-    const paramValue = await rootParams.locale();
-    if (hasLocale(routing.locales, paramValue)) {
-      locale = paramValue;
-    } else {
-      notFound();
-    }
+  const requestedLocale = locale ?? (await rootParams.locale());
+
+  if (!hasLocale(routing.locales, requestedLocale)) {
+    notFound();
   }
 
   return {
-    locale,
+    locale: requestedLocale,
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    messages: (await import(`../../messages/${locale}.json`)).default,
+    messages: (await import(`../../messages/${requestedLocale}.json`)).default,
     timeZone: "UTC",
   };
 });
