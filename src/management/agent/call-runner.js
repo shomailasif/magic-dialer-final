@@ -22,7 +22,7 @@ function fallbackReply(text, { callbackNumber, callbackIn, locale }) {
   return lang === "en" ? "I want to answer that accurately rather than guess. Let me note it for the team to follow up." : "I do not have that detail, so I will not guess. I will note it for follow-up.";
 }
 
-async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null }) {
+async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null, callId = null }) {
   const transcript = [];
   const timeline = [];
   let heardSomething = false;
@@ -31,7 +31,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let humanRequested = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
-  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken };
+  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId };
   const config = () => ({ ...baseConfig, locale: activeLocale });
   const agent = async (text) => {
     const line = String(text || "").trim();
@@ -117,6 +117,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
   return {
     product,
+    callId,
     company: companyName || "our team",
     transcript,
     timeline,

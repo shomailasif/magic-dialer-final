@@ -5,6 +5,7 @@ const { normalizeLanguage } = require("./language");
 const { runCall } = require("./call-runner");
 const { mediaConnect } = require("./media-client");
 const { createVad } = require("./vad");
+const { requestId, safeError } = require("./safe-diagnostic");
 
 const AUDIO_SAMPLE_RATE = 8000;
 const FRAME_BYTES = 160;
@@ -15,6 +16,7 @@ async function voiceCall({
   contactEmail, token, portal, sessionId = null, learning, locale = "en", voiceStyle = "friendly", preparedOpeningText = null,
   onLog = () => {}, onMode = () => {}, speakFn, listenFn,
 }) {
+  const callId = sessionId || requestId();
   let channel = null;
   if (portal && token) {
     try {
@@ -108,6 +110,7 @@ async function voiceCall({
       const result = await transcribeAuto(fullAudio, {
         hint: turn.autoLanguage ? "auto" : requestedLocale,
         sampleRate: AUDIO_SAMPLE_RATE,
+        portal, deviceToken: token, callId,
       });
       const text = result && result.text ? String(result.text).trim() : "";
       const language = result && result.language ? normalizeLanguage(result.language, requestedLocale) : requestedLocale;
@@ -134,11 +137,11 @@ async function voiceCall({
   onLog("Starting live call…");
   let result;
   try {
-    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText, portal, deviceToken: token });
+    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText, portal, deviceToken: token, callId });
   } catch (e) {
-    onLog("Call failed: " + e.message);
+    onLog("Call failed [" + callId + "]: " + safeError(e,[token]));
     if (channel) channel.close();
-    return { transcript: [], score: 0, goodLead: false, strategies: [], summary: "Call failed: " + e.message, learning: learning || {}, posted: null };
+    return { transcript: [], score: 0, goodLead: false, strategies: [], summary: "Call failed", callId, learning: learning || {}, posted: null };
   }
   onLog("Call finished.");
   if (channel) channel.close();
@@ -154,9 +157,9 @@ async function voiceCall({
       posted = res.status;
       const body = await res.json().catch(() => ({}));
       onLog(body.emailed ? "Qualified lead email sent ✓" : "Result reported.");
-    } catch (e) { onLog(`Could not report result (${e.message}).`); }
+    } catch (e) { onLog(`Could not report result [${callId}] (${safeError(e,[token])}).`); }
   }
-  return { ...result, posted, learning: updatedLearning };
+  return { ...result, callId, posted, learning: updatedLearning };
 }
 
 module.exports = { voiceCall };
