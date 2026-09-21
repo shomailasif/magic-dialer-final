@@ -4,8 +4,8 @@ export function diagnosticId(value?:string|null){
  const v=String(value||"").trim();
  return /^[A-Za-z0-9._:-]{8,96}$/.test(v)?v:crypto.randomUUID();
 }
-export function safeDiagnostic(stage:string,code:string,status:number,requestId:string){
- return {requestId,stage:String(stage||"unknown").slice(0,64),code:String(code||"INTERNAL_ERROR").slice(0,64),status};
+export function safeDiagnostic(stage:string,code:string,status:number,requestId:string,callId?:string){
+ return {requestId,...(callId?{callId:diagnosticId(callId)}:{}),stage:String(stage||"unknown").slice(0,64),code:String(code||"INTERNAL_ERROR").slice(0,64),status};
 }
 export function redactDiagnostic(value:unknown,secrets:unknown[]=[]){
  let s=String(value instanceof Error?value.message:value??"").replace(/[\r\n]+/g," ").slice(0,500);
