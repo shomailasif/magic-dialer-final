@@ -4,7 +4,7 @@ on:
     branches: ["main"]
     paths:
       - "prisma/**"
-      - "package.json"
+      - "package.json"\n      - "scripts/production-start.js"
       - ".github/workflows/prisma-baseline-proof.yml"
   workflow_dispatch: {}
 
@@ -31,23 +31,33 @@ jobs:
           export DATABASE_URL="file:$RUNNER_TEMP/fresh.db"
           npx prisma migrate deploy
           npx prisma migrate status
-      - name: Prove existing database baseline without replay
+      - name: Prove real legacy production adoption and data preservation
         shell: bash
         run: |
           set -euo pipefail
           export DATABASE_URL="file:$RUNNER_TEMP/existing.db"
           sqlite3 "$RUNNER_TEMP/existing.db" < prisma/migrations/0_init/migration.sql
           sqlite3 "$RUNNER_TEMP/existing.db" "INSERT INTO User (id,email,passwordHash,role,createdAt,updatedAt) VALUES ('baseline-sentinel','baseline@example.invalid','sentinel','BUSINESS_ADMIN',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
-          sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-before.txt"
-          DATA_BEFORE=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
-          npx prisma migrate resolve --applied 0_init
-          npx prisma migrate deploy
+          node scripts/production-start.js --migrate-only
           npx prisma migrate status
-          sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-after.txt"
           DATA_AFTER=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
-          grep -q "AIQuotaBucket" "$RUNNER_TEMP/schema-after.txt"
-          test "$DATA_BEFORE" = "$DATA_AFTER"
           test "$DATA_AFTER" = "baseline-sentinel|baseline@example.invalid|sentinel"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT executionKey FROM Call LIMIT 0;"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT consentSource,consentUpdatedAt,followUpAttemptsMade FROM Lead LIMIT 0;"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT sourceCallId FROM StrategyLearningEvent LIMIT 0;"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT name FROM sqlite_schema WHERE type='index' AND name='Call_executionKey_key';" | grep -q Call_executionKey_key
+      - name: Prove partial legacy migration fails closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="file:$RUNNER_TEMP/partial.db"
+          sqlite3 "$RUNNER_TEMP/partial.db" < prisma/migrations/0_init/migration.sql
+          sqlite3 "$RUNNER_TEMP/partial.db" 'ALTER TABLE "Call" ADD COLUMN "executionKey" TEXT;'
+          if node scripts/production-start.js --migrate-only; then
+            echo "partial migration was incorrectly accepted" >&2
+            exit 1
+          fi
+          sqlite3 "$RUNNER_TEMP/partial.db" "SELECT executionKey FROM Call LIMIT 0;"
       - name: Upload verified committed baseline migration
         uses: actions/upload-artifact@v4
         with:

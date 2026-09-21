@@ -18,7 +18,7 @@ on:
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
       - ".github/workflows/build-windows-engine.yml"
-      - "package.json"
+      - "package.json"\n      - "scripts/production-start.js"\n      - "src/app/robots.ts"
       - "package-lock.json"
       - ".regression-trigger"
   pull_request:
@@ -39,7 +39,7 @@ on:
       - "prisma/schema.prisma"
       - ".github/workflows/mandatory-regression-gate.yml"
       - ".github/workflows/build-windows-engine.yml"
-      - "package.json"
+      - "package.json"\n      - "scripts/production-start.js"\n      - "src/app/robots.ts"
       - "package-lock.json"
   workflow_dispatch: {}
 
@@ -78,7 +78,8 @@ jobs:
         run: |
           $bad = @()
           $package = Get-Content package.json -Raw | ConvertFrom-Json
-          if ($package.scripts.start -ne 'next start') { $bad += 'production start must be non-mutating next start only' }
+          if ($package.scripts.start -ne 'node scripts/production-start.js') { $bad += 'production start must use verified schema bootstrap' }
+          if ($package.scripts.'db:production:prepare' -ne 'node scripts/production-start.js --migrate-only') { $bad += 'production schema preparation command missing' }
           if ($package.scripts.'db:migrate:deploy' -ne 'prisma migrate deploy') { $bad += 'explicit production migration command missing' }
           $orchestration = Get-Content src/lib/orchestration.ts -Raw
           $brain = Get-Content src/lib/free-ai.ts -Raw
