@@ -43,7 +43,7 @@ export async function chatCompletion(messages: LLMMessage[], options: { maxToken
   }
 }
 
-export function buildSystemPrompt(config: { productName?: string; pitch?: string; tone?: string; pricing?: string }): string {
+export function buildSystemPrompt(config: { productName?: string; pitch?: string; tone?: string; pricing?: string; strategyContext?: string }): string {
   const product = config.productName || "the configured service";
   const pitch = config.pitch || "Explain the configured service accurately and discover whether it solves the prospect's problem.";
   const tone = config.tone || "PROFESSIONAL";
@@ -69,12 +69,12 @@ CUSTOMER CONFIGURATION:
 PRODUCT/SERVICE: ${product}
 SALES PLAN / PITCH / KNOWLEDGE: ${pitch}
 TONE: ${tone}
-${config.pricing ? `PRICING / COMMERCIAL CONTEXT: ${config.pricing}` : "PRICING: not supplied; do not invent it."}
+${config.pricing ? `PRICING / COMMERCIAL CONTEXT: ${config.pricing}` : "PRICING: not supplied; do not invent it."}\n${config.strategyContext ? `ASSIGNED STRATEGY CONTEXT: ${config.strategyContext}` : ""}
 
 Your goal is to intelligently pursue the configured sales objective while adapting to the human in real time. Output ONLY the exact words to speak on the phone.`;
 }
 
-export async function getAIResponse(conversationHistory: LLMMessage[], config: { productName?: string; pitch?: string; tone?: string; pricing?: string }): Promise<string> {
+export async function getAIResponse(conversationHistory: LLMMessage[], config: { productName?: string; pitch?: string; tone?: string; pricing?: string; strategyContext?: string }): Promise<string> {
   const messages: LLMMessage[] = [
     { role: "system", content: buildSystemPrompt(config) },
     ...conversationHistory.slice(-24),

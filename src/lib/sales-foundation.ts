@@ -17,7 +17,7 @@ export async function ensureSalesFoundation(userId:string,config:any){
  if(!strategy){
   strategy=await prisma.salesStrategy.create({data:{userId,version:1,name:"Baseline sales strategy",objective:"Qualify prospect truthfully and advance the customer's configured sales objective.",strategyJson:JSON.stringify(strategyDefinition(config)),knowledgeVersion:knowledge.version}});
  }
- let experiment=await prisma.salesExperiment.findFirst({where:{userId,strategyId:strategy.id,status:"ACTIVE"},orderBy:{startedAt:"desc"}});
+ let experiment=await selectExperiment(userId,strategy.id);
  if(!experiment){
   experiment=await prisma.salesExperiment.create({data:{userId,strategyId:strategy.id,name:"Baseline control",variantJson:JSON.stringify({kind:"CONTROL",strategyVersion:strategy.version})}});
  }
@@ -43,4 +43,16 @@ export function effectiveAgentConfig(base:any,strategy:any,experiment:any){
   experimentId:experiment?.id||null,
   experimentName:compact(experiment?.name)
  };
+}
+
+export async function selectExperiment(userId:string,strategyId:string){
+ const active=await prisma.salesExperiment.findMany({where:{userId,strategyId,status:"ACTIVE"},orderBy:{startedAt:"asc"}});
+ if(active.length<=1)return active[0]||null;
+ const scored=await Promise.all(active.map(async e=>{
+  const rows=await prisma.callAttribution.findMany({where:{userId,strategyId,experimentId:e.id},select:{outcome:true}});
+  const reward=(x:string)=>{x=String(x||"").toUpperCase();return x==="CONVERTED"?1:x==="INTERESTED"?.6:x==="NO_RESPONSE"?.1:x==="NOT_INTERESTED"?-.25:x==="FAILED"?-.1:0};
+  return {e,n:rows.length,mean:rows.length?rows.reduce((a,r)=>a+reward(r.outcome),0)/rows.length:0};
+ }));
+ const eligible=scored.filter(x=>x.n>=20).sort((a,b)=>b.mean-a.mean||a.e.startedAt.getTime()-b.e.startedAt.getTime());
+ return (eligible[0]||scored[0]).e;
 }

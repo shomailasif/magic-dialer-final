@@ -17,3 +17,15 @@ export async function learnFromAttributedOutcome(input:{userId:string;strategyId
  const action=sampleSize>=20?"ELIGIBLE_FOR_STRATEGY_REVIEW":"OBSERVE";
  return prisma.strategyLearningEvent.create({data:{userId:input.userId,strategyId:input.strategyId,outcome:String(input.outcome),reward,sampleSize,action,evidenceJson:input.evidence===undefined?null:JSON.stringify(input.evidence)}});
 }
+
+export async function proposeStrategyVersion(input:{userId:string;strategyId:string;reason:string}){
+ const current=await prisma.salesStrategy.findFirst({where:{id:input.strategyId,userId:input.userId}});
+ if(!current)return null;
+ const eligible=await prisma.strategyLearningEvent.count({where:{userId:input.userId,strategyId:input.strategyId,action:"ELIGIBLE_FOR_STRATEGY_REVIEW"}});
+ if(eligible<1)return null;
+ const latest=await prisma.salesStrategy.findFirst({where:{userId:input.userId},orderBy:{version:"desc"}});
+ const nextVersion=(latest?.version||current.version)+1;
+ const exists=await prisma.salesStrategy.findFirst({where:{userId:input.userId,version:nextVersion}});
+ if(exists)return exists;
+ return prisma.salesStrategy.create({data:{userId:input.userId,version:nextVersion,name:`Strategy proposal v${nextVersion}`,objective:current.objective,strategyJson:current.strategyJson,knowledgeVersion:current.knowledgeVersion,active:false}});
+}
