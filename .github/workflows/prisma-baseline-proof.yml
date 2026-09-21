@@ -5,6 +5,7 @@ on:
     paths:
       - "prisma/**"
       - "package.json"
+      - "scripts/production-db-bootstrap.cjs"
       - ".github/workflows/prisma-baseline-proof.yml"
   workflow_dispatch: {}
 
@@ -31,23 +32,36 @@ jobs:
           export DATABASE_URL="file:$RUNNER_TEMP/fresh.db"
           npx prisma migrate deploy
           npx prisma migrate status
-      - name: Prove existing database baseline without replay
+      - name: Prove exact legacy production adoption path preserves data
         shell: bash
         run: |
           set -euo pipefail
           export DATABASE_URL="file:$RUNNER_TEMP/existing.db"
           sqlite3 "$RUNNER_TEMP/existing.db" < prisma/migrations/0_init/migration.sql
           sqlite3 "$RUNNER_TEMP/existing.db" "INSERT INTO User (id,email,passwordHash,role,createdAt,updatedAt) VALUES ('baseline-sentinel','baseline@example.invalid','sentinel','BUSINESS_ADMIN',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
-          sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-before.txt"
           DATA_BEFORE=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
-          npx prisma migrate resolve --applied 0_init
-          npx prisma migrate deploy
-          npx prisma migrate status
-          sqlite3 -separator '|' "$RUNNER_TEMP/existing.db" "SELECT type,name,tbl_name,COALESCE(sql,'') FROM sqlite_schema WHERE name <> '_prisma_migrations' AND tbl_name <> '_prisma_migrations' ORDER BY type,name;" > "$RUNNER_TEMP/schema-after.txt"
+          node scripts/production-db-bootstrap.cjs
           DATA_AFTER=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT id || '|' || email || '|' || passwordHash FROM User WHERE id='baseline-sentinel';")
-          grep -q "AIQuotaBucket" "$RUNNER_TEMP/schema-after.txt"
           test "$DATA_BEFORE" = "$DATA_AFTER"
           test "$DATA_AFTER" = "baseline-sentinel|baseline@example.invalid|sentinel"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT executionKey FROM Call LIMIT 0;"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT followUpAttemptsMade,consentSource,consentUpdatedAt FROM Lead LIMIT 0;"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT sourceCallId FROM StrategyLearningEvent LIMIT 0;"
+          sqlite3 "$RUNNER_TEMP/existing.db" "SELECT normalizedPhone FROM PhoneSuppression LIMIT 0;"
+          MIGRATIONS_ON_DISK=$(find prisma/migrations -mindepth 1 -maxdepth 1 -type d | wc -l)
+          MIGRATIONS_APPLIED=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT COUNT(*) FROM _prisma_migrations WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL;")
+          test "$MIGRATIONS_APPLIED" -eq "$MIGRATIONS_ON_DISK"
+          npx prisma migrate status
+      - name: Prove bootstrap is idempotent after adoption
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DATABASE_URL="file:$RUNNER_TEMP/existing.db"
+          BEFORE=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT COUNT(*) FROM _prisma_migrations;")
+          node scripts/production-db-bootstrap.cjs
+          AFTER=$(sqlite3 "$RUNNER_TEMP/existing.db" "SELECT COUNT(*) FROM _prisma_migrations;")
+          test "$BEFORE" -eq "$AFTER"
+          npx prisma migrate status
       - name: Upload verified committed baseline migration
         uses: actions/upload-artifact@v4
         with:
