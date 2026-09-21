@@ -20,6 +20,8 @@ on:
       - ".github/workflows/build-windows-engine.yml"
       - "package.json"
       - "package-lock.json"
+      - "scripts/production-db-bootstrap.cjs"
+      - "src/app/robots.ts"
       - ".regression-trigger"
   pull_request:
     branches: ["main"]
@@ -78,7 +80,10 @@ jobs:
         run: |
           $bad = @()
           $package = Get-Content package.json -Raw | ConvertFrom-Json
-          if ($package.scripts.start -ne 'next start') { $bad += 'production start must be non-mutating next start only' }
+          if ($package.scripts.start -ne 'node scripts/production-db-bootstrap.cjs && next start') { $bad += 'production start must gate application startup on verified database readiness' }
+          $dbBootstrap = Get-Content scripts/production-db-bootstrap.cjs -Raw
+          if ($dbBootstrap -match '--accept-data-loss|--force-reset|migrate reset') { $bad += 'production database bootstrap contains destructive override' }
+          if ($dbBootstrap -notmatch 'migrate.*deploy' -or $dbBootstrap -notmatch 'migrate.*status') { $bad += 'production database bootstrap does not verify tracked migrations' }
           if ($package.scripts.'db:migrate:deploy' -ne 'prisma migrate deploy') { $bad += 'explicit production migration command missing' }
           $orchestration = Get-Content src/lib/orchestration.ts -Raw
           $brain = Get-Content src/lib/free-ai.ts -Raw
