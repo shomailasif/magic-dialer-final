@@ -1,0 +1,5 @@
+ALTER TABLE "Lead" ADD COLUMN "doNotCall" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "Lead" ADD COLUMN "doNotCallAt" DATETIME;
+ALTER TABLE "Lead" ADD COLUMN "doNotCallReason" TEXT;
+ALTER TABLE "Lead" ADD COLUMN "consentStatus" TEXT NOT NULL DEFAULT 'UNKNOWN';
+CREATE INDEX "Lead_userId_doNotCall_idx" ON "Lead"("userId","doNotCall");

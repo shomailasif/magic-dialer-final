@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { validateProvider } from "@/lib/dialer";
 import { z } from "zod";
 import type { DialerProvider } from "@prisma/client";
+import { decryptSecret, encryptSecret, isMask, maskSecret } from "@/lib/credential-crypto";
 
 const schema = z.object({
   provider: z.enum(["TWILIO", "RINGCENTRAL", "VONAGE"]),
@@ -24,7 +25,7 @@ export async function GET() {
   const config = await prisma.dialerConfig.findUnique({ where: { userId: user.id } });
   return NextResponse.json({
     config: config
-      ? { ...config, apiKey: config.apiKey ? "••••••••" : "", accountSid: config.accountSid ? "••••••••" : "", sipPassword: config.sipPassword ? "••••••••" : "" }
+      ? { ...config, apiKey: maskSecret(config.apiKey), accountSid: maskSecret(config.accountSid), sipPassword: maskSecret(config.sipPassword) }
       : null,
   });
 }
@@ -47,12 +48,18 @@ export async function POST(request: Request) {
   const d = parsed.data;
 
   const existing = await prisma.dialerConfig.findUnique({ where: { userId: user.id } });
-  const prevApiKey = existing?.apiKey || "";
-  const prevSid = existing?.accountSid || "";
+  let prevApiKey = "", prevSid = "", prevSipPassword = "";
+  try {
+    prevApiKey = decryptSecret(existing?.apiKey);
+    prevSid = decryptSecret(existing?.accountSid);
+    prevSipPassword = decryptSecret(existing?.sipPassword);
+  } catch {
+    return NextResponse.json({ error: "Stored dialer credentials cannot be decrypted. Contact the administrator." }, { status: 503 });
+  }
 
-  const apiKey = d.apiKey && d.apiKey !== "••••••••" ? d.apiKey : prevApiKey;
-  const accountSid = d.accountSid && d.accountSid !== "••••••••" ? d.accountSid : prevSid;
-  const sipPassword = d.sipPassword && d.sipPassword !== "••••••••" ? d.sipPassword : existing?.sipPassword || "";
+  const apiKey = d.apiKey && !isMask(d.apiKey) ? d.apiKey : prevApiKey;
+  const accountSid = d.accountSid && !isMask(d.accountSid) ? d.accountSid : prevSid;
+  const sipPassword = d.sipPassword && !isMask(d.sipPassword) ? d.sipPassword : prevSipPassword;
 
   const temp = {
     provider: d.provider as DialerProvider,
@@ -76,11 +83,11 @@ export async function POST(request: Request) {
     create: {
       userId: user.id,
       provider: d.provider as DialerProvider,
-      apiKey,
-      accountSid,
+      apiKey: encryptSecret(apiKey),
+      accountSid: encryptSecret(accountSid),
       outboundNumber: d.outboundNumber,
       sipUsername: d.sipUsername,
-      sipPassword,
+      sipPassword: encryptSecret(sipPassword),
       sipAuthId: d.sipAuthId,
       sipDomain: d.sipDomain,
       sipProxy: d.sipProxy,
@@ -89,11 +96,11 @@ export async function POST(request: Request) {
     },
     update: {
       provider: d.provider as DialerProvider,
-      apiKey,
-      accountSid,
+      apiKey: encryptSecret(apiKey),
+      accountSid: encryptSecret(accountSid),
       outboundNumber: d.outboundNumber,
       sipUsername: d.sipUsername,
-      sipPassword,
+      sipPassword: encryptSecret(sipPassword),
       sipAuthId: d.sipAuthId,
       sipDomain: d.sipDomain,
       sipProxy: d.sipProxy,
@@ -102,5 +109,5 @@ export async function POST(request: Request) {
     },
   });
 
-  return NextResponse.json({ ok: true, validated: true, config });
+  return NextResponse.json({ ok: true, validated: true, config: { ...config, apiKey: maskSecret(config.apiKey), accountSid: maskSecret(config.accountSid), sipPassword: maskSecret(config.sipPassword) } });
 }

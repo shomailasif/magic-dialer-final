@@ -1,0 +1,14 @@
+const fs=require("node:fs"),assert=require("node:assert/strict"),path=require("node:path");
+const root=path.join(__dirname,"..","..");
+const chat=fs.readFileSync(path.join(root,"app/api/engine/ai/chat/route.ts"),"utf8");
+const stt=fs.readFileSync(path.join(root,"app/api/engine/ai/stt/route.ts"),"utf8");
+const brain=fs.readFileSync(path.join(root,"management/agent/intelligent-brain.js"),"utf8");
+assert.match(chat,/diagnosticId\(r\.headers\.get\("x-request-id"\)\)/);
+assert.ok(chat.includes("safeDiagnostic(stage,code,status,requestId,callId)"));
+assert.doesNotMatch(chat,/publicReason=.*:a\.reason/);
+assert.match(stt,/diagnosticId\(r\.headers\.get\("x-request-id"\)\)/);
+assert.match(stt,/STT provider request failed/);
+assert.match(brain,/"x-request-id":reqId/);
+assert.match(brain,/safeError\(d\.error/);
+assert.match(brain,/requestId:d\.requestId\|\|reqId/);
+console.log("safe diagnostic contract: 8/8 checks PASS");

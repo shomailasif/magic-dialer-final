@@ -1,3 +1,4 @@
+const { requestId, safeError } = require("./safe-diagnostic");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_MODEL = "openai/gpt-oss-120b";
 
@@ -31,8 +32,8 @@ Rules:
 }
 
 async function complete({ history, config, maxTokens = 140 }) {
-  const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||"");
-  if(portal&&deviceToken){const c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-14)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)return{text:"",error:d.error||("AI gateway HTTP "+r.status)};const text=clean(d.text);return text?{text}:{text:"",error:d.error||"empty AI response"};}catch(e){return{text:"",error:e&&e.message?e.message:"AI gateway failed"};}finally{clearTimeout(t);}}
+  const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||""),callId=String(config&&config.callId||requestId());
+  if(portal&&deviceToken){const reqId=requestId(),c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-14)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok)return{text:"",error:safeError(d.error||("AI gateway HTTP "+r.status),[deviceToken]),requestId:d.requestId||reqId,stage:d.stage||d.diagnosticStage||"ai-gateway",code:d.code||"AI_GATEWAY_ERROR"};const text=clean(d.text);return text?{text}:{text:"",error:d.error||"empty AI response"};}catch(e){return{text:"",error:safeError(e||"AI gateway failed",[deviceToken]),requestId:reqId,stage:"ai-gateway",code:"AI_GATEWAY_ERROR"};}finally{clearTimeout(t);}}
   const key = process.env.GROQ_API_KEY || process.env.AUTODIAL_GROQ_KEY || "";
   if (!key) return { text: "", error: "Secure AI gateway unavailable" };
   const controller = new AbortController();
@@ -55,7 +56,7 @@ async function complete({ history, config, maxTokens = 140 }) {
     const text = clean(data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content);
     return text ? { text } : { text: "", error: "empty LLM response" };
   } catch (e) {
-    return { text: "", error: e && e.message ? e.message : "LLM request failed" };
+    return { text: "", error: safeError(e || "LLM request failed", [key]), requestId: requestId(), stage: "groq-direct", code: "AI_PROVIDER_ERROR" };
   } finally {
     clearTimeout(timer);
   }

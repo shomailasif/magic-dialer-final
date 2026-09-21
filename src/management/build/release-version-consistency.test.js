@@ -22,7 +22,13 @@ const installerVersion = one(installer, /^AppVersion=(\d+\.\d+\.\d+)$/gm, "insta
 const launcherAssembly = one(launcher, /AssemblyVersion\("(\d+\.\d+\.\d+)\.0"\)/g, "launcher assembly");
 const launcherFile = one(launcher, /AssemblyFileVersion\("(\d+\.\d+\.\d+)\.0"\)/g, "launcher file");
 const launcherInfo = one(launcher, /AssemblyInformationalVersion\("(\d+\.\d+\.\d+)"\)/g, "launcher informational");
-const manifestVersion = one(workflow, /\$manifest = @\{ version = "(\d+\.\d+\.\d+)";/g, "release manifest");
+const manifestVersion = one(workflow, /\$version = "(\d+\.\d+\.\d+)"/g, "release version");
+assert.equal((workflow.match(/gh release create \$tag/g) || []).length, 1, "immutable versioned release must be created exactly once");
+assert.equal((workflow.match(/Immutable release \$tag already exists; refusing overwrite/g) || []).length, 1, "immutable release overwrite must be refused");
+assert.equal((workflow.match(/\$tag = "engine-v\$version"/g) || []).length, 1, "versioned immutable tag must be derived from release version");
+assert.equal((workflow.match(/--clobber/g) || []).length, 1, "only the legacy 1.3.9 migration bridge may use clobber");
+assert.ok(workflow.includes("sourceCommit = $env:GITHUB_SHA"), "immutable manifest must bind source commit");
+assert.ok(workflow.includes("tag = $tag"), "immutable manifest must bind release tag");
 
 for (const [label, value] of Object.entries({installerVersion, launcherAssembly, launcherFile, launcherInfo, manifestVersion})) {
   assert.equal(value, agentVersion, label + " must equal agent version " + agentVersion);

@@ -4,13 +4,14 @@ const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 
-const MANIFEST_URL = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/engine-manifest.json";
-const RELEASE_PREFIX = "https://github.com/shomailasif/magic-dialer-final/releases/download/engine-latest/";
+const DISCOVERY_URL = "https://api.github.com/repos/shomailasif/magic-dialer-final/releases/latest";
+const RELEASE_BASE = "https://github.com/shomailasif/magic-dialer-final/releases/download/";
 const HEALTH_URL = "http://127.0.0.1:18787/health";
 const CUSTOMER_HEALTH_URL = "http://127.0.0.1:48771/api/health";
 
 function newer(a,b){const x=String(a).split(".").map(Number),y=String(b).split(".").map(Number);for(let i=0;i<3;i++){if((x[i]||0)!==(y[i]||0))return(x[i]||0)>(y[i]||0)}return false}
-function validManifest(m){return !!(m&&/^\d+\.\d+\.\d+$/.test(String(m.version))&&/^[a-f0-9]{64}$/i.test(String(m.sha256))&&typeof m.url==="string"&&m.url.startsWith(RELEASE_PREFIX)&&!m.url.includes(".."))}
+function validRelease(r){return !!(r&&r.immutable===true&&/^engine-v\d+\.\d+\.\d+$/.test(String(r.tag_name))&&Array.isArray(r.assets)&&r.assets.some(a=>a&&a.name==="engine-manifest.json"&&typeof a.browser_download_url==="string"&&a.browser_download_url===RELEASE_BASE+r.tag_name+"/engine-manifest.json"))}
+function validManifest(m,tag){return !!(m&&/^\d+\.\d+\.\d+$/.test(String(m.version))&&m.tag===tag&&tag==="engine-v"+m.version&&/^[a-f0-9]{64}$/i.test(String(m.sha256))&&/^[a-f0-9]{40}$/i.test(String(m.sourceCommit))&&typeof m.url==="string"&&m.url===RELEASE_BASE+tag+"/magic-dialer-engine-windows.exe")}
 async function sha256(file){return await new Promise((resolve,reject)=>{const h=crypto.createHash("sha256"),s=fs.createReadStream(file);s.on("data",d=>h.update(d));s.on("end",()=>resolve(h.digest("hex")));s.on("error",reject)})}
 async function download(url,dest){const r=await fetch(url,{redirect:"follow",cache:"no-store"});if(!r.ok)throw new Error("update download HTTP "+r.status);fs.writeFileSync(dest,Buffer.from(await r.arrayBuffer()))}
 function stateDir(){return path.join(process.env.LOCALAPPDATA||os.homedir(),"Magic Dialer","updates")}
@@ -21,14 +22,17 @@ async function healthy(expectedVersion,timeoutMs=45000){const end=Date.now()+tim
 function launchInstaller(file){const c=spawn(file,["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"],{detached:true,stdio:"ignore",windowsHide:true});c.unref()}
 async function checkForUpdate(currentVersion){
  if(process.platform!=="win32")return{updated:false,reason:"not-windows"};
- const mr=await fetch(MANIFEST_URL,{redirect:"follow",cache:"no-store"});if(!mr.ok)throw new Error("manifest HTTP "+mr.status);
- const m=await mr.json();if(!validManifest(m))throw new Error("invalid or untrusted update manifest");
+ const rr=await fetch(DISCOVERY_URL,{redirect:"follow",cache:"no-store",headers:{Accept:"application/vnd.github+json"}});if(!rr.ok)throw new Error("release discovery HTTP "+rr.status);
+ const release=await rr.json();if(!validRelease(release))throw new Error("invalid immutable release discovery");
+ const tag=release.tag_name;const manifestAsset=release.assets.find(a=>a.name==="engine-manifest.json");
+ const mr=await fetch(manifestAsset.browser_download_url,{redirect:"follow",cache:"no-store"});if(!mr.ok)throw new Error("manifest HTTP "+mr.status);
+ const m=await mr.json();if(!validManifest(m,tag))throw new Error("invalid or untrusted immutable update manifest");
  if(!newer(m.version,currentVersion))return{updated:false,reason:"current"};
  let s=readState();if(s.blockedVersion===m.version)return{updated:false,reason:"blocked-after-failure"};
  const seed=!s.lastGoodInstaller&&seededInstaller(currentVersion);if(seed)s={...s,lastGoodVersion:currentVersion,lastGoodInstaller:seed};
  const dir=stateDir();fs.mkdirSync(dir,{recursive:true});const installer=path.join(dir,"candidate-"+m.version+".exe");
  await download(m.url,installer);const got=await sha256(installer);if(got.toLowerCase()!==m.sha256.toLowerCase()){try{fs.unlinkSync(installer)}catch{};throw new Error("update SHA-256 mismatch")}
- writeState({...s,pendingVersion:m.version,pendingInstaller:installer,previousVersion:currentVersion});launchInstaller(installer);
+ writeState({...s,pendingVersion:m.version,pendingInstaller:installer,previousVersion:currentVersion,sourceCommit:m.sourceCommit,releaseTag:m.tag});launchInstaller(installer);
  return{updated:true,version:m.version};
 }
 async function customerHealthy(timeoutMs=15000){const end=Date.now()+timeoutMs;while(Date.now()<end){try{const r=await fetch(CUSTOMER_HEALTH_URL,{cache:"no-store"});const j=await r.json();if(r.ok&&j.ok===true)return true}catch{}await new Promise(r=>setTimeout(r,500))}return false}
@@ -40,9 +44,6 @@ async function validatePendingUpdate(currentVersion,{ready=false}={}){
    writeState({lastGoodVersion:currentVersion,lastGoodInstaller:s.pendingInstaller});
    return{pending:true,healthy:true};
  }
- // A manually installed/newer recovery build supersedes a stale pending build
- // left by an older updater that died after launching its installer. Never
- // roll a newer installed engine back merely because old pending state survived.
  if(newer(currentVersion,s.pendingVersion)){
    const recovered={...s,lastGoodVersion:currentVersion,blockedVersion:s.pendingVersion,supersededPendingVersion:s.pendingVersion,pendingVersion:null,pendingInstaller:null,previousVersion:null};
    const seed=seededInstaller(currentVersion);if(seed)recovered.lastGoodInstaller=seed;
@@ -58,4 +59,4 @@ async function rollbackPendingUpdate(currentVersion){
  if(prior&&fs.existsSync(prior)){launchInstaller(prior);return{pending:true,healthy:false,rollback:true}}
  return{pending:true,healthy:false,rollback:false};
 }
-module.exports={MANIFEST_URL,RELEASE_PREFIX,HEALTH_URL,CUSTOMER_HEALTH_URL,newer,validManifest,sha256,healthy,customerHealthy,checkForUpdate,validatePendingUpdate,rollbackPendingUpdate,_test:{readState,writeState,stateDir,seededInstaller}};
+module.exports={DISCOVERY_URL,RELEASE_BASE,HEALTH_URL,CUSTOMER_HEALTH_URL,newer,validRelease,validManifest,sha256,healthy,customerHealthy,checkForUpdate,validatePendingUpdate,rollbackPendingUpdate,_test:{readState,writeState,stateDir,seededInstaller}};

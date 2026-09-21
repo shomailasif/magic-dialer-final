@@ -2,6 +2,8 @@
  * LLM Client - Groq API
  */
 
+import { redactDiagnostic } from "@/lib/safe-diagnostic";
+
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || "qwen/qwen3.8-27b";
@@ -29,7 +31,7 @@ export async function chatCompletion(messages: LLMMessage[], options: { maxToken
     clearTimeout(timeout);
     if (!resp.ok) {
       const errorText = await resp.text().catch(() => "unknown");
-      console.error(`[llm] Groq HTTP ${resp.status}:`, errorText.slice(0, 100));
+      console.error("[llm] Groq HTTP", resp.status, redactDiagnostic(errorText, [GROQ_KEY]));
       return { content: "", error: `Groq HTTP ${resp.status}` };
     }
     const data = await resp.json();
@@ -38,12 +40,12 @@ export async function chatCompletion(messages: LLMMessage[], options: { maxToken
     console.log(`[llm] Groq OK:`, content.slice(0, 60));
     return { content };
   } catch (e: any) {
-    console.error(`[llm] Groq error:`, e?.message);
-    return { content: "", error: e?.message || "Unknown error" };
+    console.error("[llm] Groq error:", redactDiagnostic(e, [GROQ_KEY]));
+    return { content: "", error: "LLM_REQUEST_FAILED" };
   }
 }
 
-export function buildSystemPrompt(config: { productName?: string; pitch?: string; tone?: string; pricing?: string }): string {
+export function buildSystemPrompt(config: { productName?: string; pitch?: string; tone?: string; pricing?: string; strategyContext?: string }): string {
   const product = config.productName || "the configured service";
   const pitch = config.pitch || "Explain the configured service accurately and discover whether it solves the prospect's problem.";
   const tone = config.tone || "PROFESSIONAL";
@@ -69,12 +71,12 @@ CUSTOMER CONFIGURATION:
 PRODUCT/SERVICE: ${product}
 SALES PLAN / PITCH / KNOWLEDGE: ${pitch}
 TONE: ${tone}
-${config.pricing ? `PRICING / COMMERCIAL CONTEXT: ${config.pricing}` : "PRICING: not supplied; do not invent it."}
+${config.pricing ? `PRICING / COMMERCIAL CONTEXT: ${config.pricing}` : "PRICING: not supplied; do not invent it."}\n${config.strategyContext ? `ASSIGNED STRATEGY CONTEXT: ${config.strategyContext}` : ""}
 
 Your goal is to intelligently pursue the configured sales objective while adapting to the human in real time. Output ONLY the exact words to speak on the phone.`;
 }
 
-export async function getAIResponse(conversationHistory: LLMMessage[], config: { productName?: string; pitch?: string; tone?: string; pricing?: string }): Promise<string> {
+export async function getAIResponse(conversationHistory: LLMMessage[], config: { productName?: string; pitch?: string; tone?: string; pricing?: string; strategyContext?: string }): Promise<string> {
   const messages: LLMMessage[] = [
     { role: "system", content: buildSystemPrompt(config) },
     ...conversationHistory.slice(-24),

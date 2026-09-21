@@ -189,7 +189,9 @@ let PYTHON = null;
 function resolvePython() {
   if (PYTHON) return PYTHON;
   const home = os.homedir();
+  const bundledPython = path.join(path.dirname(process.execPath || ""), "runtime", "python", "python.exe");
   const candidates = [
+    bundledPython,
     process.env.AUTODIAL_PYTHON,
     process.env.PYTHON,
     path.join(home, "AppData", "Local", "Programs", "Python", "Python312", "python.exe"),

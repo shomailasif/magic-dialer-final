@@ -14,6 +14,7 @@ const { ensurePhoneSession } = require("./call-start");
 const { runLocalCall } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
 const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate } = require("./auto-update");
+const { safeLog } = require("./safe-diagnostic");
 
 /**
  * Customer PC agent.
@@ -51,7 +52,7 @@ function saveConfig(config, cfgPath = defaultConfigPath()) {
     fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
     fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2), "utf8");
   } catch (err) {
-    log("saveConfig failed: " + (err && err.message || err));
+    log("saveConfig failed: " + safeLog(err));
   }
 }
 
@@ -170,10 +171,10 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.3.9";
+const VERSION = "1.4.0";
 
 function scheduleAutoUpdate() {
-  const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + e.message));
+  const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
   setTimeout(run, 15000);
   const timer = setInterval(run, 6 * 60 * 60 * 1000);
   if (timer.unref) timer.unref();
@@ -380,13 +381,13 @@ async function runAgent(opts = {}) {
     });
     log("Local engine call control: http://127.0.0.1:18787");
   } catch (e) {
-    log("Local engine call control unavailable: " + e.message);
+    log("Local engine call control unavailable: " + safeLog(e));
     if (pendingValidation && pendingValidation.awaitingReadiness) await rollbackPendingUpdate(VERSION).catch(() => {});
     throw e;
   }
 
   // Initialize local database for offline resilience
-  try { localDb.open(configDir); log("Local database ready."); } catch (e) { log("Local DB init failed: " + e.message); }
+  try { localDb.open(configDir); log("Local database ready."); } catch (e) { log("Local DB init failed: " + safeLog(e)); }
 
   const useWebUi = opts.webui === true || isPacked() || opts.setup === true || opts.open === true;
   let uiServer = null;
@@ -494,7 +495,7 @@ async function runAgent(opts = {}) {
         maybeOpen(srv.url);
       }
     } catch (e) {
-      log("Customer local endpoint unavailable: " + e.message);
+      log("Customer local endpoint unavailable: " + safeLog(e));
       try { if (engineHealthServer) engineHealthServer.close(); } catch {}
       if (pendingValidation && pendingValidation.awaitingReadiness) await rollbackPendingUpdate(VERSION).catch(() => {});
       throw e;
@@ -537,60 +538,11 @@ async function runAgent(opts = {}) {
   if (uiServer) log("  Dashboard: " + uiServer.url);
   log("");
 
-  // Optional: run one live voice call before entering the heartbeat loop.
-  // `--call` makes the agent speak through the speakers and listen through
-  // the mic (free). A real phone line plugs in as a different speak/listen.
-  if (opts.call === true) {
-    let voiceCall;
-    try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + err.message); }
-    if (voiceCall) try {
-      // Bind this conversation to the cloud SIP session that actually owns the
-      // phone audio. Never let a telephone call silently fall back to the PC mic.
-      const phoneSession = await ensurePhoneSession({
-        portal,
-        token: config.token,
-        callList: config.callList,
-        post,
-        log,
-      });
-      const sessionId = phoneSession.sessionId;
-      log("Attaching AI to phone media session " + sessionId);
-      const result = await voiceCall({
-        sessionId,
-        product: config.product,
-        leadFields: config.leadFields || [],
-        persona: config.persona,
-        companyName: config.companyName,
-        callbackNumber: config.callbackNumber,
-        callbackIn: config.callbackIn,
-        contactEmail: config.contactEmail,
-        token: config.token,
-        portal,
-        learning: config.learning,
-        locale: config.lang || "en",
-        voiceStyle: config.voiceStyle || "human",
-        onLog: (m) => { log(m); ui({ line: m }); },
-        onMode: (m) => ui({ mode: m }),
-      });
-      config.learning = result.learning;
-      bumpStats(config, result);
-      pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? ". EMAILED to " + (config.contactEmail || "the portal") : ""}`);
-      saveConfig(config, cfgPath);
-      const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;
-      log(finalLine);
-      ui({ mode: config.mode || "on", line: finalLine });
-    } catch (e) {
-      log("Voice call failed: " + e.message);
-      ui({ mode: config.mode || "on", line: "Voice call failed - retrying later." });
-    }
-    if (opts.callOnce === true) {
-      log("Test call finished. Exiting (heartbeat stays with the main agent).");
-      return;
-    }
-  }
+  const enrolledToken = config.deviceToken || config.token;
+  let stopHeartbeat = false;
 
-  // Heartbeat + obey disable loop.
-  while (true) {
+  const heartbeatTask = (async () => {
+    while (!stopHeartbeat) {
     try {
       const syncPayload = sync.buildSyncPayload();
       const heartbeatPortal = String(config.portalUrl || portal).replace(/\/+$/, "");
@@ -619,11 +571,68 @@ async function runAgent(opts = {}) {
         ui({ status: "OFFLINE", mode: config.mode || "on", line: "Heartbeat rejected - reconnect this PC from the portal." });
       }
     } catch (err) {
-      log(`heartbeat failed (${err.code || err.message}) - retrying. Agent continues offline.`);
+      log(`heartbeat failed (${safeLog(err,[enrolledToken])}) - retrying. Agent continues offline.`);
       ui({ status: "OFFLINE", mode: config.mode || "on", line: "Reconnecting to portal..." });
     }
-    await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+      if (!stopHeartbeat) await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+    }
+  })();
+
+  // Optional call runs while the same heartbeat task keeps the single-PC lease alive.
+  if (opts.call === true) {
+    let voiceCall;
+    try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + safeLog(err,[enrolledToken])); }
+    if (voiceCall) try {
+      // Bind this conversation to the cloud SIP session that actually owns the
+      // phone audio. Never let a telephone call silently fall back to the PC mic.
+      const phoneSession = await ensurePhoneSession({
+        portal,
+        token: enrolledToken,
+        callList: config.callList,
+        post,
+        log,
+      });
+      const sessionId = phoneSession.sessionId;
+      log("Attaching AI to phone media session " + sessionId);
+      const result = await voiceCall({
+        sessionId,
+        product: config.product,
+        leadFields: config.leadFields || [],
+        persona: config.persona,
+        companyName: config.companyName,
+        callbackNumber: config.callbackNumber,
+        callbackIn: config.callbackIn,
+        contactEmail: config.contactEmail,
+        token: enrolledToken,
+        portal,
+        learning: config.learning,
+        locale: config.lang || "en",
+        voiceStyle: config.voiceStyle || "human",
+        onLog: (m) => { log(m); ui({ line: m }); },
+        onMode: (m) => ui({ mode: m }),
+      });
+      config.learning = result.learning;
+      bumpStats(config, result);
+      pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? ". EMAILED to " + (config.contactEmail || "the portal") : ""}`);
+      saveConfig(config, cfgPath);
+      const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;
+      log(finalLine);
+      ui({ mode: config.mode || "on", line: finalLine });
+    } catch (e) {
+      log("Voice call failed: " + safeLog(e,[enrolledToken]));
+      ui({ mode: config.mode || "on", line: "Voice call failed - retrying later." });
+    }
+    if (opts.callOnce === true) {
+      log("Test call finished. Exiting.");
+      stopHeartbeat = true;
+      await heartbeatTask;
+      return;
+    }
   }
+
+
+  // Normal agent lifetime is owned by the one heartbeat task above.
+  await heartbeatTask;
 }
 
 module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity };
@@ -638,10 +647,10 @@ if (require.main === module) {
   const noBrowser = argv.includes("--no-browser") || argv.includes("--silent") || argv.includes("--startup");
    const rest = argv.filter((a) => !a.startsWith("--"));
   if (argv.includes("--watchdog")) {
-    runWatchdog(argv.filter((a) => a !== "--watchdog")).catch((e) => { console.error(e); process.exit(1); });
+    runWatchdog(argv.filter((a) => a !== "--watchdog")).catch((e) => { console.error(safeLog(e)); process.exit(1); });
   } else {
     runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce, open, noBrowser }).catch((e) => {
-      console.error(e);
+      console.error(safeLog(e));
       process.exit(1);
     });
   }

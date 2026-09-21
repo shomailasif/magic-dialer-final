@@ -1,6 +1,7 @@
 import Papa from "papaparse";
 import ExcelJS from "exceljs";
 import { prisma } from "@/lib/db";
+import { normalizePhoneForSuppression } from "@/lib/call-compliance";
 
 export interface ImportRowError {
   row: number;
@@ -74,6 +75,8 @@ export async function parseAndImportLeads(
       continue;
     }
 
+    const normalizedPhone=normalizePhoneForSuppression(r.phone);
+    const suppression=normalizedPhone?await prisma.phoneSuppression.findUnique({where:{userId_normalizedPhone:{userId,normalizedPhone}}}):null;
     await prisma.lead.create({
       data: {
         userId,
@@ -83,6 +86,12 @@ export async function parseAndImportLeads(
         company: r.company || null,
         extraData: r.extra ? JSON.stringify(r.extra) : null,
         status: "PENDING",
+        doNotCall: !!suppression,
+        doNotCallAt: suppression ? suppression.createdAt : null,
+        doNotCallReason: suppression ? "TENANT_PHONE_SUPPRESSION" : null,
+        consentStatus: suppression ? "DENIED" : "UNKNOWN",
+        consentSource: suppression ? "TENANT_PHONE_SUPPRESSION" : null,
+        consentUpdatedAt: suppression ? suppression.createdAt : null,
       },
     });
     imported++;

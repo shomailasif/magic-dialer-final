@@ -22,6 +22,10 @@ export interface ConversationState {
   conversationHistory: LLMMessage[];
   lastAgentSaid: string;
   silenceCount: number;
+  strategyId: string | null;
+  strategyVersion: number;
+  experimentId: string | null;
+  experimentName: string;
 }
 
 export interface AIResponse {
@@ -93,6 +97,10 @@ export function createConversation(config: {
   productName?: string;
   pitch?: string;
   pricing?: string;
+  strategyId?: string | null;
+  strategyVersion?: number;
+  experimentId?: string | null;
+  experimentName?: string;
 }): ConversationState {
   return {
     phase: "greeting",
@@ -111,6 +119,10 @@ export function createConversation(config: {
     conversationHistory: [],
     lastAgentSaid: "",
     silenceCount: 0,
+    strategyId: config.strategyId || null,
+    strategyVersion: Number(config.strategyVersion || 0),
+    experimentId: config.experimentId || null,
+    experimentName: config.experimentName || "",
   };
 }
 
@@ -160,6 +172,7 @@ export async function processProspectInput(
       pitch: state.pitch,
       tone: state.tone,
       pricing: state.pricing || undefined,
+      strategyContext: state.strategyVersion ? `Use assigned sales strategy version ${state.strategyVersion}${state.experimentName ? `, experiment ${state.experimentName}` : ""}. Stay truthful and within supplied product facts.` : undefined,
     });
   } catch (e) {
     console.error("[free-ai] LLM threw error; scripted fallback is disabled");

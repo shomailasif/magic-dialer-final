@@ -11,7 +11,38 @@ $tests = @(
   "build\\ai-gateway-contract.test.js",
   "build\\groq-direct-probe-contract.test.js",
   "build\\engine-ai-stage-contract.test.js",
-  "build\\ai-transport-repair.behavior.test.js"
+  "build\\engine-device-auth-contract.test.js",
+  "build\\engine-device-auth.behavior.test.ts",
+  "build\\ai-quota.behavior.test.ts",
+  "build\\ai-quota-contract.test.js",
+  "build\\ai-retry.behavior.test.ts",
+  "build\\ai-retry-contract.test.js",
+  "build\\ai-transport-repair.behavior.test.js",
+  "build\\safe-diagnostic.behavior.test.js",
+  "build\\safe-diagnostic-contract.test.js",
+  "build\\call-diagnostic-correlation.test.js",
+  "build\\self-contained-tts-contract.test.js",
+  "build\\sales-foundation-contract.test.js",
+  "build\\controlled-learning-contract.test.js",
+  "build\\live-strategy-binding-contract.test.js",
+  "build\\experiment-selection-contract.test.js",
+  "build\\compliance-gate-contract.test.js",
+  "build\\telephony-abstraction-contract.test.js",
+  "build\\adaptive-strategy-proposal-contract.test.js",
+  "build\\live-voice-style-contract.test.js",
+  "build\\residual-diagnostic-contract.test.js",
+  "build\\live-call-diagnostic-contract.test.js",
+  "build\\legacy-learning-isolation-contract.test.js",
+  "build\\strategy-lifecycle-contract.test.js",
+  "build\\campaign-autonomy-contract.test.js",
+  "build\\runtime-credential-boundary-contract.test.js",
+  "build\\followup-attempt-contract.test.js",
+  "build\\call-persistence-contract.test.js",
+  "build\\tenant-phone-suppression-contract.test.js",
+  "build\\evidence-integrity-contract.test.js",
+  "build\\stale-campaign-recovery-contract.test.js",
+  "build\\consent-provenance-contract.test.js",
+  "build\\platform-secret-isolation-contract.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {
@@ -23,7 +54,7 @@ foreach ($t in $tests) {
     $fail++
     continue
   }
-  & $node $target
+  if ($t.EndsWith(".ts")) { & (Join-Path $PSScriptRoot "..\\..\\..\\node_modules\\.bin\\tsx.cmd") $target } else { & $node $target }
   if ($LASTEXITCODE -eq 0) { Write-Host "  $t : PASS" -ForegroundColor Green }
   else { Write-Host "  $t : FAIL" -ForegroundColor Red; $fail++ }
 }

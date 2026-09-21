@@ -27,16 +27,16 @@ const route=fs.readFileSync(routePath,"utf8");
   assert.match(body.messages[0].content,/ACTIVE CONVERSATION LANGUAGE: en/);              // 14
   assert.equal(body.messages[1].role,"user");                                             // 15
   assert.equal(body.messages[1].content,"Reply with exactly READY.");                     // 16
-  assert.match(route,/bodyToken:unknown/);                                                // 17
-  assert.match(route,/String\(bodyToken\|\|headerToken\|\|""\)/);                    // 18
-  assert.match(route,/await auth\(r,b\.deviceToken\)/);                                 // 19
-  assert.match(route,/tokenHash:H\(t\)/);                                                // 20
-  assert.match(route,/select:\{revokedAt:true\}/);                                       // 21
-  assert.match(route,/if\(!d\|\|d\.revokedAt\)/);                                     // 22
-  assert.match(route,/diagnosticStage:"device-auth"/);                                   // 23
+  assert.match(route,/authorizeActiveEngineDevice/);                                      // 17
+  assert.match(route,/engineBearerToken/);                                                // 18
+  assert.match(route,/b\.deviceToken\|\|engineBearerToken\(r\)/);                         // 19
+  assert.doesNotMatch(route,/async function auth/);                                      // 20
+  assert.doesNotMatch(route,/tokenHash:H\(t\)/);                                       // 21
+  assert.match(route,/if\(!d\)return fail\("Unauthorized","device-auth","UNAUTHORIZED",401\)/);                            // 22
+  assert.ok(route.includes("safeDiagnostic(stage,code,status,requestId,callId)"));                                   // 23
   assert.match(route,/PRIMARY_MODEL="openai\/gpt-oss-120b"/);                            // 24
   assert.match(route,/FALLBACK_MODEL="openai\/gpt-oss-20b"/);                            // 25
-  assert.match(route,/AbortSignal\.timeout\(3200\)/);                                   // 26
+  assert.match(route,/AbortSignal\.timeout\(timeout\)/);                                   // 26
   assert.match(route,/TRANSIENT=new Set\(\[429,500,502,503,504\]\)/);                   // 27
   assert.match(route,/Authorization:"Bearer "\+key/);                                   // 28 provider auth unchanged
   assert.doesNotMatch(route,/RC_SIP|RingCentral/);                                       // 29

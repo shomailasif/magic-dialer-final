@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.3.9
+AppVersion=1.4.0
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -32,6 +32,7 @@ WizardStyle=modern
 ; the real corporate GUI launcher the customer clicks. Both must ship.
 Source: "dist\agent.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\MagicDialer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "assets\logo-256.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -62,7 +63,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.3.9.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.0.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;
