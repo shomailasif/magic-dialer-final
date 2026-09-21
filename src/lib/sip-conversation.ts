@@ -7,7 +7,7 @@ import {
   getCollectedData,
   type ConversationState,
 } from "@/lib/free-ai";
-import { GUARD_EDGE_TTS_BROKEN_INIT, GUARD_GOOGLE_TTS_CLIENT, logGuardStatus } from "@/lib/guards";
+import { GUARD_EDGE_TTS_BROKEN_INIT, logGuardStatus } from "@/lib/guards";
 import { isSpokenOptOut } from "@/lib/call-compliance";
 import { redactDiagnostic } from "@/lib/safe-diagnostic";
 

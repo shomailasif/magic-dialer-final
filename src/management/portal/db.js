@@ -170,7 +170,8 @@ async function initPostgres(pool) {
   // adds columns): the platform features + strategies need these columns, or
   // saveLeads/updateCustomer/call-result crashes on a pre-existing DB.
   for (const ddl of [
-    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS voip_ready INTEGER NOT NULL DEFAULT 0",\n    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS device_token TEXT",
+    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS voip_ready INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE customers ADD COLUMN IF NOT EXISTS device_token TEXT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS settings TEXT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS call_list TEXT",
     "ALTER TABLE customers ADD COLUMN IF NOT EXISTS leads_found TEXT",
@@ -210,7 +211,8 @@ function rowToCustomer(r) {
     last_seen: r.last_seen == null ? null : Number(r.last_seen),
     status: r.status,
     disabled: Number(r.disabled),
-    voip_ready: Number(r.voip_ready),\n    device_token: r.device_token || null,
+    voip_ready: Number(r.voip_ready),
+    device_token: r.device_token || null,
     portal_id: r.portal_id,
   };
 }

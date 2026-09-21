@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "crypto";
+import { createHash, createHmac, timingSafeEqual } from "crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
@@ -54,8 +54,7 @@ export type AuthUser = User & {
  * Generate a device fingerprint from request headers
  */
 export function generateDeviceFingerprint(userAgent: string, ip: string): string {
-  const crypto = require("crypto");
-  return crypto.createHash("sha256").update(`${userAgent}:${ip}`).digest("hex").slice(0, 32);
+  return createHash("sha256").update(`${userAgent}:${ip}`).digest("hex").slice(0, 32);
 }
 
 /**
