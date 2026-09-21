@@ -13,5 +13,5 @@ const stt=fs.readFileSync(path.join(root,"src","app","api","engine","ai","stt","
 assert.match(chat,/authorizeActiveEngineDevice\(b\.deviceToken\|\|engineBearerToken\(r\)\)/);
 assert.match(stt,/authorizeActiveEngineDevice\(engineBearerToken\(r\)\)/);
 assert.doesNotMatch(chat,/findUnique\(/); assert.doesNotMatch(stt,/findUnique\(/);
-assert.match(chat,/status:401/); assert.match(stt,/status:401/);
+assert.match(chat,/UNAUTHORIZED",401/); assert.match(stt,/UNAUTHORIZED",401/);
 console.log("central engine device lease auth contract: PASS");
