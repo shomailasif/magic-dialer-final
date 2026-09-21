@@ -81,14 +81,20 @@ async function main() {
       run(diffArgs(shadow, ["--script", "--output", forwardSql]));
       run(["db", "execute", "--url", databaseUrl, "--file", forwardSql], { stdio: "inherit" });
 
-      const verify = spawnSync(prismaBin, diffArgs(shadow, ["--exit-code"]), {
-        cwd: root,
-        env: process.env,
-        encoding: "utf8",
-        stdio: "pipe",
-      });
-      if (verify.status !== 0) {
-        throw new Error(`Database reconciliation verification failed (exit ${verify.status}): ${verify.stderr || verify.stdout}`);
+      rmSync(shadow.path, { force: true });
+      const verifyShadow = shadowUrl();
+      try {
+        const verify = spawnSync(prismaBin, diffArgs(verifyShadow, ["--exit-code"]), {
+          cwd: root,
+          env: process.env,
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+        if (verify.status !== 0) {
+          throw new Error(`Database reconciliation verification failed (exit ${verify.status}): ${verify.stderr || verify.stdout}`);
+        }
+      } finally {
+        rmSync(verifyShadow.path, { force: true });
       }
 
       for (const migration of migrationNames()) {
