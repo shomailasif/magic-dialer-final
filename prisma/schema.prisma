@@ -105,6 +105,7 @@ model User {
   salesExperiments SalesExperiment[]
   callAttributions CallAttribution[]
   strategyLearningEvents StrategyLearningEvent[]
+  phoneSuppressions PhoneSuppression[]
   activeEngineMachineId String?
   engineLeaseUntil DateTime?
 
@@ -363,6 +364,18 @@ model PlatformSetting {
   updatedAt DateTime @updatedAt
 }
 
+
+model PhoneSuppression {
+  id String @id @default(cuid())
+  userId String
+  user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+  normalizedPhone String
+  reason String
+  source String
+  createdAt DateTime @default(now())
+  @@unique([userId, normalizedPhone])
+  @@index([userId, createdAt])
+}
 
 model EngineDevice {
   id          String   @id @default(cuid())

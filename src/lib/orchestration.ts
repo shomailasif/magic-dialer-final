@@ -6,7 +6,7 @@ import type { SIPCallResult } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
 import { ensureSalesFoundation, recordCallAttribution, effectiveAgentConfig } from "@/lib/sales-foundation";
 import { learnFromAttributedOutcome, proposeStrategyVersion } from "@/lib/controlled-learning";
-import { decideCallCompliance } from "@/lib/call-compliance";
+import { decideCallCompliance, normalizePhoneForSuppression } from "@/lib/call-compliance";
 import { redactDiagnostic } from "@/lib/safe-diagnostic";
 import { decryptSecret } from "@/lib/credential-crypto";
 
@@ -89,7 +89,9 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
 
   try {
   for (const lead of dueLeads) {
-    const compliance = decideCallCompliance({doNotCall:lead.doNotCall,phone:lead.phone,consentStatus:lead.consentStatus});
+    const normalizedPhone=normalizePhoneForSuppression(lead.phone);
+    const tenantSuppression=normalizedPhone?await prisma.phoneSuppression.findUnique({where:{userId_normalizedPhone:{userId,normalizedPhone}}}):null;
+    const compliance = decideCallCompliance({doNotCall:lead.doNotCall||!!tenantSuppression,phone:lead.phone,consentStatus:tenantSuppression?"DENIED":lead.consentStatus});
     if(!compliance.allowed){ console.warn("[campaign] call suppressed", compliance.code, lead.id); continue; }
     let sipResult = null as SIPCallResult | null;
     let dialResult: { connected: boolean; outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED"; durationSecs: number } = { connected: false, outcome: "FAILED", durationSecs: 0 };
@@ -159,7 +161,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     const executionKey=campaign.id+":"+lead.id;
     const existingCall=await prisma.call.findUnique({where:{executionKey}});
     if(existingCall){continue;}
-    const [,storedCall] = await prisma.$transaction([
+    const txWrites:any[] = [
       prisma.lead.update({
         where: { id: lead.id },
         data: {
@@ -196,7 +198,10 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         }),
       },
     }),
-    ]);
+    ];
+    if(sipResult?.doNotCall && normalizedPhone){txWrites.push(prisma.phoneSuppression.upsert({where:{userId_normalizedPhone:{userId,normalizedPhone}},update:{reason:"SPOKEN_OPT_OUT",source:"LIVE_CALL"},create:{userId,normalizedPhone,reason:"SPOKEN_OPT_OUT",source:"LIVE_CALL"}}));}
+    const txResult=await prisma.$transaction(txWrites);
+    const storedCall=txResult[1] as any;
     await recordCallAttribution({userId,callId:storedCall.id,strategyId:foundation.strategy.id,experimentId:foundation.experiment.id,outcome:resultStatus,evidence:{dialOutcome:dialResult.outcome,disposition}});
     const learningEvent = await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});
     if(learningEvent.action==="ELIGIBLE_FOR_STRATEGY_REVIEW"){

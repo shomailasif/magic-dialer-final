@@ -10,3 +10,5 @@ export function isSpokenOptOut(text:string){
  const x=String(text||"").toLowerCase().replace(/[’]/g,"'");
  return ["stop calling","don't call","do not call","remove me","take me off","unsubscribe"].some(p=>x.includes(p));
 }
+
+export function normalizePhoneForSuppression(phone:string|null|undefined){return String(phone||"").replace(/\D/g,"");}
