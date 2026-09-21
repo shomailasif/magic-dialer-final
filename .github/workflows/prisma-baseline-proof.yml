@@ -23,6 +23,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -s prisma/migrations/migration_lock.toml
+          grep -q 'provider = "sqlite"' prisma/migrations/migration_lock.toml
           test -s prisma/migrations/0_init/migration.sql
           test -s prisma/migrations/20260920_ai_quota/migration.sql
       - name: Prove fresh database deployment
