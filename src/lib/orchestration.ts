@@ -25,7 +25,9 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   });
   if (!user) return { ok: false as const, error: "User not found" };
 
-  if (user.subscription?.status !== "ACTIVE") {
+  // Allow test calls (limit=1) even without active subscription
+  const isTestCall = limit <= 1;
+  if (!isTestCall && user.subscription?.status !== "ACTIVE") {
     return {
       ok: false as const,
       error:
@@ -100,23 +102,30 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
           durationSecs: sipResult.durationSecs,
         };
       } catch (e) {
-        console.error("[campaign] SIP call failed, falling back to RingOut:", e);
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("[campaign] SIP call failed, falling back to RingOut:", errMsg);
         sipResult = null;
       }
     }
 
     if (!sipResult) {
-      dialResult = await placeCall({
-        from: user.dialerConfig?.outboundNumber || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "Unknown Caller",
-        to: lead.phone || "",
-        provider: user.dialerConfig?.provider || "RINGCENTRAL",
-        apiKey: user.dialerConfig?.apiKey || process.env.RC_API_KEY || null,
-        accountSid: user.dialerConfig?.accountSid || process.env.RC_ACCOUNT_SID || null,
-      });
+      try {
+        dialResult = await placeCall({
+          from: user.dialerConfig?.outboundNumber || process.env.RC_CALLER_ID || process.env.RC_SIP_USERNAME || "Unknown Caller",
+          to: lead.phone || "",
+          provider: user.dialerConfig?.provider || "RINGCENTRAL",
+          apiKey: user.dialerConfig?.apiKey || process.env.RC_API_KEY || null,
+          accountSid: user.dialerConfig?.accountSid || process.env.RC_ACCOUNT_SID || null,
+        });
 
-      if (dialResult.connected && user.agentConfig) {
-        const callLocale = detectLeadLanguage(lead, user.agentConfig);
-        aiResult = await runAIagent(user.agentConfig, lead, callLocale);
+        if (dialResult.connected && user.agentConfig) {
+          const callLocale = detectLeadLanguage(lead, user.agentConfig);
+          aiResult = await runAIagent(user.agentConfig, lead, callLocale);
+        }
+      } catch (e) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("[campaign] RingOut call also failed:", errMsg);
+        dialResult = { connected: false, outcome: "FAILED", durationSecs: 0 };
       }
     }
 

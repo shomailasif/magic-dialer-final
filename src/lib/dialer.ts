@@ -39,7 +39,14 @@ export async function validateProvider(config: DialerConfig) {
   return { ok: true };
 }
 
+let rcTokenCache: { token: string; expiresAt: number } | null = null;
+
 async function rcGetToken(): Promise<string> {
+  // Return cached token if still valid (with 60s safety margin)
+  if (rcTokenCache && Date.now() < rcTokenCache.expiresAt - 60000) {
+    return rcTokenCache.token;
+  }
+
   const clientId = process.env.RC_CLIENT_ID || "";
   const clientSecret = process.env.RC_CLIENT_SECRET || "";
   const jwt = process.env.RC_JWT || "";
@@ -52,7 +59,10 @@ async function rcGetToken(): Promise<string> {
       body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }).toString(),
     });
     if (!r.ok) throw new Error("RC JWT rejected: " + r.status);
-    return (await r.json()).access_token;
+    const data = await r.json();
+    const expiresIn = Number(data.expires_in) || 3600;
+    rcTokenCache = { token: data.access_token, expiresAt: Date.now() + expiresIn * 1000 };
+    return rcTokenCache.token;
   }
 
   const sipUser = process.env.RC_SIP_USERNAME || "";
@@ -65,7 +75,10 @@ async function rcGetToken(): Promise<string> {
       body: new URLSearchParams({ grant_type: "password", username: sipUser, password: sipPass, extension: "101" }).toString(),
     });
     if (!r.ok) throw new Error("RC password token rejected: " + r.status);
-    return (await r.json()).access_token;
+    const data = await r.json();
+    const expiresIn = Number(data.expires_in) || 3600;
+    rcTokenCache = { token: data.access_token, expiresAt: Date.now() + expiresIn * 1000 };
+    return rcTokenCache.token;
   }
 
   throw new Error("No RingCentral credentials configured");
@@ -90,7 +103,11 @@ export async function placeCall(input: PlaceCallInput): Promise<DialResult> {
           playPrompt: false,
         }),
       });
-      if (!r.ok) return { connected: false, outcome: "FAILED", durationSecs: 0 };
+      if (!r.ok) {
+        // If 401, invalidate token cache so next call refreshes
+        if (r.status === 401) rcTokenCache = null;
+        return { connected: false, outcome: "FAILED", durationSecs: 0 };
+      }
       const d = await r.json();
       const ringoutId = d.id || "";
 
