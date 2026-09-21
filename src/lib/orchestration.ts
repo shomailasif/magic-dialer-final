@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/db";
 import { placeCall, validateProvider } from "@/lib/dialer";
 import { deliverOutcomeNotification } from "@/lib/notifications";
-import { makeSIPCall } from "@/lib/sip-caller";
+import { createTelephonySession, certifiedLiveProvider } from "@/lib/telephony-session";
+import type { SIPCallResult } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
 import { ensureSalesFoundation, recordCallAttribution, effectiveAgentConfig } from "@/lib/sales-foundation";
 import { learnFromAttributedOutcome } from "@/lib/controlled-learning";
@@ -72,18 +73,18 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     data: { userId, name: `Campaign ${new Date().toISOString().slice(0, 16)}`, strategyId: foundation.strategy.id, experimentId: foundation.experiment.id },
   });
 
-  const hasSIP = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
+  const selectedProvider = user.dialerConfig?.provider || "RINGCENTRAL";
+  const hasSIP = certifiedLiveProvider(selectedProvider) && !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
 
   for (const lead of dueLeads) {
     const compliance = decideCallCompliance({doNotCall:lead.doNotCall,phone:lead.phone,consentStatus:lead.consentStatus});
     if(!compliance.allowed){ console.warn("[campaign] call suppressed", compliance.code, lead.id); continue; }
-    let sipResult = null as Awaited<ReturnType<typeof makeSIPCall>> | null;
+    let sipResult = null as SIPCallResult | null;
     let dialResult: { connected: boolean; outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED"; durationSecs: number } = { connected: false, outcome: "FAILED", durationSecs: 0 };
 
     if (hasSIP && lead.phone) {
       try {
-        sipResult = await makeSIPCall(
-          {
+        const telephony = createTelephonySession(selectedProvider, {
             user: process.env.RC_SIP_USERNAME || "",
             pass: process.env.RC_SIP_PASSWORD || "",
             authId: process.env.RC_SIP_AUTH_ID || process.env.RC_SIP_USERNAME || "",
@@ -92,9 +93,8 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
             port: Number(process.env.RC_SIP_PORT || "5096"),
             number: lead.phone,
             callerId: process.env.RC_CALLER_ID || "",
-          },
-          liveAgentConfig,
-        );
+          });
+        sipResult = await telephony.placeConversationalCall(liveAgentConfig);
         dialResult = {
           connected: sipResult.connected,
           outcome: sipResult.connected ? "CONNECTED" : "NO_ANSWER",
