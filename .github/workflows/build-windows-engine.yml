@@ -12,9 +12,12 @@ on:
     branches: ["main"]
     paths:
       - "src/management/agent/**"
-      - "src/management/build/**"
       - "src/management/package.json"
-      - ".github/workflows/build-windows-engine.yml"
+      - "src/management/build/assets/**"
+      - "src/management/build/bundle.js"
+      - "src/management/build/compile-launcher.ps1"
+      - "src/management/build/installer.iss"
+      - "src/management/build/launcher.cs"
 
 permissions:
   contents: write
