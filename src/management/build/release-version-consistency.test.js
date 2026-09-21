@@ -29,6 +29,18 @@ assert.equal((workflow.match(/\$tag = "engine-v\$version"/g) || []).length, 1, "
 assert.equal((workflow.match(/--clobber/g) || []).length, 1, "only the legacy 1.3.9 migration bridge may use clobber");
 assert.ok(workflow.includes("sourceCommit = $env:GITHUB_SHA"), "immutable manifest must bind source commit");
 assert.ok(workflow.includes("tag = $tag"), "immutable manifest must bind release tag");
+const pushBlock = one(workflow, /(  push:\n[\s\S]*?)(?=\npermissions:)/g, "main push trigger");
+assert.ok(!pushBlock.includes('"src/management/build/**"'), "main push must not treat build-only tests as immutable release inputs");
+for (const required of [
+  '"src/management/agent/**"',
+  '"src/management/package.json"',
+  '"src/management/build/assets/**"',
+  '"src/management/build/bundle.js"',
+  '"src/management/build/compile-launcher.ps1"',
+  '"src/management/build/installer.iss"',
+  '"src/management/build/launcher.cs"'
+]) assert.ok(pushBlock.includes(required), "main push release boundary missing " + required);
+assert.ok(!pushBlock.includes('".github/workflows/build-windows-engine.yml"'), "workflow-only main merges must not republish an immutable engine version");
 
 for (const [label, value] of Object.entries({installerVersion, launcherAssembly, launcherFile, launcherInfo, manifestVersion})) {
   assert.equal(value, agentVersion, label + " must equal agent version " + agentVersion);
