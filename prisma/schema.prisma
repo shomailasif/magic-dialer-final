@@ -104,6 +104,7 @@ model User {
   salesStrategies SalesStrategy[]
   salesExperiments SalesExperiment[]
   callAttributions CallAttribution[]
+  strategyLearningEvents StrategyLearningEvent[]
   activeEngineMachineId String?
   engineLeaseUntil DateTime?
 
@@ -425,6 +426,7 @@ model SalesStrategy {
   campaigns CallCampaign[]
   experiments SalesExperiment[]
   attributions CallAttribution[]
+  learningEvents StrategyLearningEvent[]
   @@unique([userId, version])
   @@index([userId, active])
 }
@@ -463,4 +465,21 @@ model CallAttribution {
   @@index([userId, createdAt])
   @@index([strategyId])
   @@index([experimentId])
+}
+
+
+model StrategyLearningEvent {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  strategyId  String
+  strategy    SalesStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  outcome     String
+  reward      Float
+  sampleSize  Int
+  action      String   @default("OBSERVE")
+  evidenceJson String?
+  createdAt   DateTime @default(now())
+  @@index([userId, createdAt])
+  @@index([strategyId, createdAt])
 }

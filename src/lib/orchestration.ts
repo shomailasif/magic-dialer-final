@@ -4,6 +4,7 @@ import { deliverOutcomeNotification } from "@/lib/notifications";
 import { makeSIPCall } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
 import { ensureSalesFoundation, recordCallAttribution } from "@/lib/sales-foundation";
+import { learnFromAttributedOutcome } from "@/lib/controlled-learning";
 
 /**
  * Execute a campaign run for a business admin.
@@ -177,6 +178,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       },
     });
     await recordCallAttribution({userId,callId:storedCall.id,strategyId:foundation.strategy.id,experimentId:foundation.experiment.id,outcome:resultStatus,evidence:{dialOutcome:dialResult.outcome,disposition}});
+    await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});
 
     callsMade++;
     if (resultStatus === "INTERESTED") interested++;
