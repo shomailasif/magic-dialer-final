@@ -68,6 +68,12 @@ async function applyAdditiveStatement(statement) {
   throw new Error("Legacy adoption encountered a non-additive or unsupported migration statement; refusing to mutate production.");
 }
 
+async function callCampaignForeignKeysPresent() {
+  const rows = await prisma.$queryRawUnsafe('PRAGMA foreign_key_list("CallCampaign")');
+  const from = new Set(rows.map((row) => String(row.from)));
+  return from.has("strategyId") && from.has("experimentId");
+}
+
 async function tableNames() {
   const rows = await prisma.$queryRawUnsafe("SELECT name FROM sqlite_schema WHERE type='table'");
   return new Set(rows.map((row) => String(row.name)));
@@ -93,8 +99,10 @@ async function main() {
 
   console.log("[db-bootstrap] Legacy untracked database detected; performing one-time additive adoption.");
   const names = migrationNames();
+  const rebuildMigration = "20260922_callcampaign_strategy_fks";
+  const needsCallCampaignRebuild = !(await callCampaignForeignKeysPresent());
   for (const name of names) {
-    if (name === "0_init") continue;
+    if (name === "0_init" || name === rebuildMigration) continue;
     for (const statement of statementsFor(name)) await applyAdditiveStatement(statement);
   }
   await verifyIntegrity();
@@ -102,6 +110,9 @@ async function main() {
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required for legacy schema verification.");
+  if (needsCallCampaignRebuild) {
+    runPrisma(["db", "execute", "--url", databaseUrl, "--file", path.join(migrationRoot, rebuildMigration, "migration.sql")]);
+  }
   runPrisma(["migrate", "diff", "--from-url", databaseUrl, "--to-schema-datamodel", "prisma/schema.prisma", "--exit-code"]);
 
   for (const name of names) runPrisma(["migrate", "resolve", "--applied", name]);
