@@ -102,7 +102,7 @@ async function main() {
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required for legacy schema verification.");
-  runPrisma(["migrate", "diff", "--from-url", databaseUrl, "--to-schema", "prisma/schema.prisma", "--exit-code"]);
+  runPrisma(["migrate", "diff", "--from-url", databaseUrl, "--to-schema-datamodel", "prisma/schema.prisma", "--exit-code"]);
 
   for (const name of names) runPrisma(["migrate", "resolve", "--applied", name]);
 
