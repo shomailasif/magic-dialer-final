@@ -1,5 +1,5 @@
 name: Build Windows Engine
-# CI rerun marker: validate bb370d4 Windows upgrade gate
+# CI rerun marker: fresh runner after 6617c5d upgrade-step hang
 on:
   workflow_dispatch: {}
   pull_request:
