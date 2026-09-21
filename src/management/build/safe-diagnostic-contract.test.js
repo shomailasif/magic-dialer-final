@@ -4,7 +4,7 @@ const chat=fs.readFileSync(path.join(root,"app/api/engine/ai/chat/route.ts"),"ut
 const stt=fs.readFileSync(path.join(root,"app/api/engine/ai/stt/route.ts"),"utf8");
 const brain=fs.readFileSync(path.join(root,"management/agent/intelligent-brain.js"),"utf8");
 assert.match(chat,/diagnosticId\(r\.headers\.get\("x-request-id"\)\)/);
-assert.match(chat,/safeDiagnostic\(stage,code,status,requestId\)/);
+assert.match(chat,/safeDiagnostic\\(stage,code,status,requestId,callId\\)/);
 assert.doesNotMatch(chat,/publicReason=.*:a\.reason/);
 assert.match(stt,/diagnosticId\(r\.headers\.get\("x-request-id"\)\)/);
 assert.match(stt,/STT provider request failed/);

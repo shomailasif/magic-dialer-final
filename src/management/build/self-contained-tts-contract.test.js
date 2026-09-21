@@ -6,7 +6,7 @@ const iss=fs.readFileSync(path.join(root,"build/installer.iss"),"utf8");
 const wf=fs.readFileSync(path.join(root,"../../.github/workflows/build-windows-engine.yml"),"utf8");
 const checks=[
  ["voice prefers bundled Python",voice.includes("bundledPython")&&voice.indexOf("bundledPython")<voice.indexOf("process.env.AUTODIAL_PYTHON")],
- ["installer recursively ships runtime",iss.includes('Source: "dist\\\\runtime\\\\*"')&&iss.includes("recursesubdirs createallsubdirs")],
+ ["installer recursively ships runtime",iss.includes('Source: "dist\\runtime\\*"')&&iss.includes("recursesubdirs createallsubdirs")],
  ["workflow builds embedded Python",wf.includes("python-3.12.10-embed-amd64.zip")],
  ["workflow pins edge-tts",wf.includes("edge-tts==7.2.3")],
  ["workflow pins imageio-ffmpeg",wf.includes("imageio-ffmpeg==0.6.0")],
