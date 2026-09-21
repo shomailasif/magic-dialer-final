@@ -278,7 +278,13 @@ function wavToPcm16(buf: Buffer): Int16Array | null {
   return pcm;
 }
 
-const EDGE_VOICE = "en-US-JennyNeural";\nconst EDGE_FRIENDLY_VOICE = "en-US-AvaNeural";\nconst EDGE_DIRECT_VOICE = "en-US-GuyNeural";\nexport function voiceForTone(tone?:string){\n const t=String(tone||"").toUpperCase();\n return t==="FRIENDLY"?EDGE_FRIENDLY_VOICE:t==="DIRECT"?EDGE_DIRECT_VOICE:EDGE_VOICE;\n}
+const EDGE_VOICE = "en-US-JennyNeural";
+const EDGE_FRIENDLY_VOICE = "en-US-AvaNeural";
+const EDGE_DIRECT_VOICE = "en-US-GuyNeural";
+export function voiceForTone(tone?:string){
+ const t=String(tone||"").toUpperCase();
+ return t==="FRIENDLY"?EDGE_FRIENDLY_VOICE:t==="DIRECT"?EDGE_DIRECT_VOICE:EDGE_VOICE;
+}
 const EDGE_HOST = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 const EDGE_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 const EDGE_GEC_VERSION = "1-143.0.3650.75";
@@ -598,7 +604,8 @@ export async function runConversation(
     experimentName: agentConfig.experimentName,
   });
 
-  const greeting = getInitialGreeting(state);\n  const callVoice = voiceForTone(agentConfig.tone);
+  const greeting = getInitialGreeting(state);
+  const callVoice = voiceForTone(agentConfig.tone);
   // Opening audio must be ready before dialing so answer never waits on TTS.
   const greetingFrames = await textToFramesLocal(greeting, false, callVoice);
   const call = await sipCallBridge(sipConfig);

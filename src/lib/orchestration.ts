@@ -182,7 +182,10 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       },
     });
     await recordCallAttribution({userId,callId:storedCall.id,strategyId:foundation.strategy.id,experimentId:foundation.experiment.id,outcome:resultStatus,evidence:{dialOutcome:dialResult.outcome,disposition}});
-    const learningEvent = await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});\n    if(learningEvent.action==="ELIGIBLE_FOR_STRATEGY_REVIEW"){\n      await proposeStrategyVersion({userId,strategyId:foundation.strategy.id,reason:"evidence-threshold"});\n    }
+    const learningEvent = await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});
+    if(learningEvent.action==="ELIGIBLE_FOR_STRATEGY_REVIEW"){
+      await proposeStrategyVersion({userId,strategyId:foundation.strategy.id,reason:"evidence-threshold"});
+    }
 
     callsMade++;
     if (resultStatus === "INTERESTED") interested++;

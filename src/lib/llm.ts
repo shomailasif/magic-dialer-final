@@ -2,7 +2,9 @@
  * LLM Client - Groq API
  */
 
-import { redactDiagnostic } from "@/lib/safe-diagnostic";\n\nconst GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+import { redactDiagnostic } from "@/lib/safe-diagnostic";
+
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_KEY = process.env.GROQ_API_KEY || "";
 const GROQ_MODEL = process.env.GROQ_MODEL || "qwen/qwen3.8-27b";
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS || 3500);

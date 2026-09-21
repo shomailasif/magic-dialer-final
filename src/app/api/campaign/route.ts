@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { runCampaign } from "@/lib/orchestration";\nimport { diagnosticId, safeDiagnostic, redactDiagnostic } from "@/lib/safe-diagnostic";
+import { runCampaign } from "@/lib/orchestration";
+import { diagnosticId, safeDiagnostic, redactDiagnostic } from "@/lib/safe-diagnostic";
 
 export async function POST(request: Request) {
   const user = await getCurrentUser();
