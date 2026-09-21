@@ -213,6 +213,7 @@ jobs:
           $after = @(Get-Process agent -ErrorAction SilentlyContinue).Count
           if ($after -ne $before) { throw "Launcher executed another agent despite healthy local engine" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+      # Fresh-run trigger: rerun bounded in-place upgrade gate after runner-side hang; no behavior change.
       - name: In-place upgrade with running old engine
         timeout-minutes: 3
         shell: powershell
