@@ -154,7 +154,18 @@ jobs:
               if ($h.ok -eq $true -and $customerHealth.ok -eq $true) { $healthy = $true; break }
             } catch {}
           }
-          if (-not $healthy) { throw "Complete local engine was not ready before duplicate-launch gate" }
+          if (-not $healthy) {
+            Write-Host "REOPEN DIAGNOSTIC: complete readiness failed"
+            foreach ($uri in @("http://127.0.0.1:18787/health","http://127.0.0.1:48771/api/health")) {
+              try { Write-Host "$uri => $((Invoke-RestMethod -Uri $uri -TimeoutSec 2 | ConvertTo-Json -Compress))" } catch { Write-Host "$uri => ERROR: $($_.Exception.Message)" }
+            }
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("MagicDialer.exe","agent.exe","cmd.exe","node.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+            $childLog = Join-Path $app "watchdog-child.log"
+            if (Test-Path $childLog) { Write-Host "=== REOPEN WATCHDOG LOG TAIL ==="; Get-Content -LiteralPath $childLog -Tail 200 }
+            $lock = Join-Path $app "watchdog.lock"
+            if (Test-Path $lock) { Write-Host "REOPEN WATCHDOG LOCK:"; Get-Content -LiteralPath $lock }
+            throw "Complete local engine was not ready before duplicate-launch gate"
+          }
           Write-Host "REOPEN MARKER E: engine healthy"
           $before = @(Get-Process agent -ErrorAction SilentlyContinue).Count
           Write-Host "REOPEN MARKER F: starting duplicate launcher"
