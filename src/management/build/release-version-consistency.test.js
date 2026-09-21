@@ -15,7 +15,7 @@ function one(text, regex, label) {
 const agent = read(path.join(root, "agent", "agent.js"));
 const installer = read(path.join(root, "build", "installer.iss"));
 const launcher = read(path.join(root, "build", "launcher.cs"));
-const workflow = read(path.join(repoRoot, ".github", "workflows", "build-windows-engine.yml"));
+const workflow = read(path.join(repoRoot, ".github", "workflows", "build-windows-engine.yml")).replace(/\r\n/g, "\n");
 
 const agentVersion = one(agent, /const VERSION = "(\d+\.\d+\.\d+)";/g, "agent");
 const installerVersion = one(installer, /^AppVersion=(\d+\.\d+\.\d+)$/gm, "installer");
