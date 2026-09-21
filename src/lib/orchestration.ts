@@ -176,6 +176,8 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
           doNotCallAt: sipResult?.doNotCall ? new Date() : lead.doNotCallAt,
           doNotCallReason: sipResult?.doNotCall ? "SPOKEN_OPT_OUT" : lead.doNotCallReason,
           consentStatus: sipResult?.doNotCall ? "DENIED" : lead.consentStatus,
+          consentSource: sipResult?.doNotCall ? "SPOKEN_OPT_OUT" : lead.consentSource,
+          consentUpdatedAt: sipResult?.doNotCall ? new Date() : lead.consentUpdatedAt,
         },
       }),
       prisma.call.create({

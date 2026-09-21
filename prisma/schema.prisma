@@ -200,6 +200,8 @@ model Lead {
   doNotCallAt   DateTime?
   doNotCallReason String?
   consentStatus String     @default("UNKNOWN")
+  consentSource String?
+  consentUpdatedAt DateTime?
 
   followUpDueAt DateTime?
   followUpAttemptsMade Int @default(0)

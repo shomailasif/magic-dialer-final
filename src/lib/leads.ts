@@ -90,6 +90,8 @@ export async function parseAndImportLeads(
         doNotCallAt: suppression ? suppression.createdAt : null,
         doNotCallReason: suppression ? "TENANT_PHONE_SUPPRESSION" : null,
         consentStatus: suppression ? "DENIED" : "UNKNOWN",
+        consentSource: suppression ? "TENANT_PHONE_SUPPRESSION" : null,
+        consentUpdatedAt: suppression ? suppression.createdAt : null,
       },
     });
     imported++;

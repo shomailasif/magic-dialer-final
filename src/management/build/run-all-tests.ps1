@@ -40,7 +40,9 @@ $tests = @(
   "build\\call-persistence-contract.test.js",
   "build\\tenant-phone-suppression-contract.test.js",
   "build\\evidence-integrity-contract.test.js",
-  "build\\stale-campaign-recovery-contract.test.js"
+  "build\\stale-campaign-recovery-contract.test.js",
+  "build\\consent-provenance-contract.test.js",
+  "build\\platform-secret-isolation-contract.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {
