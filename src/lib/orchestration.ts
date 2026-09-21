@@ -76,10 +76,9 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   let interested = 0;
   let converted = 0;
 
-  if(dueLeads.length===0)return {ok:true as const,campaignId:null,callsMade:0,interested:0,converted:0,stats:null};
-
   const staleBefore=new Date(Date.now()-2*60*60*1000);
   await prisma.callCampaign.updateMany({where:{userId,status:"RUNNING",startedAt:{lt:staleBefore}},data:{status:"COMPLETED",endedAt:new Date()}});
+  if(dueLeads.length===0)return {ok:true as const,campaignId:null,callsMade:0,interested:0,converted:0,stats:null};
   const foundation = await ensureSalesFoundation(userId, user.agentConfig);
   const liveAgentConfig = effectiveAgentConfig(user.agentConfig, foundation.strategy, foundation.experiment);
   const campaign = await prisma.callCampaign.create({

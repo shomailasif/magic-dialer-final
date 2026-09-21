@@ -54,5 +54,9 @@ export async function selectExperiment(userId:string,strategyId:string){
   return {e,n:rows.length,mean:rows.length?rows.reduce((a,r)=>a+reward(r.outcome),0)/rows.length:0};
  }));
  const eligible=scored.filter(x=>x.n>=20).sort((a,b)=>b.mean-a.mean||a.e.startedAt.getTime()-b.e.startedAt.getTime());
- return (eligible[0]||scored[0]).e;
+ const control=scored.find(x=>{try{return JSON.parse(x.e.variantJson||"{}").kind==="CONTROL"}catch{return false}});
+ if(!eligible.length)return control?.e||scored[0].e;
+ const best=eligible[0];
+ if(control && best.e.id!==control.e.id && (control.n<20 || best.mean-control.mean<0.05))return control.e;
+ return best.e;
 }

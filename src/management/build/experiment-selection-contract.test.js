@@ -13,7 +13,7 @@ const checks=[
  ["minimum 20 samples",sf.includes("x.n>=20")],
  ["deterministic mean reward",sf.includes("rows.reduce")&&sf.includes("/rows.length")],
  ["stable tie break",sf.includes("a.e.startedAt.getTime()-b.e.startedAt.getTime()")],
- ["control fallback before evidence",sf.includes("if(!eligible.length)return active[0]")],
+ ["control fallback before evidence",sf.includes("if(!eligible.length)return control?.e||scored[0].e")],
  ["foundation uses selector",sf.includes("selectExperiment(userId,strategy.id)")],
  ["proposal tenant scoped",cl.includes("id:input.strategyId,userId:input.userId")],
  ["proposal requires evidence",cl.includes('action:"ELIGIBLE_FOR_STRATEGY_REVIEW"')],

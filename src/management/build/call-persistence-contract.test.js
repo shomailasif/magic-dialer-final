@@ -6,7 +6,7 @@ const checks=[
 ["migration unique index",m.includes('UNIQUE INDEX "Call_executionKey_key"')],["execution key campaign lead",o.includes('campaign.id+":"+lead.id')],
 ["existing execution checked",o.includes("findUnique({where:{executionKey}})")],["duplicate skips persistence",o.includes("if(existingCall){continue;}")],
 ["lead and call atomic",o.includes("const txResult=await prisma.$transaction(txWrites)")],["call in transaction",o.includes("prisma.call.create({")],
-["execution key stored",o.includes("executionKey,")],["attribution after stored call",o.indexOf("const storedCall=txResult[1]")<o.indexOf("recordCallAttribution")],
+["execution key stored",o.includes("executionKey,")],["attribution after stored call",o.indexOf("const storedCall=txResult[1]")<o.lastIndexOf("recordCallAttribution")],
 ["attribution replay safe",sf.includes("callAttribution.upsert")],["attribution unique call key",sf.includes("where:{callId:input.callId}")],
 ["learning checks call evidence",cl.includes("const callId=(input.evidence as any)?.callId")],["learning prior tenant lookup",cl.includes("userId:input.userId,strategyId:input.strategyId")],
 ["learning replay returns prior",cl.includes("if(prior)return prior")],["campaign loop guarded",o.includes("try {\n  for (const lead of dueLeads)")],

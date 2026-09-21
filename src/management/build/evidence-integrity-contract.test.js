@@ -9,7 +9,7 @@ const checks=[
 ["proposal min 20 actual calls",cl.includes("rows.length<20")],["proposal reward from outcome",cl.includes("outcomeReward(e.outcome)")],
 ["experiment min 20",sf.includes("x.n>=20")],["control detected explicitly",sf.includes('kind==="CONTROL"')],
 ["challenger margin 5 percent",sf.includes("best.mean-control.mean<0.05")],["control itself needs evidence",sf.includes("control.n<20")],
-["sparse experiment falls control",sf.includes("if(!eligible.length)return active[0]")],["no autonomous strategy activation",!cl.match(/evaluateStrategyProposal[\s\S]{0,1200}active:true/)],
+["sparse experiment falls control",sf.includes("if(!eligible.length)return control?.e||scored[0].e")],["no autonomous strategy activation",!cl.match(/evaluateStrategyProposal[\s\S]{0,1200}active:true/)],
 ["learning no code mutation",!cl.includes("writeFile")&&!cl.includes("eval(")],["learning no compliance mutation",!cl.includes("doNotCall")],
 ["attribution replay safe",sf.includes("callAttribution.upsert")],["call attribution unique schema",s.includes("callId       String      @unique")],
 ["proposal explicit approval retained",cl.includes("APPROVAL_REQUIRED")],["rollback approval retained",cl.includes("rollbackStrategy")],
