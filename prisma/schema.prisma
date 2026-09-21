@@ -233,6 +233,8 @@ model CallCampaign {
   experiment  SalesExperiment? @relation(fields: [experimentId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([strategyId])
+  @@index([experimentId])
 }
 
 model Call {
