@@ -8,6 +8,7 @@ import {
   type ConversationState,
 } from "@/lib/free-ai";
 import { GUARD_EDGE_TTS_BROKEN_INIT, GUARD_GOOGLE_TTS_CLIENT, logGuardStatus } from "@/lib/guards";
+import { isSpokenOptOut } from "@/lib/call-compliance";
 
 // GUARD: runtimeRequire hides CJS imports from Turbopack static analysis.
 // DO NOT replace with `import` - it will crash the build.
@@ -50,6 +51,7 @@ export interface ConversationResult {
   collectedName: string | null;
   collectedCompany: string | null;
   collectedEmail: string | null;
+  doNotCall: boolean;
 }
 
 const MAX_CALL_MS = 120000;
@@ -579,6 +581,7 @@ export async function runConversation(
   const start = Date.now();
   const lines: string[] = [];
   const heardRef = { current: false };
+  let doNotCall = false;
 
   console.log("[sip-conv] Starting conversation with", sipConfig.number);
 
@@ -601,7 +604,7 @@ export async function runConversation(
   const call = await sipCallBridge(sipConfig);
   if (!call.ok) {
     console.error("[sip-conv] SIP call failed:", call.last);
-    return { ok: false, durationSecs: 0, connected: false, interested: false, disposition: "FAILED", transcript: [], collectedName: null, collectedCompany: null, collectedEmail: null };
+    return { ok: false, durationSecs: 0, connected: false, interested: false, disposition: "FAILED", transcript: [], collectedName: null, collectedCompany: null, collectedEmail: null, doNotCall: false };
   }
 
   console.log("[sip-conv] SIP call connected, steps:", call.steps?.slice(-3));
@@ -656,6 +659,7 @@ export async function runConversation(
       continue;
     }
     txt = txt.trim();
+    if (isSpokenOptOut(txt)) doNotCall = true;
     console.log("[sip-conv] Prospect said:", txt);
     lines.push(`Prospect: ${txt}`);
     const resp = await processProspectInput(state, txt);
@@ -703,5 +707,6 @@ export async function runConversation(
     collectedName: data.name,
     collectedCompany: data.company,
     collectedEmail: data.email,
+    doNotCall,
   };
 }

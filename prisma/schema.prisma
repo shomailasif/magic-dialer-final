@@ -195,6 +195,10 @@ model Lead {
   status       LeadStatus @default(PENDING)
   lastCallAt   DateTime?
   disposition  String?
+  doNotCall     Boolean    @default(false)
+  doNotCallAt   DateTime?
+  doNotCallReason String?
+  consentStatus String     @default("UNKNOWN")
 
   followUpDueAt DateTime?
 
@@ -204,6 +208,7 @@ model Lead {
   calls        Call[]
 
   @@index([userId, status])
+  @@index([userId, doNotCall])
   @@index([userId])
 }
 

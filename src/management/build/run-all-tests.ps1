@@ -25,7 +25,8 @@ $tests = @(
   "build\\sales-foundation-contract.test.js",
   "build\\controlled-learning-contract.test.js",
   "build\\live-strategy-binding-contract.test.js",
-  "build\\experiment-selection-contract.test.js"
+  "build\\experiment-selection-contract.test.js",
+  "build\\compliance-gate-contract.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {

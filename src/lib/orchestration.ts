@@ -5,6 +5,7 @@ import { makeSIPCall } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
 import { ensureSalesFoundation, recordCallAttribution, effectiveAgentConfig } from "@/lib/sales-foundation";
 import { learnFromAttributedOutcome } from "@/lib/controlled-learning";
+import { decideCallCompliance } from "@/lib/call-compliance";
 
 /**
  * Execute a campaign run for a business admin.
@@ -53,6 +54,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       userId,
       AND: [
         { OR: [{ status: "PENDING" }, { status: "FAILED" }] },
+        { doNotCall: false },
         { OR: [{ followUpDueAt: null }, { followUpDueAt: { lte: new Date() } }] },
       ],
     },
@@ -73,6 +75,8 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   const hasSIP = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
 
   for (const lead of dueLeads) {
+    const compliance = decideCallCompliance({doNotCall:lead.doNotCall,phone:lead.phone,consentStatus:lead.consentStatus});
+    if(!compliance.allowed){ console.warn("[campaign] call suppressed", compliance.code, lead.id); continue; }
     let sipResult = null as Awaited<ReturnType<typeof makeSIPCall>> | null;
     let dialResult: { connected: boolean; outcome: "CONNECTED" | "NO_ANSWER" | "BUSY" | "UNREACHABLE" | "FAILED"; durationSecs: number } = { connected: false, outcome: "FAILED", durationSecs: 0 };
 
@@ -147,7 +151,11 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
           status: resultStatus as any,
           lastCallAt: new Date(),
           disposition,
-          followUpDueAt: scheduleFollowUp(resultStatus, user.agentConfig?.followUpAttempts ?? 2, user.agentConfig?.followUpIntervalHours ?? 24),
+          followUpDueAt: sipResult?.doNotCall ? null : scheduleFollowUp(resultStatus, user.agentConfig?.followUpAttempts ?? 2, user.agentConfig?.followUpIntervalHours ?? 24),
+          doNotCall: sipResult?.doNotCall ? true : lead.doNotCall,
+          doNotCallAt: sipResult?.doNotCall ? new Date() : lead.doNotCallAt,
+          doNotCallReason: sipResult?.doNotCall ? "SPOKEN_OPT_OUT" : lead.doNotCallReason,
+          consentStatus: sipResult?.doNotCall ? "DENIED" : lead.consentStatus,
         },
       }),
     ]);
