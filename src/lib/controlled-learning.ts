@@ -12,12 +12,12 @@ export function outcomeReward(outcome:string){
 export async function learnFromAttributedOutcome(input:{userId:string;strategyId:string;outcome:string;evidence?:unknown}){
  const reward=outcomeReward(input.outcome);
  const callId=(input.evidence as any)?.callId;
- if(callId){const prior=await prisma.strategyLearningEvent.findFirst({where:{userId:input.userId,strategyId:input.strategyId,evidenceJson:{contains:String(callId)}}});if(prior)return prior;}
+ if(callId){const prior=await prisma.strategyLearningEvent.findUnique({where:{sourceCallId:String(callId)}});if(prior)return prior;}
  const sampleSize=await prisma.callAttribution.count({where:{userId:input.userId,strategyId:input.strategyId}});
  // Learning is deliberately data-only. It may propose a new strategy version
  // after enough evidence; it never edits executable code, auth, or compliance.
  const action=sampleSize>=20?"ELIGIBLE_FOR_STRATEGY_REVIEW":"OBSERVE";
- return prisma.strategyLearningEvent.create({data:{userId:input.userId,strategyId:input.strategyId,outcome:String(input.outcome),reward,sampleSize,action,evidenceJson:input.evidence===undefined?null:JSON.stringify(input.evidence)}});
+ return prisma.strategyLearningEvent.create({data:{userId:input.userId,strategyId:input.strategyId,outcome:String(input.outcome),reward,sampleSize,action,evidenceJson:input.evidence===undefined?null:JSON.stringify(input.evidence),sourceCallId:callId?String(callId):null}});
 }
 
 export async function proposeStrategyVersion(input:{userId:string;strategyId:string;reason:string}){
@@ -39,10 +39,10 @@ export async function evaluateStrategyProposal(input:{userId:string;proposalId:s
  if(!proposal)return {eligible:false,code:"NO_PENDING_PROPOSAL"} as const;
  const baseline=await prisma.salesStrategy.findFirst({where:{userId:input.userId,active:true},orderBy:{version:"desc"}});
  if(!baseline)return {eligible:false,code:"NO_ACTIVE_BASELINE"} as const;
- const events=await prisma.strategyLearningEvent.findMany({where:{userId:input.userId,strategyId:baseline.id},select:{reward:true}});
- if(events.length<20)return {eligible:false,code:"INSUFFICIENT_EVIDENCE",samples:events.length} as const;
- const mean=events.reduce((a,e)=>a+e.reward,0)/events.length;
- return {eligible:mean>0,code:mean>0?"REVIEWABLE":"NO_POSITIVE_SIGNAL",samples:events.length,mean,baselineId:baseline.id,proposalId:proposal.id} as const;
+ const rows=await prisma.callAttribution.findMany({where:{userId:input.userId,strategyId:baseline.id},select:{outcome:true}});
+ if(rows.length<20)return {eligible:false,code:"INSUFFICIENT_EVIDENCE",samples:rows.length} as const;
+ const mean=rows.reduce((a,e)=>a+outcomeReward(e.outcome),0)/rows.length;
+ return {eligible:mean>0,code:mean>0?"REVIEWABLE":"NO_POSITIVE_SIGNAL",samples:rows.length,mean,baselineId:baseline.id,proposalId:proposal.id} as const;
 }
 export async function promoteStrategyProposal(input:{userId:string;proposalId:string;approved:boolean}){
  if(!input.approved)return {ok:false,code:"APPROVAL_REQUIRED"} as const;

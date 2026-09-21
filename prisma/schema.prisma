@@ -499,6 +499,7 @@ model StrategyLearningEvent {
   sampleSize  Int
   action      String   @default("OBSERVE")
   evidenceJson String?
+  sourceCallId String? @unique
   createdAt   DateTime @default(now())
   @@index([userId, createdAt])
   @@index([strategyId, createdAt])
