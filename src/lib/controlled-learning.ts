@@ -11,6 +11,8 @@ export function outcomeReward(outcome:string){
 }
 export async function learnFromAttributedOutcome(input:{userId:string;strategyId:string;outcome:string;evidence?:unknown}){
  const reward=outcomeReward(input.outcome);
+ const callId=(input.evidence as any)?.callId;
+ if(callId){const prior=await prisma.strategyLearningEvent.findFirst({where:{userId:input.userId,strategyId:input.strategyId,evidenceJson:{contains:String(callId)}}});if(prior)return prior;}
  const sampleSize=await prisma.callAttribution.count({where:{userId:input.userId,strategyId:input.strategyId}});
  // Learning is deliberately data-only. It may propose a new strategy version
  // after enough evidence; it never edits executable code, auth, or compliance.

@@ -24,7 +24,7 @@ export async function ensureSalesFoundation(userId:string,config:any){
  return {knowledge,strategy,experiment};
 }
 export async function recordCallAttribution(input:{userId:string;callId:string;strategyId:string;experimentId?:string|null;outcome:string;score?:number|null;evidence?:unknown}){
- return prisma.callAttribution.create({data:{userId:input.userId,callId:input.callId,strategyId:input.strategyId,experimentId:input.experimentId||null,outcome:compact(input.outcome),score:input.score??null,evidenceJson:input.evidence===undefined?null:JSON.stringify(input.evidence)}});
+ return prisma.callAttribution.upsert({where:{callId:input.callId},update:{},create:{userId:input.userId,callId:input.callId,strategyId:input.strategyId,experimentId:input.experimentId||null,outcome:compact(input.outcome),score:input.score??null,evidenceJson:input.evidence===undefined?null:JSON.stringify(input.evidence)}});
 }
 
 export function parseStrategy(strategyJson:string){

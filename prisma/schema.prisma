@@ -249,7 +249,8 @@ model Call {
   aiSummary      String?
   transcript     String?
   resultStatus   LeadStatus?  // status the lead moved to as a result of this call
-  collectedData  String?      // JSON of data collected (seats, email, etc.)
+  collectedData  String?
+  executionKey   String?      @unique      // JSON of data collected (seats, email, etc.)
 
   createdAt      DateTime     @default(now())
   attribution    CallAttribution?

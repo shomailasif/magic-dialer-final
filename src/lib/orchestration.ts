@@ -87,6 +87,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   const selectedProvider = runtimeDialer?.provider || "RINGCENTRAL";
   const hasSIP = certifiedLiveProvider(selectedProvider) && !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
 
+  try {
   for (const lead of dueLeads) {
     const compliance = decideCallCompliance({doNotCall:lead.doNotCall,phone:lead.phone,consentStatus:lead.consentStatus});
     if(!compliance.allowed){ console.warn("[campaign] call suppressed", compliance.code, lead.id); continue; }
@@ -155,7 +156,10 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       collectedSeats = null;
     }
 
-    await prisma.$transaction([
+    const executionKey=campaign.id+":"+lead.id;
+    const existingCall=await prisma.call.findUnique({where:{executionKey}});
+    if(existingCall){continue;}
+    const [,storedCall] = await prisma.$transaction([
       prisma.lead.update({
         where: { id: lead.id },
         data: {
@@ -170,9 +174,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
           consentStatus: sipResult?.doNotCall ? "DENIED" : lead.consentStatus,
         },
       }),
-    ]);
-
-    const storedCall = await prisma.call.create({
+      prisma.call.create({
       data: {
         userId,
         leadId: lead.id,
@@ -185,6 +187,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         aiSummary: sipResult ? `Call with ${sipResult.collectedName || "prospect"}. ${(Array.isArray(sipResult.transcript) ? sipResult.transcript.join("\n") : sipResult.transcript).slice(0, 500)}` : null,
         transcript: transcript || null,
         resultStatus: resultStatus as never,
+        executionKey,
         collectedData: JSON.stringify({
           seats: collectedSeats,
           email: collectedEmail,
@@ -192,7 +195,8 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
           company: sipResult?.collectedCompany || null,
         }),
       },
-    });
+    }),
+    ]);
     await recordCallAttribution({userId,callId:storedCall.id,strategyId:foundation.strategy.id,experimentId:foundation.experiment.id,outcome:resultStatus,evidence:{dialOutcome:dialResult.outcome,disposition}});
     const learningEvent = await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});
     if(learningEvent.action==="ELIGIBLE_FOR_STRATEGY_REVIEW"){
@@ -212,6 +216,11 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         otherData: { transcript },
       }, locale); } catch(e){ console.error("[campaign] outcome notification failed:", redactDiagnostic(e)); }
     }
+  }
+  } catch(e) {
+    await prisma.callCampaign.update({where:{id:campaign.id},data:{status:"FAILED",callsMade,endedAt:new Date()}}).catch(()=>undefined);
+    console.error("[campaign] run failed:", redactDiagnostic(e));
+    return {ok:false as const,error:"Campaign execution failed.",campaignId:campaign.id,callsMade,interested,converted};
   }
 
   const stats = await prisma.callCampaign.update({
