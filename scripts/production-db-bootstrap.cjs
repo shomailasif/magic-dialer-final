@@ -79,6 +79,11 @@ async function tableNames() {
   return new Set(rows.map((row) => String(row.name)));
 }
 
+async function verifyForeignKeys() {
+  const rows = await prisma.$queryRawUnsafe("PRAGMA foreign_key_check");
+  if (rows.length !== 0) throw new Error("SQLite foreign_key_check failed after legacy adoption.");
+}
+
 async function verifyIntegrity() {
   const rows = await prisma.$queryRawUnsafe("PRAGMA integrity_check");
   const values = rows.flatMap((row) => Object.values(row).map(String));
@@ -112,6 +117,9 @@ async function main() {
   if (!databaseUrl) throw new Error("DATABASE_URL is required for legacy schema verification.");
   if (needsCallCampaignRebuild) {
     runPrisma(["db", "execute", "--url", databaseUrl, "--file", path.join(migrationRoot, rebuildMigration, "migration.sql")]);
+    await verifyIntegrity();
+    await verifyForeignKeys();
+    await prisma.$disconnect();
   }
   runPrisma(["migrate", "diff", "--from-url", databaseUrl, "--to-schema-datamodel", "prisma/schema.prisma", "--exit-code"]);
 
