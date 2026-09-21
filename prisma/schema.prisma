@@ -100,6 +100,10 @@ model User {
   sessions      Session[]
   engineDevices EngineDevice[]
   engineEnrollmentTickets EngineEnrollmentTicket[]
+  productKnowledge ProductKnowledge[]
+  salesStrategies SalesStrategy[]
+  salesExperiments SalesExperiment[]
+  callAttributions CallAttribution[]
   activeEngineMachineId String?
   engineLeaseUntil DateTime?
 
@@ -213,6 +217,10 @@ model CallCampaign {
   callsMade   Int            @default(0)
 
   calls       Call[]
+  strategyId  String?
+  strategy    SalesStrategy? @relation(fields: [strategyId], references: [id], onDelete: SetNull)
+  experimentId String?
+  experiment  SalesExperiment? @relation(fields: [experimentId], references: [id], onDelete: SetNull)
 
   @@index([userId])
 }
@@ -237,6 +245,7 @@ model Call {
   collectedData  String?      // JSON of data collected (seats, email, etc.)
 
   createdAt      DateTime     @default(now())
+  attribution    CallAttribution?
 
   @@index([userId, timestamp])
   @@index([leadId])
@@ -385,4 +394,73 @@ model AIQuotaBucket {
  updatedAt DateTime @updatedAt
  @@unique([scopeKey, windowStart])
  @@index([windowStart])
+}
+
+
+model ProductKnowledge {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  version   Int
+  productName String
+  factsJson String
+  source    String   @default("customer-config")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  @@unique([userId, version])
+  @@index([userId, active])
+}
+
+model SalesStrategy {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  version   Int
+  name      String
+  objective String
+  strategyJson String
+  knowledgeVersion Int
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  campaigns CallCampaign[]
+  experiments SalesExperiment[]
+  attributions CallAttribution[]
+  @@unique([userId, version])
+  @@index([userId, active])
+}
+
+model SalesExperiment {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  strategyId String
+  strategy  SalesStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  name      String
+  variantJson String
+  status    String   @default("ACTIVE")
+  startedAt DateTime @default(now())
+  endedAt   DateTime?
+  campaigns CallCampaign[]
+  attributions CallAttribution[]
+  @@index([userId, status])
+  @@index([strategyId])
+}
+
+model CallAttribution {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  callId      String   @unique
+  call        Call     @relation(fields: [callId], references: [id], onDelete: Cascade)
+  strategyId  String
+  strategy    SalesStrategy @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+  experimentId String?
+  experiment  SalesExperiment? @relation(fields: [experimentId], references: [id], onDelete: SetNull)
+  outcome     String
+  score       Float?
+  evidenceJson String?
+  createdAt   DateTime @default(now())
+  @@index([userId, createdAt])
+  @@index([strategyId])
+  @@index([experimentId])
 }

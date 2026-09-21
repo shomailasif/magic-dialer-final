@@ -3,6 +3,7 @@ import { placeCall, validateProvider } from "@/lib/dialer";
 import { deliverOutcomeNotification } from "@/lib/notifications";
 import { makeSIPCall } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
+import { ensureSalesFoundation, recordCallAttribution } from "@/lib/sales-foundation";
 
 /**
  * Execute a campaign run for a business admin.
@@ -62,8 +63,9 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   let interested = 0;
   let converted = 0;
 
+  const foundation = await ensureSalesFoundation(userId, user.agentConfig);
   const campaign = await prisma.callCampaign.create({
-    data: { userId, name: `Campaign ${new Date().toISOString().slice(0, 16)}` },
+    data: { userId, name: `Campaign ${new Date().toISOString().slice(0, 16)}`, strategyId: foundation.strategy.id, experimentId: foundation.experiment.id },
   });
 
   const hasSIP = !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD);
@@ -153,7 +155,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       }),
     ]);
 
-    await prisma.call.create({
+    const storedCall = await prisma.call.create({
       data: {
         userId,
         leadId: lead.id,
@@ -174,6 +176,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         }),
       },
     });
+    await recordCallAttribution({userId,callId:storedCall.id,strategyId:foundation.strategy.id,experimentId:foundation.experiment.id,outcome:resultStatus,evidence:{dialOutcome:dialResult.outcome,disposition}});
 
     callsMade++;
     if (resultStatus === "INTERESTED") interested++;
