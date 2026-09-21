@@ -11,7 +11,7 @@ const checks=[
 ["challenger margin 5 percent",sf.includes("best.mean-control.mean<0.05")],["control itself needs evidence",sf.includes("control.n<20")],
 ["sparse experiment falls control",sf.includes("if(!eligible.length)return control?.e||scored[0].e")],["no autonomous strategy activation",cl.includes('if(!input.approved)return {ok:false,code:"APPROVAL_REQUIRED"}')&&cl.includes("active:false")],
 ["learning no code mutation",!cl.includes("writeFile")&&!cl.includes("eval(")],["learning no compliance mutation",!cl.includes("doNotCall")],
-["attribution replay safe",sf.includes("callAttribution.upsert")],["call attribution unique schema",/model CallAttribution[\\s\\S]*?callId\\s+String\\s+@unique/.test(s)],
+["attribution replay safe",sf.includes("callAttribution.upsert")],["call attribution unique schema",/model CallAttribution[\s\S]*?callId\s+String\s+@unique/.test(s)],
 ["proposal explicit approval retained",cl.includes("APPROVAL_REQUIRED")],["rollback approval retained",cl.includes("rollbackStrategy")],
 ["experiment tenant scoped",sf.includes("where:{userId,strategyId,status")],["stable tie break",sf.includes("startedAt.getTime()")],
 ["negative signal not reviewable",cl.includes("NO_POSITIVE_SIGNAL")],["evidence call nullable for legacy safety",s.includes("sourceCallId String?")],
