@@ -4,7 +4,7 @@ on:
     branches: ["main"]
     paths:
       - "prisma/**"
-      - "package.json"
+      - "package.json"\n      - "scripts/prepare-production-db.js"
       - ".github/workflows/prisma-baseline-proof.yml"
   workflow_dispatch: {}
 
@@ -48,6 +48,21 @@ jobs:
           grep -q "AIQuotaBucket" "$RUNNER_TEMP/schema-after.txt"
           test "$DATA_BEFORE" = "$DATA_AFTER"
           test "$DATA_AFTER" = "baseline-sentinel|baseline@example.invalid|sentinel"
+      - name: Prove legacy db-push production reconciliation preserves data
+        shell: bash
+        run: |
+          set -euo pipefail
+          LEGACY_DB="$RUNNER_TEMP/legacy.db"
+          export DATABASE_URL="file:$LEGACY_DB"
+          sqlite3 "$LEGACY_DB" < prisma/migrations/0_init/migration.sql
+          sqlite3 "$LEGACY_DB" "INSERT INTO User (id,email,passwordHash,role,createdAt,updatedAt) VALUES ('legacy-sentinel','legacy@example.invalid','sentinel','BUSINESS_ADMIN',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);"
+          sqlite3 "$LEGACY_DB" < prisma/migrations/20260920_ai_quota/migration.sql
+          node scripts/prepare-production-db.js
+          node scripts/prepare-production-db.js
+          test "$(sqlite3 "$LEGACY_DB" "SELECT email FROM User WHERE id='legacy-sentinel';")" = "legacy@example.invalid"
+          sqlite3 "$LEGACY_DB" "SELECT executionKey FROM Call LIMIT 0;"
+          test "$(sqlite3 "$LEGACY_DB" "PRAGMA integrity_check;")" = "ok"
+          npx prisma migrate status
       - name: Upload verified committed baseline migration
         uses: actions/upload-artifact@v4
         with:
