@@ -4,6 +4,7 @@ const root=path.join(__dirname,"../../..");
 const pkg=JSON.parse(fs.readFileSync(path.join(root,"package.json"),"utf8"));
 const b=fs.readFileSync(path.join(root,"scripts/production-db-bootstrap.cjs"),"utf8");
 const robots=fs.readFileSync(path.join(root,"src/app/robots.ts"),"utf8");
+const fkMigration=fs.readFileSync(path.join(root,"prisma/migrations/20260922_callcampaign_strategy_fks/migration.sql"),"utf8");
 const checks=[
  ["start gates app on db bootstrap",pkg.scripts.start==="node scripts/production-db-bootstrap.cjs && next start"],
  ["normal production path uses migrate deploy",b.includes('["migrate", "deploy"]')],
@@ -17,6 +18,12 @@ const checks=[
  ["unknown migration fails closed",b.includes("non-additive or unsupported migration statement")],
  ["live schema diff verification",b.includes('"migrate", "diff"')&&b.includes('"--exit-code"')],
  ["sqlite integrity verified",b.includes("PRAGMA integrity_check")],
+ ["foreign key integrity verified",b.includes("PRAGMA foreign_key_check")],
+ ["rebuild is exact named migration",b.includes('20260922_callcampaign_strategy_fks')],
+ ["rebuild copies CallCampaign data before drop",fkMigration.indexOf('INSERT INTO "new_CallCampaign"')<fkMigration.indexOf('DROP TABLE "CallCampaign"')],
+ ["rebuild restores CallCampaign name",fkMigration.includes('ALTER TABLE "new_CallCampaign" RENAME TO "CallCampaign"')],
+ ["rebuild adds strategy FK",fkMigration.includes('"strategyId") REFERENCES "SalesStrategy"')],
+ ["rebuild adds experiment FK",fkMigration.includes('"experimentId") REFERENCES "SalesExperiment"')],
  ["no force reset",!b.includes("--force-reset")&&!b.includes("migrate reset")],
  ["all checked in migrations enumerated",b.includes("readdirSync(migrationRoot")&&b.includes('migration.sql')],
  ["migration adoption sorted",b.includes(".sort()")],
