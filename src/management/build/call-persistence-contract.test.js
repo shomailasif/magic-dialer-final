@@ -9,7 +9,7 @@ const checks=[
 ["execution key stored",o.includes("executionKey,")],["attribution after stored call",o.indexOf("const storedCall=txResult[1]")<o.lastIndexOf("recordCallAttribution")],
 ["attribution replay safe",sf.includes("callAttribution.upsert")],["attribution unique call key",sf.includes("where:{callId:input.callId}")],
 ["learning checks call evidence",cl.includes("const callId=(input.evidence as any)?.callId")],["learning prior tenant lookup",cl.includes("userId:input.userId,strategyId:input.strategyId")],
-["learning replay returns prior",cl.includes("if(prior)return prior")],["campaign loop guarded",o.includes("try {\n  for (const lead of dueLeads)")],
+["learning replay returns prior",cl.includes("if(prior)return prior")],["campaign loop guarded",/try\s*\{\s*for\s*\(const lead of dueLeads\)/.test(o)],
 ["campaign failure finalized",o.includes('status:"COMPLETED",callsMade,endedAt:new Date(),name:campaign.name+" [FAILED]"')],["campaign failure bounded",o.includes('error:"Campaign execution failed."')],
 ["campaign failure redacted",o.includes('console.error("[campaign] run failed:", redactDiagnostic(e))')],["successful campaign completes",o.includes('status: "COMPLETED"')],
 ["DNC update atomic with call",o.indexOf("doNotCallReason")<o.indexOf("prisma.call.create")],["attempt increment atomic with call",o.indexOf("followUpAttemptsMade")<o.indexOf("prisma.call.create")],

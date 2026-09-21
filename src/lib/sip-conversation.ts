@@ -367,7 +367,7 @@ function edgeTts(text: string, voice: string): Promise<Buffer | null> {
       } catch { finish(null); }
     });
     ws.on("error", (e: any) => { console.error("[sip-conv] TTS WS error:", redactDiagnostic(e)); finish(null); });
-    ws.on("close", (code: any, reason: any) => { console.log("[sip-conv] edgeTts WS closed:", code, reason?.toString()?.slice(0, 100)); });
+    ws.on("close", (code: any, reason: any) => { console.log("[sip-conv] edgeTts WS closed:", code); });
   });
 }
 
@@ -457,7 +457,7 @@ async function legacyToFramesFromAudio(mp3: Buffer): Promise<Buffer[]> {
 
 async function textToFramesLocal(text: string, skipEdge = false, voice = EDGE_VOICE): Promise<Buffer[]> {
   const chunks = splitForTts(text);
-  console.log("[sip-conv] TTS chunks:", chunks.length, "text:", text.slice(0, 60));
+  console.log("[sip-conv] TTS chunks:", chunks.length);
 
   const allParts: Buffer[] = [];
   for (const chunk of chunks) {
