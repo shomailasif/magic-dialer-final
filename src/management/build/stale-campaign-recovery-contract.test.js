@@ -4,7 +4,7 @@ const o=fs.readFileSync(path.join(__dirname,"../../lib/orchestration.ts"),"utf8"
 const checks=[
 ["stale cutoff 2h",o.includes("2*60*60*1000")],["tenant scoped stale query",o.includes('where:{userId,status:"RUNNING"')],
 ["only older campaigns",o.includes("startedAt:{lt:staleBefore}")],["terminal existing status",o.includes('data:{status:"COMPLETED",endedAt:new Date()}')],
-["recovery before foundation",o.indexOf("staleBefore")<o.indexOf("ensureSalesFoundation")],["empty due leads returns before recovery",o.indexOf("dueLeads.length===0")<o.indexOf("staleBefore")],
+["recovery before foundation",o.indexOf("const staleBefore")<o.indexOf("const foundation = await ensureSalesFoundation")],["empty due leads returns before recovery",o.indexOf("dueLeads.length===0")<o.indexOf("staleBefore")],
 ["does not delete history",!o.includes("callCampaign.delete")],["does not touch other tenants",o.includes("where:{userId")],
 ["new campaign still running default",o.includes("prisma.callCampaign.create")],["normal completion retained",o.includes('status: "COMPLETED"')],
 ["crash completion retained",o.includes('[FAILED]')],["no invented enum",!o.includes('status:"FAILED"')],

@@ -4,7 +4,7 @@ const s=fs.readFileSync(path.join(__dirname,"../../lib/controlled-learning.ts"),
 const checks=[
 ["evaluation tenant scoped",s.includes("id:input.proposalId,userId:input.userId,active:false")],
 ["baseline tenant scoped",s.includes("userId:input.userId,active:true")],
-["minimum 20 evidence",s.includes("events.length<20")],["mean reward computed",s.includes("e.reward,0)/events.length")],
+["minimum 20 evidence",s.includes("rows.length<20")],["mean reward computed",s.includes("outcomeReward(e.outcome),0)/rows.length")],
 ["positive signal required",s.includes("mean>0")],["promotion explicit approval",s.includes('if(!input.approved)return {ok:false,code:"APPROVAL_REQUIRED"}')],
 ["promotion reevaluates",s.includes("const review=await evaluateStrategyProposal(input)")],["promotion transactional",s.includes("prisma.$transaction(async tx")],
 ["old active disabled",s.includes("updateMany({where:{userId:input.userId,active:true},data:{active:false}})")],

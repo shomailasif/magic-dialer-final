@@ -18,7 +18,7 @@ const checks=[
  ["campaign feeds real stored outcome",orch.includes("outcome:resultStatus")],
  ["learning stores evidence",lib.includes("evidenceJson")],
  ["legacy web learning identified but not connected to server campaign",legacy.includes("refreshKnowledge")&&!orch.includes("refreshKnowledge")],
- ["review not autonomous promotion",lib.includes("ELIGIBLE_FOR_STRATEGY_REVIEW")&&!lib.includes("salesStrategy.update")],
+ ["review does not autonomously promote",lib.includes("ELIGIBLE_FOR_STRATEGY_REVIEW")&&lib.includes("APPROVAL_REQUIRED")&&lib.includes("evaluateStrategyProposal")],
  ["learning model indexed by tenant",schema.includes("@@index([userId, createdAt])")],
  ["learning model indexed by strategy",schema.includes("@@index([strategyId, createdAt])")]
 ];

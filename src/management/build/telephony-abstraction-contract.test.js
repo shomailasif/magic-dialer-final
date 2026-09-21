@@ -15,7 +15,7 @@ const checks=[
  ["RingCentral certified",tel.includes('provider==="RINGCENTRAL"')],
  ["unsupported live adapter fails closed",tel.includes("has no certified live-media adapter")],
  ["RingCentral adapter uses proven SIP caller",tel.includes("makeSIPCall(sip,agent)")],
- ["campaign selects configured provider",orch.includes('selectedProvider = user.dialerConfig?.provider || "RINGCENTRAL"')],
+ ["campaign selects configured provider",orch.includes('selectedProvider = runtimeDialer?.provider || "RINGCENTRAL"')],
  ["SIP only for certified provider",orch.includes("certifiedLiveProvider(selectedProvider)")],
  ["campaign creates telephony session",orch.includes("createTelephonySession(selectedProvider")],
  ["campaign uses session call",orch.includes("telephony.placeConversationalCall(liveAgentConfig)")],

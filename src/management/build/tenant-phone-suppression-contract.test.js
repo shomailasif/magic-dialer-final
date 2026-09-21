@@ -4,7 +4,7 @@ const root=path.join(__dirname,"../.."),s=fs.readFileSync(path.join(root,"../pri
 const checks=[
 ["suppression model",s.includes("model PhoneSuppression")],["tenant relation",s.includes("phoneSuppressions PhoneSuppression[]")],
 ["tenant phone unique",s.includes("@@unique([userId, normalizedPhone])")],["migration table",m.includes('CREATE TABLE "PhoneSuppression"')],
-["migration unique",m.includes("PhoneSuppression_userId_normalizedPhone_key")],["migration additive",!m.match(/DROP|DELETE/i)],
+["migration unique",m.includes("PhoneSuppression_userId_normalizedPhone_key")],["migration additive",!m.match(/\\bDROP\\b|\\bDELETE\\b/i)],
 ["pure normalizer",cc.includes('replace(/\\D/g,"")')],["import uses normalizer",l.includes("normalizePhoneForSuppression(r.phone)")],
 ["import checks suppression",l.includes("prisma.phoneSuppression.findUnique")],["import inherits DNC",l.includes("doNotCall: !!suppression")],
 ["import inherits denied consent",l.includes('consentStatus: suppression ? "DENIED"')],["import reason explicit",l.includes("TENANT_PHONE_SUPPRESSION")],

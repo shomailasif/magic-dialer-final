@@ -13,7 +13,7 @@ const checks=[
 ["attribution stored",o.includes("recordCallAttribution")],["learning stored",o.includes("learnFromAttributedOutcome")],
 ["proposal remains review path",o.includes("ELIGIBLE_FOR_STRATEGY_REVIEW")],["campaign completion stored",o.includes('status: "COMPLETED"')],
 ["followup scheduling present",o.includes("scheduleFollowUp")],["spoken DNC cancels followup",o.includes("sipResult?.doNotCall ? null")],
-["notification only positive outcomes",o.includes('resultStatus === "INTERESTED" || resultStatus === "CONVERTED"')],["notification failure cannot undo call",o.indexOf("prisma.call.create")<o.indexOf("deliverOutcomeNotification")],
+["notification only positive outcomes",o.includes('resultStatus === "INTERESTED" || resultStatus === "CONVERTED"')],["notification failure cannot undo call",o.indexOf("const storedCall=txResult[1]")<o.indexOf("deliverOutcomeNotification")],
 ["no raw notification exception DB",!n.includes("err.message")],["campaign main loop tenant due leads",o.includes("where: {\n      userId")],
 ["strategy assigned campaign",o.includes("strategyId: foundation.strategy.id")],["experiment assigned campaign",o.includes("experimentId: foundation.experiment.id")],
 ["limit integerized",o.includes("Math.floor(limit)")],["no release mutation",!o.includes("engine-v1.4.0")]];
