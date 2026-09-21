@@ -23,6 +23,7 @@ import { redactDiagnostic } from "@/lib/safe-diagnostic";
  * Returns stats about the run.
  */
 export async function runCampaign(userId: string, limit = 20, locale = "en") {
+  limit=Math.min(100,Math.max(1,Number.isFinite(limit)?Math.floor(limit):20));
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: { subscription: true, dialerConfig: true, agentConfig: true },
@@ -67,6 +68,8 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   let callsMade = 0;
   let interested = 0;
   let converted = 0;
+
+  if(dueLeads.length===0)return {ok:true as const,campaignId:null,callsMade:0,interested:0,converted:0,stats:null};
 
   const foundation = await ensureSalesFoundation(userId, user.agentConfig);
   const liveAgentConfig = effectiveAgentConfig(user.agentConfig, foundation.strategy, foundation.experiment);
@@ -193,13 +196,13 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     if (resultStatus === "CONVERTED") converted++;
 
     if (resultStatus === "INTERESTED" || resultStatus === "CONVERTED") {
-      await deliverOutcomeNotification(userId, user.email, lead, {
+      try { await deliverOutcomeNotification(userId, user.email, lead, {
         leadName: sipResult?.collectedName || lead.name || "Prospect",
         phone: lead.phone || "N/A",
         leadEmail: collectedEmail || lead.email || "N/A",
         seats: collectedSeats,
         otherData: { transcript },
-      }, locale);
+      }, locale); } catch(e){ console.error("[campaign] outcome notification failed:", redactDiagnostic(e)); }
     }
   }
 

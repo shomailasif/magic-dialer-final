@@ -31,3 +31,34 @@ export async function proposeStrategyVersion(input:{userId:string;strategyId:str
  if(exists)return exists;
  return prisma.salesStrategy.create({data:{userId:input.userId,version:nextVersion,name:`Strategy proposal v${nextVersion}`,objective:current.objective,strategyJson:current.strategyJson,knowledgeVersion:current.knowledgeVersion,active:false}});
 }
+
+export async function evaluateStrategyProposal(input:{userId:string;proposalId:string}){
+ const proposal=await prisma.salesStrategy.findFirst({where:{id:input.proposalId,userId:input.userId,active:false}});
+ if(!proposal)return {eligible:false,code:"NO_PENDING_PROPOSAL"} as const;
+ const baseline=await prisma.salesStrategy.findFirst({where:{userId:input.userId,active:true},orderBy:{version:"desc"}});
+ if(!baseline)return {eligible:false,code:"NO_ACTIVE_BASELINE"} as const;
+ const events=await prisma.strategyLearningEvent.findMany({where:{userId:input.userId,strategyId:baseline.id},select:{reward:true}});
+ if(events.length<20)return {eligible:false,code:"INSUFFICIENT_EVIDENCE",samples:events.length} as const;
+ const mean=events.reduce((a,e)=>a+e.reward,0)/events.length;
+ return {eligible:mean>0,code:mean>0?"REVIEWABLE":"NO_POSITIVE_SIGNAL",samples:events.length,mean,baselineId:baseline.id,proposalId:proposal.id} as const;
+}
+export async function promoteStrategyProposal(input:{userId:string;proposalId:string;approved:boolean}){
+ if(!input.approved)return {ok:false,code:"APPROVAL_REQUIRED"} as const;
+ const review=await evaluateStrategyProposal(input);
+ if(!review.eligible||!("baselineId" in review))return {ok:false,code:review.code} as const;
+ return prisma.$transaction(async tx=>{
+  await tx.salesStrategy.updateMany({where:{userId:input.userId,active:true},data:{active:false}});
+  const promoted=await tx.salesStrategy.update({where:{id:input.proposalId},data:{active:true}});
+  return {ok:true,code:"PROMOTED",strategyId:promoted.id,previousStrategyId:review.baselineId} as const;
+ });
+}
+export async function rollbackStrategy(input:{userId:string;targetStrategyId:string;approved:boolean}){
+ if(!input.approved)return {ok:false,code:"APPROVAL_REQUIRED"} as const;
+ const target=await prisma.salesStrategy.findFirst({where:{id:input.targetStrategyId,userId:input.userId}});
+ if(!target)return {ok:false,code:"TARGET_NOT_FOUND"} as const;
+ return prisma.$transaction(async tx=>{
+  await tx.salesStrategy.updateMany({where:{userId:input.userId,active:true},data:{active:false}});
+  await tx.salesStrategy.update({where:{id:target.id},data:{active:true}});
+  return {ok:true,code:"ROLLED_BACK",strategyId:target.id} as const;
+ });
+}
