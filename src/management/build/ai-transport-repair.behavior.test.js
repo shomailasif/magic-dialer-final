@@ -32,8 +32,8 @@ const route=fs.readFileSync(routePath,"utf8");
   assert.match(route,/b\.deviceToken\|\|engineBearerToken\(r\)/);                         // 19
   assert.doesNotMatch(route,/async function auth/);                                      // 20
   assert.doesNotMatch(route,/tokenHash:H\(t\)/);                                       // 21
-  assert.match(route,/if\(!d\)return NextResponse\.json/);                            // 22
-  assert.match(route,/diagnosticStage:"device-auth"/);                                   // 23
+  assert.match(route,/if\(!d\)return fail\("Unauthorized","device-auth","UNAUTHORIZED",401\)/);                            // 22
+  assert.match(route,/safeDiagnostic\(stage,code,status,requestId\)/);                                   // 23
   assert.match(route,/PRIMARY_MODEL="openai\/gpt-oss-120b"/);                            // 24
   assert.match(route,/FALLBACK_MODEL="openai\/gpt-oss-20b"/);                            // 25
   assert.match(route,/AbortSignal\.timeout\(timeout\)/);                                   // 26
