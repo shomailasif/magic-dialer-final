@@ -34,6 +34,10 @@ export interface AgentConfig {
   productName?: string;
   pitch?: string;
   pricing?: string;
+  strategyId?: string | null;
+  strategyVersion?: number;
+  experimentId?: string | null;
+  experimentName?: string;
 }
 
 export interface ConversationResult {
@@ -585,6 +589,10 @@ export async function runConversation(
     productName: agentConfig.productName,
     pitch: agentConfig.pitch,
     pricing: agentConfig.pricing,
+    strategyId: agentConfig.strategyId,
+    strategyVersion: agentConfig.strategyVersion,
+    experimentId: agentConfig.experimentId,
+    experimentName: agentConfig.experimentName,
   });
 
   const greeting = getInitialGreeting(state);

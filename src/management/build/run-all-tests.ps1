@@ -23,7 +23,8 @@ $tests = @(
   "build\\call-diagnostic-correlation.test.js",
   "build\\self-contained-tts-contract.test.js",
   "build\\sales-foundation-contract.test.js",
-  "build\\controlled-learning-contract.test.js"
+  "build\\controlled-learning-contract.test.js",
+  "build\\live-strategy-binding-contract.test.js"
 )
 $fail = 0
 foreach ($t in $tests) {

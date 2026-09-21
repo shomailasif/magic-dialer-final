@@ -3,7 +3,7 @@ import { placeCall, validateProvider } from "@/lib/dialer";
 import { deliverOutcomeNotification } from "@/lib/notifications";
 import { makeSIPCall } from "@/lib/sip-caller";
 import type { SubscriptionStatus } from "@prisma/client";
-import { ensureSalesFoundation, recordCallAttribution } from "@/lib/sales-foundation";
+import { ensureSalesFoundation, recordCallAttribution, effectiveAgentConfig } from "@/lib/sales-foundation";
 import { learnFromAttributedOutcome } from "@/lib/controlled-learning";
 
 /**
@@ -65,6 +65,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   let converted = 0;
 
   const foundation = await ensureSalesFoundation(userId, user.agentConfig);
+  const liveAgentConfig = effectiveAgentConfig(user.agentConfig, foundation.strategy, foundation.experiment);
   const campaign = await prisma.callCampaign.create({
     data: { userId, name: `Campaign ${new Date().toISOString().slice(0, 16)}`, strategyId: foundation.strategy.id, experimentId: foundation.experiment.id },
   });
@@ -88,12 +89,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
             number: lead.phone,
             callerId: process.env.RC_CALLER_ID || "",
           },
-          {
-            tone: user.agentConfig?.tone || "PROFESSIONAL",
-            productName: user.agentConfig?.productName || "",
-            pitch: user.agentConfig?.pitch || "",
-            pricing: user.agentConfig?.pricing || undefined,
-          },
+          liveAgentConfig,
         );
         dialResult = {
           connected: sipResult.connected,
