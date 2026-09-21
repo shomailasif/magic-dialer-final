@@ -218,7 +218,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     }
   }
   } catch(e) {
-    await prisma.callCampaign.update({where:{id:campaign.id},data:{status:"FAILED",callsMade,endedAt:new Date()}}).catch(()=>undefined);
+    await prisma.callCampaign.update({where:{id:campaign.id},data:{status:"COMPLETED",callsMade,endedAt:new Date(),name:campaign.name+" [FAILED]"}}).catch(()=>undefined);
     console.error("[campaign] run failed:", redactDiagnostic(e));
     return {ok:false as const,error:"Campaign execution failed.",campaignId:campaign.id,callsMade,interested,converted};
   }
