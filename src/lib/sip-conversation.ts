@@ -528,7 +528,7 @@ function listenForSpeech(
     let keepaliveActive = true;
     const keepaliveIv = setInterval(() => {
       if (!keepaliveActive || cs.disposed) { clearInterval(keepaliveIv); return; }
-      try { enqueueAudio(SILENT_FRAME); } catch {}
+      try { if (media) enqueueAudio(media, SILENT_FRAME); } catch {}
     }, 3000);
     const finish=async () => {
       if (finished) return; finished=true; clearInterval(iv); clearInterval(keepaliveIv); keepaliveActive = false; cs.removeListener("audioPacket",on);
