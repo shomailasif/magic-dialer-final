@@ -279,11 +279,20 @@ function pushActivity(config, msg) {
 }
 
 function post(url, body) {
+  const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ac ? setTimeout(() => ac.abort(), 15000) : null;
   return fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+    signal: ac ? ac.signal : undefined,
+  }).then(async (r) => {
+    if (timer) clearTimeout(timer);
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }).catch((e) => {
+    if (timer) clearTimeout(timer);
+    throw e;
+  });
 }
 
 /** Optional animated cockpit (PowerShell) — opt-in only; the web dashboard is

@@ -49,9 +49,9 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   if (preparedOpeningText) {
     await agent(preparedOpeningText);
   } else {
-    const first = await opening(config());
-    if (!first.text) throw new Error("AI opening unavailable; refusing scripted fallback");
-    await agent(first.text);
+    const first = await opening(config()).catch(() => ({ text: null }));
+    if (!first || !first.text) { llmFailures++; await agent(fallbackOpening(config())); }
+    else await agent(first.text);
   }
 
   // Turn count is only a runaway-call safety bound. Turn endings themselves are
@@ -70,7 +70,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     if (!heard || String(heard).startsWith("(silence)")) {
       lead("(silence)");
       if (turn === 0) {
-        const hello = await nextTurn({ transcript: [...transcript, { role: "lead", text: "The line is quiet. Briefly check whether the prospect can hear you." }], ...config() });
+        const hello = await nextTurn({ transcript: [...transcript, { role: "lead", text: "The line is quiet. Briefly check whether the prospect can hear you." }], ...config() }).catch(() => ({ text: null }));
         if (!hello.text) llmFailures++;
         await agent(hello.text || (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?"));
         continue;
@@ -83,7 +83,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     humanRequested = HUMAN_RE.test(heard) && /\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
 
     if (stopRequested) {
-      const stopLine = await nextTurn({ transcript: [...transcript, { role: "lead", text: "Acknowledge the do-not-call request immediately and end the call." }], ...config() });
+      const stopLine = await nextTurn({ transcript: [...transcript, { role: "lead", text: "Acknowledge the do-not-call request immediately and end the call." }], ...config() }).catch(() => ({ text: null }));
       await agent(stopLine.text || fallbackReply(heard, config()));
       break;
     }
@@ -92,7 +92,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       break;
     }
 
-    const ai = await nextTurn({ transcript, ...config() });
+    const ai = await nextTurn({ transcript, ...config() }).catch(() => ({ text: null }));
     if (!ai.text) llmFailures++;
     await agent(ai.text || fallbackReply(heard, config()));
 

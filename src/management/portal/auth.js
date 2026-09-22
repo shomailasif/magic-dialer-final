@@ -27,7 +27,9 @@ function makeServerSecret() {
 
 /** Password for the legacy single-admin fallback. */
 function adminPassword(override) {
-  return override || process.env.ADM_PASSWORD || "changeme";
+  const pw = override || process.env.ADM_PASSWORD;
+  if (!pw) return "\x00NO_PASSWORD_CONFIGURED\x00";
+  return pw;
 }
 
 const ADMINS_FILE = path.join(__dirname, "admins.json");

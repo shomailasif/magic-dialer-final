@@ -80,7 +80,7 @@ async function voiceCall({
       // framing/pacing, and repeatedly creating one-frame streamers causes
       // audible gaps/clicks/noise.
       if (channel.open) {
-        channel.sendAudio(result.buffer);
+        try { channel.sendAudio(result.buffer); } catch (e) { onLog("[media] sendAudio failed: " + (e.message || e)); }
       }
       onLog(`[media] sent ${result.buffer.length} bytes TTS (${result.engine})`);
     };

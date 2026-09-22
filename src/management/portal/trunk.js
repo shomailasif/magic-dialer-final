@@ -607,6 +607,11 @@ function hangUp(portalId, id) {
   if (!s) return null;
   s.status = "completed";
   s.endedAt = Date.now();
+  // Actively terminate the SIP call if a bridge/softphone is available
+  try {
+    if (s._bridge && s._bridge.cleanup) s._bridge.cleanup();
+    else if (s._softphone) setTimeout(() => { try { s._softphone.revoke(); } catch {} }, 250);
+  } catch {}
   return s;
 }
 
@@ -702,12 +707,12 @@ async function batchPump(ctx, batch, list) {
       batch.currentSession = null;
       break;
     }
-    try { persistBatch(ctx, batch); } catch {}
+    try { await persistBatch(ctx, batch); } catch {}
     await delay(800);
   }
   batch.running = false;
   batch.endedAt = Date.now();
-  try { persistBatch(ctx, batch); } catch {}
+  try { await persistBatch(ctx, batch); } catch {}
   return batchSummary(batch);
 }
 

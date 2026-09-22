@@ -391,7 +391,7 @@ async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } 
     const r = spawnSync(
       python,
       ["-m", "edge_tts", "--voice", voice, "--rate", rateArg, "--text", text, "--write-media", file],
-      { stdio: "pipe", timeout: 30000, encoding: "utf8" },
+      { stdio: "pipe", timeout: 60000, encoding: "utf8" },
     );
     if (r.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 100) {
       if (fs.existsSync(file)) fs.unlinkSync(file);

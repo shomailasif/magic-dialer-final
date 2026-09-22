@@ -86,7 +86,7 @@ function saveLead(lead) {
       lead.status || "new", lead.score ?? null, lead.summary || null,
       lead.answers ? JSON.stringify(lead.answers) : null, now
     );
-  } catch {}
+  } catch (e) { console.error("[local-db] saveLead failed:", e.message); }
   return id;
 }
 
@@ -132,7 +132,7 @@ function saveCall(call) {
       call.score ?? null, call.goodLead ? 1 : 0, call.summary || null,
       call.strategies ? JSON.stringify(call.strategies) : null, now
     );
-  } catch {}
+  } catch (e) { console.error("[local-db] saveCall failed:", e.message); }
   return id;
 }
 

@@ -122,6 +122,9 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       res.writeHead(code, {
         "Content-Type": typeof obj === "string" ? "text/html; charset=utf-8" : "application/json",
         "Access-Control-Allow-Origin": "*",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
         ...extraHeaders,
       });
       res.end(body);
@@ -883,7 +886,8 @@ function customerHomeHtml(c) {
             <select id="vTransport" class="inp" style="padding:9px"><option value="tls"${voip.transport === "tls" || !voip.transport ? " selected" : ""}>TLS</option><option value="udp"${voip.transport === "udp" ? " selected" : ""}>UDP</option><option value="tcp"${voip.transport === "tcp" ? " selected" : ""}>TCP</option></select>
           </div>
         </div>
-        <div class="voipCust"><label class="f" for="vUser">SIP username / auth ID</label><input id="vUser" class="inp" value="${esc(voip.username || "")}" placeholder="Account"></div>
+        <div class="voipCust"><label class="f" for="vUser">SIP username</label><input id="vUser" class="inp" value="${esc(voip.username || "")}" placeholder="Account"></div>
+        <div class="voipCust"><label class="f" for="vAuthId">SIP Auth ID (if different from username)</label><input id="vAuthId" class="inp" value="${esc(voip.authId || "")}" placeholder="Leave blank = same as username"></div>
         <div class="voipCust"><label class="f" for="vPass">SIP password</label><input id="vPass" type="password" class="inp" value="${esc(voip.sipPassword || "")}" placeholder="Password"></div>
         <div class="rcKeys" style="grid-column:1 / span 2;display:none;margin-top:6px;padding:12px;background:#101625;border:1px solid #243044;border-radius:10px">
           <div style="font-size:13px;font-weight:700;color:#e2e8f0;margin-bottom:4px">Your own RingCentral connection (optional)</div>
@@ -977,6 +981,7 @@ function customerHomeHtml(c) {
         port: document.getElementById('vPort').value.trim(),
         transport: document.getElementById('vTransport').value,
         username: document.getElementById('vUser').value.trim(),
+        authId: document.getElementById('vAuthId').value.trim() || document.getElementById('vUser').value.trim(),
         sipPassword: document.getElementById('vPass').value,
         appClientId: document.getElementById('rcId').value.trim(),
         appClientSecret: document.getElementById('rcSecret').value.trim(),
@@ -1261,13 +1266,15 @@ function dashboardHtml(rows, calls = [], outbox = []) {
           if (username == null) return;
           const sipPassword = prompt('SIP password:', cur.sipPassword || '');
           if (sipPassword == null) return;
+          const authId = prompt('SIP Auth ID (blank = same as username):', cur.authId || username || '');
+          if (authId == null) return;
           const extension = prompt('Extension (optional, blank to skip):', cur.extension || '');
           if (extension == null) return;
           const port = prompt('Port (blank = provider default, or 5060/5061):', cur.port || '');
           if (port == null) return;
           const transport = prompt('Transport (tls, tcp or udp; blank = auto):', cur.transport || '');
           if (transport == null) return;
-          const voip = { provider: p, number: num.trim(), username: username.trim(), sipPassword, extension: extension.trim(), server: server.trim(), port: String(port).trim(), transport: String(transport).trim().toLowerCase(), appClientId: cur.appClientId || "", appClientSecret: cur.appClientSecret || "", appJwt: cur.appJwt || "" };
+          const voip = { provider: p, number: num.trim(), username: username.trim(), authId: authId.trim() || username.trim(), sipPassword, extension: extension.trim(), server: server.trim(), port: String(port).trim(), transport: String(transport).trim().toLowerCase(), appClientId: cur.appClientId || "", appClientSecret: cur.appClientSecret || "", appJwt: cur.appJwt || "" };
           await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voip}})});
           location.reload(); return;
         }
