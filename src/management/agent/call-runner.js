@@ -112,6 +112,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     missed: [],
     goodConversation: heardSomething,
     friendlyKeys: [],
+    locale: activeLocale,
   });
   const leadLines = transcript.filter((t) => t.role === "lead" && !t.text.startsWith("(silence)")).map((t) => t.text);
 

@@ -354,7 +354,8 @@ function shouldEscalate({ goodLead, maxAttemptsOfRejection, hearsHumanRequest, l
  *     while it helps (a good call bumps good; missed follow-ups let it decay).
  * Result is persisted into config, so improvement is cumulative across calls.
  */
-function learn(learning, { goodLead, strategies, missed, goodConversation, friendlyKeys }) {
+function learn(learning, { goodLead, strategies, missed, goodConversation, friendlyKeys, locale = "en" }) {
+  const loc = I18N.normalizeLocale(locale);
   const next = {
     calls: (learning.calls || 0) + 1,
     strategyScores: { ...(learning.strategyScores || {}) },

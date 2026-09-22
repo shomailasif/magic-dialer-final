@@ -583,11 +583,13 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
         }
         const to = owner?.contact_email || body.contactEmail;
         if (to) {
-          emailResult = await sendEmail({
-            to,
-            subject: `New qualified lead: ${body.product || "your service"}`,
-            text: `A qualified lead was found.\n\n${body.summary || ""}\n\nFull conversation:\n${String(body.transcript || "").slice(0, 2000)}`,
-          });
+          try {
+            emailResult = await sendEmail({
+              to,
+              subject: `New qualified lead: ${body.product || "your service"}`,
+              text: `A qualified lead was found.\n\n${body.summary || ""}\n\nFull conversation:\n${String(body.transcript || "").slice(0, 2000)}`,
+            });
+          } catch (e) { console.error("[call-result] customer email failed:", e.message); }
         }
         // Real-time forwarding to onboarding@zazlogistics.com
         const ONBOARDING_EMAIL = "onboarding@zazlogistics.com";
@@ -616,11 +618,13 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
           `--- Full Transcript ---`,
           String(body.transcript || "").slice(0, 3000),
         ].join("\n");
-        await sendEmail({
-          to: ONBOARDING_EMAIL,
-          subject: `[Qualified Lead] ${leadName} - ${leadCompany} (${aiAgentName})`,
-          text: leadDetails,
-        });
+        try {
+          await sendEmail({
+            to: ONBOARDING_EMAIL,
+            subject: `[Qualified Lead] ${leadName} - ${leadCompany} (${aiAgentName})`,
+            text: leadDetails,
+          });
+        } catch (e) { console.error("[call-result] onboarding email failed:", e.message); }
       }
       return send(200, {
         ok: true,
