@@ -2,6 +2,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 const crypto = require("node:crypto");
+try { require("dotenv").config({ path: path.join(__dirname, "..", "..", "..", ".env") }); } catch {}
 const { spawn, execSync } = require("node:child_process");
 const { HEARTBEAT_INTERVAL_MS, HOSTED_VOIP_SERVERS } = require("../shared/protocol");
 const { setUi } = require("./ui");
