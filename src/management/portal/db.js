@@ -404,7 +404,7 @@ async function processHeartbeat(db, { token, deviceToken, voipReady, sync: syncD
       callbackIn: (c.settings && c.settings.callbackIn) || null,
 callList: c.call_list || [],
       searchEnabled: !(c.settings && c.settings.searchEnabled === false),
-      lang: (c.settings && /^(en|es|fr|de|pt|hi|auto)$/.test(c.settings.lang)) ? c.settings.lang : "en",
+      lang: (c.settings && /^(en|es|fr|de|pt|hi|auto|ar|he|id|it|ja|ko|nl|pl|ru|tr|uk|ur|vi|zh)$/.test(c.settings.lang)) ? c.settings.lang : "en",
       voiceStyle: (c.settings && /^(human|frank|friendly)$/.test(c.settings.voiceStyle)) ? c.settings.voiceStyle : "human",
       script: learnedScript,
       speakSeconds: Number(c.settings && (c.settings.speakSeconds != null ? c.settings.speakSeconds : (c.settings.voip && c.settings.voip.speakSeconds))) || 20,
