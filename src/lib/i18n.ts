@@ -8,12 +8,15 @@
 
 const cache = new Map<string, Record<string, unknown>>();
 
+const VALID_LOCALES = new Set(["en", "es", "fr", "de", "pt", "hi", "auto"]);
+
 export function loadMessages(locale: string): Record<string, unknown> {
-  const cached = cache.get(locale);
+  const safe = VALID_LOCALES.has(locale) ? locale : "en";
+  const cached = cache.get(safe);
   if (cached) return cached;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const fresh: Record<string, unknown> = require(`../../messages/${locale}.json`);
-  cache.set(locale, fresh);
+  const fresh: Record<string, unknown> = require(`../../messages/${safe}.json`);
+  cache.set(safe, fresh);
   return fresh;
 }
 

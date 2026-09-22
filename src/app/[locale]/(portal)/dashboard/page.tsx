@@ -41,22 +41,30 @@ export default async function DashboardPage({
   const te = await getTranslations("enums");
   const tc = await getTranslations("common");
   const user = await getCurrentUser();
+  if (!user) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
+        <Card className="p-5"><p className="text-sm text-slate-600">Please log in to view the dashboard.</p></Card>
+      </div>
+    );
+  }
 
   const [totalLeads, calls, recentCalls, pendingLeads, interestedCount, convertedCount] =
     await Promise.all([
-      prisma.lead.count({ where: { userId: user!.id } }),
-      prisma.call.count({ where: { userId: user!.id } }),
+      prisma.lead.count({ where: { userId: user.id } }),
+      prisma.call.count({ where: { userId: user.id } }),
       prisma.call.findMany({
-        where: { userId: user!.id },
+        where: { userId: user.id },
         orderBy: { timestamp: "desc" },
         take: 8,
         include: { lead: true },
       }),
       prisma.lead.count({
-        where: { userId: user!.id, OR: [{ status: "PENDING" }, { status: "FAILED" }] },
+        where: { userId: user.id, OR: [{ status: "PENDING" }, { status: "FAILED" }] },
       }),
-      prisma.lead.count({ where: { userId: user!.id, status: "INTERESTED" } }),
-      prisma.lead.count({ where: { userId: user!.id, status: "CONVERTED" } }),
+      prisma.lead.count({ where: { userId: user.id, status: "INTERESTED" } }),
+      prisma.lead.count({ where: { userId: user.id, status: "CONVERTED" } }),
     ]);
 
   const active = user?.subscription?.status === "ACTIVE";

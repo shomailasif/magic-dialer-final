@@ -41,16 +41,14 @@ export async function POST(request: Request) {
 
   const passwordHash = await hashPassword(password);
 
-  // If an admin is creating this user, stamp the admin ID.
-  let createdByAdminId: string | undefined = body.createdByAdminId;
-  if (!createdByAdminId) {
-    try {
-      const currentUser = await getCurrentUser();
-      if (currentUser?.role === "SUPER_ADMIN") {
-        createdByAdminId = currentUser.id;
-      }
-    } catch {}
-  }
+  // Only stamp createdByAdminId if the caller is a SUPER_ADMIN.
+  let createdByAdminId: string | undefined;
+  try {
+    const currentUser = await getCurrentUser();
+    if (currentUser?.role === "SUPER_ADMIN") {
+      createdByAdminId = currentUser.id;
+    }
+  } catch {}
 
   const user = await prisma.user.create({
     data: {

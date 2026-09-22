@@ -10,8 +10,9 @@ export function safeDiagnostic(stage:string,code:string,status:number,requestId:
 export function redactDiagnostic(value:unknown,secrets:unknown[]=[]){
  let s=String(value instanceof Error?value.message:value??"").replace(/[\r\n]+/g," ").slice(0,500);
  for(const secret of secrets){const x=String(secret||"");if(x.length>=4)s=s.split(x).join("[REDACTED]")}
- s=s.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi,"Bearer [REDACTED]")
-   .replace(/\b(enc:v1:)[A-Za-z0-9._-]+/gi,"$1[REDACTED]")
-   .replace(/\b(sk-[A-Za-z0-9_-]{8,})\b/g,"[REDACTED]");
+  s=s.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+=*/gi,"Bearer [REDACTED]")
+    .replace(/\b(enc:v1:)[A-Za-z0-9._-]+/gi,"$1[REDACTED]")
+    .replace(/\b(sk-[A-Za-z0-9_-]{8,})\b/g,"[REDACTED]")
+    .replace(/\b(gsk_[A-Za-z0-9_-]{8,})\b/g,"[REDACTED]");
  return s;
 }

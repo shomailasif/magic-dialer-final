@@ -328,7 +328,7 @@ function edgeClean(text: string): string {
 function edgeTts(text: string, voice: string): Promise<Buffer | null> {
   return new Promise((resolve) => {
     let done = false;
-    const timer = setTimeout(() => { console.error("[sip-conv] edgeTts TIMEOUT for:", text.slice(0, 40)); finish(null); }, 3000);
+    const timer = setTimeout(() => { console.error("[sip-conv] edgeTts TIMEOUT"); finish(null); }, 3000);
     function finish(buf: Buffer | null) { if (!done) { done = true; clearTimeout(timer); resolve(buf); } }
     let ws: any;
     try {

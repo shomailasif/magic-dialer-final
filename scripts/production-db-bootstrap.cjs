@@ -111,7 +111,6 @@ async function main() {
     for (const statement of statementsFor(name)) await applyAdditiveStatement(statement);
   }
   await verifyIntegrity();
-  await prisma.$disconnect();
 
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL is required for legacy schema verification.");
@@ -119,7 +118,6 @@ async function main() {
     runPrisma(["db", "execute", "--url", databaseUrl, "--file", path.join(migrationRoot, rebuildMigration, "migration.sql")]);
     await verifyIntegrity();
     await verifyForeignKeys();
-    await prisma.$disconnect();
   }
   runPrisma(["migrate", "diff", "--from-url", databaseUrl, "--to-schema-datamodel", "prisma/schema.prisma", "--exit-code"]);
 

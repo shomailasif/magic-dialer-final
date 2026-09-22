@@ -40,7 +40,7 @@ function startEngineHealthServer({ version, getStatus = () => "online", onCall =
       const number = String(body.number || "").replace(/[^0-9+]/g, "");
       if (!/^\+?[0-9]{7,15}$/.test(number)) return json(res, 400, { error: "invalid phone number" }, corsOrigin || allowedOrigin);
       callActive = true;
-      callTimer = setTimeout(() => { callActive = false; }, CALL_TIMEOUT_MS);
+      callTimer = setTimeout(() => { console.warn("[engine-health] call exceeded 5min timeout"); }, CALL_TIMEOUT_MS);
       try {
         const result = await onCall(number);
         return json(res, 200, { ok: true, engine: "local", result }, corsOrigin || allowedOrigin);

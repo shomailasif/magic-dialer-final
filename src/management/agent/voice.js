@@ -230,7 +230,9 @@ function speakEdge(text, { locale = "en", rate = 1, style = "human" } = {}) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
       return false;
     }
-    return playFile(file);
+    const ok = playFile(file);
+    try { fs.unlinkSync(file); } catch {}
+    return ok;
   } catch {
     if (fs.existsSync(file)) fs.unlinkSync(file);
     return false;
@@ -247,7 +249,9 @@ async function speakHeadTTS(text, { locale = "en", rate = 1, style = "human" } =
       if (fs.existsSync(file)) fs.unlinkSync(file);
       return false;
     }
-    return playFile(file);
+    const played = playFile(file);
+    try { fs.unlinkSync(file); } catch {}
+    return played;
   } catch {
     if (fs.existsSync(file)) fs.unlinkSync(file);
     return false;

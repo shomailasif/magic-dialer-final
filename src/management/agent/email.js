@@ -37,9 +37,12 @@ async function sendEmail(opts) {
         () => { send(`RCPT TO:<${to}>`); },
         () => { send(`DATA`); },
         () => {
-          send(`From: ${from || user}`);
-          send(`To: ${to}`);
-          send(`Subject: ${subject}`);
+          const safeSubject = String(subject || "").replace(/[\r\n]/g, " ");
+          const safeFrom = String(from || user || "").replace(/[\r\n]/g, " ");
+          const safeTo = String(to || "").replace(/[\r\n]/g, " ");
+          send(`From: ${safeFrom}`);
+          send(`To: ${safeTo}`);
+          send(`Subject: ${safeSubject}`);
           send(`Content-Type: text/plain; charset=utf-8`);
           send(``);
           send(text || "");

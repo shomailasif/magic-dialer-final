@@ -161,7 +161,7 @@ async function voiceCall({
       posted = res.status;
       const body = await res.json().catch(() => ({}));
       onLog(body.emailed ? "Qualified lead email sent ✓" : "Result reported.");
-    } catch (e) { onLog(`Could not report result [${callId}] (${safeError(e,[token])}).`); }
+    } catch (e) { clearTimeout(timer); onLog(`Could not report result [${callId}] (${safeError(e,[token])}).`); }
   }
   return { ...result, callId, posted, learning: updatedLearning };
 }

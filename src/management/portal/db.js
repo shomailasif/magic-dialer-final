@@ -422,7 +422,8 @@ async function updateCustomer(db, token, patch) {
   if (!c) return null;
   const upd = [];
   const vals = [];
-  const push = (col, v) => { upd.push(col); vals.push(v); };
+  const VALID_COLS = new Set(["product", "lead_fields", "contact_email", "persona", "settings", "voip_ready"]);
+  const push = (col, v) => { if (!VALID_COLS.has(col)) return; upd.push(col); vals.push(v); };
   if (typeof patch.product === "string") push("product", patch.product || null);
   if (Array.isArray(patch.leadFields)) push("lead_fields", JSON.stringify(patch.leadFields));
   if (typeof patch.contactEmail === "string") push("contact_email", patch.contactEmail || null);

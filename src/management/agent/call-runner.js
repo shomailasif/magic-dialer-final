@@ -60,7 +60,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     const heardResult = await listen({ locale: activeLocale, autoLanguage: locale === "auto" });
     const heard = typeof heardResult === "string" ? heardResult : (heardResult && heardResult.text);
     const detected = typeof heardResult === "object" && heardResult && heardResult.language
-      ? normalizeLanguage(heardResult.language, null)
+      ? normalizeLanguage(heardResult.language, activeLocale || "en")
       : null;
     if (detected && detected !== activeLocale) {
       activeLocale = detected;

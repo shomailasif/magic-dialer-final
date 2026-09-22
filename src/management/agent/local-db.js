@@ -188,8 +188,14 @@ function stats() {
   } catch { return { leads: 0, leadsUnsynced: 0, calls: 0, callsUnsynced: 0, qualifiedLeads: 0 }; }
 }
 
+function close() {
+  if (_db) { try { _db.close(); } catch {} _db = null; }
+}
+
+process.on("exit", close);
+
 module.exports = {
-  open, saveLead, updateLead, getUnsyncedLeads, markLeadSynced, allLeads,
+  open, close, saveLead, updateLead, getUnsyncedLeads, markLeadSynced, allLeads,
   saveCall, getUnsyncedCalls, markCallSynced,
   saveLearning, getLearning,
   queueSync, getUnsyncedSyncLog, markSyncLogSynced,

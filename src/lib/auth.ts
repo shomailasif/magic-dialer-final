@@ -35,7 +35,9 @@ export function verifySession(token: string): { userId: string; sessionId: strin
   if (!timingSafeEqual(a, b)) return null;
   const ts = Number(parts[1]);
   if (Number.isNaN(ts)) return null;
-  if (Date.now() - ts > SESSION_TTL_MS) return null;
+  const now = Date.now();
+  if (now - ts > SESSION_TTL_MS) return null;
+  if (ts - now > 60_000) return null; // reject tokens with future timestamps (clock skew tolerance 60s)
   return { userId: parts[0], sessionId: parts[2] };
 }
 

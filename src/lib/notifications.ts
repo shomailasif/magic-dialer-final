@@ -96,7 +96,7 @@ export async function deliverOutcomeNotification(
     },
   });
 
-  await attemptDelivery(record.id);
+  await attemptDelivery(record.id, html);
 }
 
 /**
@@ -104,7 +104,7 @@ export async function deliverOutcomeNotification(
  * increasing backoff. Failures are logged and left in the DB for the super
  * admin to review.
  */
-export async function attemptDelivery(notificationId: string): Promise<boolean> {
+export async function attemptDelivery(notificationId: string, htmlOverride?: string): Promise<boolean> {
   const notif = await prisma.notification.findUnique({
     where: { id: notificationId },
   });
@@ -122,7 +122,7 @@ export async function attemptDelivery(notificationId: string): Promise<boolean> 
     to: notif.toEmail,
     subject: notif.subject,
     text: notif.body,
-    html: undefined,
+    html: htmlOverride,
   };
 
   try {

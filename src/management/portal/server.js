@@ -118,7 +118,8 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
 
   const match = (urlPath, pattern) => {
     const m = String(urlPath).match(pattern);
-    return m ? { token: decodeURIComponent(m[1]) } : null;
+    if (!m) return null;
+    try { return { token: decodeURIComponent(m[1]) }; } catch { return null; }
   };
 
   const server = http.createServer(async (req, res) => {
@@ -158,7 +159,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       const body = await readBody(req);
       const who = authenticate(body.password, adminPassword);
       if (who) {
-        return send(200, { ok: true, name: who.name }, { "Set-Cookie": `session=${issueSession(who.id)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400` });
+        return send(200, { ok: true, name: who.name }, { "Set-Cookie": `session=${issueSession(who.id)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400; Secure` });
       }
       return send(401, { error: "Wrong password" });
     }
@@ -171,7 +172,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       const body = await readBody(req);
       const c = await getCustomerByToken(db, String(body.token || "").trim());
       if (!c) return send(404, { error: "Unknown access token" });
-      return send(200, { ok: true, name: c.persona }, { "Set-Cookie": `csession=${issueCustomerSession(c.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400` });
+      return send(200, { ok: true, name: c.persona }, { "Set-Cookie": `csession=${issueCustomerSession(c.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400; Secure` });
     }
     if (url.pathname === "/clogout" && method === "POST") {
       return send(200, { ok: true }, { "Set-Cookie": "csession=; Path=/; HttpOnly; Max-Age=0" });
@@ -399,7 +400,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       return send(404, { error: "No batch" });
     }
     if (url.pathname === "/api/dev/sipcheck" && method === "POST") {
-      if (!isAdmin && !myToken) return send(401, { error: "Admin login required" });
+      if (!isAdmin) return send(401, { error: "Admin login required" });
       const body = await readBody(req);
       const u = String(body.username || "").replace(/[^0-9+]/g, "");
       const p = String(body.password || "");
@@ -426,7 +427,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       return send(200, out);
     }
     if (url.pathname === "/api/dev/sipcall" && method === "POST") {
-      if (!isAdmin && !myToken) return send(401, { error: "Login required" });
+      if (!isAdmin) return send(401, { error: "Admin login required" });
       const body = await readBody(req);
       const u = String(body.username || "").replace(/[^0-9+]/g, "");
       const p = String(body.password || "");
@@ -462,7 +463,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     // Dev diagnostic: synthesise the auto-script to frames (proves the portal
     // can voice the learned script with no external key).
     if (url.pathname === "/api/dev/tts" && method === "POST") {
-      if (!isAdmin && !myToken) return send(401, { error: "Login required" });
+      if (!isAdmin) return send(401, { error: "Admin login required" });
       const b = await readBody(req);
       const text = String(b.text || "").slice(0, 2000);
       const frames = text ? await audio.framesFor(text, { ttsKey: b.ttsKey, ttsVoice: b.ttsVoice }) : [];
