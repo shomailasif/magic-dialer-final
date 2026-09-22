@@ -38,7 +38,7 @@ Source: "assets\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
-Name: "{commondesktop}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
+Name: "{userdesktop}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 
 [Registry]
 ; Auto-start via Run key (works on all Windows, no shortcut permissions needed)
