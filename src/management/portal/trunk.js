@@ -24,6 +24,15 @@ const { HOSTED_VOIP_SERVERS, voipComplete } = require("../shared/protocol");
 // In-process call session store. Keyed by portal + session id so several
 // portal instances in one process stay isolated in tests.
 const CALL_SESSIONS = new Map();
+const TERMINAL_SESSION_AGE_MS = 10 * 60 * 1000; // 10 minutes
+function gcSessions() {
+  const now = Date.now();
+  for (const [key, s] of CALL_SESSIONS.entries()) {
+    if (s.endedAt && (now - s.endedAt) > TERMINAL_SESSION_AGE_MS) CALL_SESSIONS.delete(key);
+  }
+}
+// Run GC every 5 minutes
+setInterval(gcSessions, 5 * 60 * 1000);
 function sessionKey(portalId, id) {
   return portalId + ":" + id;
 }
@@ -208,6 +217,7 @@ async function dialViaRingCentral(ctx, session, settings) {
     };
 
     (async () => {
+      try {
       for (let attempt = 1; attempt <= 6; attempt++) {
         if (session.status === "error") return;
         const r = await sipCallBridge(opts);
@@ -257,6 +267,7 @@ async function dialViaRingCentral(ctx, session, settings) {
         if (attempt < 6) await delay(3000);
       }
       failSession(session, "RingCentral SIP call failed after " + (session.sip || {}).attempts + " attempt(s)");
+      } catch (e) { failSession(session, "SIP bridge error: " + ((e && e.message) || String(e))); }
     })();
     return session;
   }

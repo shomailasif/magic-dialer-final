@@ -506,12 +506,13 @@ async function setDisabled(db, token, disabled) {
   const c = await getCustomerByToken(db, token);
   if (!c) return null;
   const v = disabled ? 1 : 0;
+  const newStatus = disabled ? "offline" : "online";
   if (db.pool) {
-    await db.pool.query("UPDATE customers SET disabled = $1, status = 'online' WHERE token = $2", [v, token]);
+    await db.pool.query("UPDATE customers SET disabled = $1, status = $2 WHERE token = $3", [v, newStatus, token]);
     const r = await db.pool.query("SELECT * FROM customers WHERE token = $1", [token]);
     return rowToCustomer(r.rows[0]);
   }
-  db.sqlite.prepare("UPDATE customers SET disabled = ?, status = 'online' WHERE token = ?").run(v, token);
+  db.sqlite.prepare("UPDATE customers SET disabled = ?, status = ? WHERE token = ?").run(v, newStatus, token);
   return rowToCustomer(db.sqlite.prepare("SELECT * FROM customers WHERE token = ?").get(token));
 }
 

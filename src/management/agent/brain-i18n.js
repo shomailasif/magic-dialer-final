@@ -856,7 +856,7 @@ function retryFor(locale, field) {
   return opts[String(field).length % opts.length].replace(/\{f\}/g, String(field).toLowerCase());
 }
 
-function pick(arr, seed) { return arr[Math.abs(seed) % arr.length]; }
+function pick(arr, seed) { return arr[Math.floor(Math.abs(seed)) % arr.length]; }
 
 /**
  * Friendly, warm lines for when the person on the other end says something

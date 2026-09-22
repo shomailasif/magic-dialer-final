@@ -322,7 +322,7 @@ function edgeMakeId() {
 function edgeClean(text: string): string {
   return String(text || "")
     .split("").map((c) => { const code = c.charCodeAt(0); return (code <= 0x08 || (code >= 0x0B && code <= 0x0C) || (code >= 0x0E && code <= 0x1F)) ? " " : c; }).join("")
-    .replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">");
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 function edgeTts(text: string, voice: string): Promise<Buffer | null> {

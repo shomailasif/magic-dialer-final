@@ -253,11 +253,12 @@ function makeBrain({ product, leadFields, persona = "high-energy friendly female
       }
       const bye = loc === "en"
         ? "Thanks for your time today - if anything changes, you know where to find us. Take care!"
-        : loc === "es" ? "Gracias por su tiempo hoy - si algo cambia, ya sabe d�nde encontrarnos. �Cu�dese!"
-          : loc === "fr" ? "Merci pour votre temps - si �a change, vous savez o� nous trouver. Prenez soin de vous !"
-            : loc === "de" ? "Danke f�r Ihre Zeit - wenn sich etwas �ndert, wissen Sie, wo Sie uns finden. Passen Sie auf sich auf!"
-              : loc === "pt" ? "Obrigado pelo seu tempo - se algo mudar, voc� j� sabe onde nos encontrar. Se cuida!"
-                : "???? ??? ?? ??? ??????? - ??? ??? ????? ??, ?? ?? ????? ??? ?? ???? ???? ???? ??? ????? ????!";
+        : loc === "es" ? "Gracias por su tiempo hoy - si algo cambia, ya sabe dónde encontrarnos. ¡Cuídese!"
+          : loc === "fr" ? "Merci pour votre temps - si ça change, vous savez où nous trouver. Prenez soin de vous !"
+            : loc === "de" ? "Danke für Ihre Zeit - wenn sich etwas ändert, wissen Sie, wo Sie uns finden. Passen Sie auf sich auf!"
+              : loc === "pt" ? "Obrigado pelo seu tempo - se algo mudar, você já sabe onde nos encontrar. Se cuida!"
+                : loc === "hi" ? "आज आपके समय के लिए धन्यवाद - अगर कुछ बदलता है, तो आप जानते हैं कि हमें कहां मिलना है। अपना ख्याल रखिए!"
+                  : "Thanks for your time today - if anything changes, you know where to find us. Take care!";
       return bye;
     },
   };
@@ -301,7 +302,7 @@ function scoreLead({ transcript, fields, locale = "en" }) {
   let positive;
   let negative;
   if (loc === "en") {
-    positive = /\b(yes|interested|how much|cost|price|quote|need|looking for|that sounds|go ahead|sure|okay|ok)\b/;
+    positive = /\b(yes|interested|how much|cost|price|quote|need|looking for|that sounds|go ahead|sure|okay|ok)\b/gi;
     negative = /\b(no|not interested|no thanks|stop|don't call|never mind|scam|not now|busy|too busy)\b/;
   } else {
     const posWords = I18N.POSITIVE_BY_LOCALE[loc] || I18N.POSITIVE_BY_LOCALE.en;
@@ -373,7 +374,7 @@ function learn(learning, { goodLead, strategies, missed, goodConversation, frien
     next.unhandled = keep;
     if (seen >= 1) {
       // Recurring across calls -> promote to a learned intent with a warm answer.
-      const ci = next.customIntent[m.sig] || { answer: I18N.pick(I18N.FRIENDLY_BY_LOCALE.en, m.sig.length + 3), good: 0, used: 0 };
+      const ci = next.customIntent[m.sig] || { answer: I18N.pick(I18N.FRIENDLY_BY_LOCALE[loc] || I18N.FRIENDLY_BY_LOCALE.en, m.sig.length + 3), good: 0, used: 0 };
       ci.used += 1;
       ci.good += goodConversation ? 1 : 0;
       next.customIntent[m.sig] = ci;

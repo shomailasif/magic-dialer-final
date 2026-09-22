@@ -55,10 +55,10 @@ function writeOutbox({ to, subject, text, note }) {
   return { delivered: false, to, subject, outboxFile: file };
 }
 
-function listOutbox() {
+function listOutbox(limit = 50) {
   const dir = outboxDir();
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).map((f) => ({ file: f, content: fs.readFileSync(path.join(dir, f), "utf8") }));
+  return fs.readdirSync(dir).slice(-limit).map((f) => ({ file: f, content: fs.readFileSync(path.join(dir, f), "utf8") }));
 }
 
 module.exports = { sendEmail, listOutbox };

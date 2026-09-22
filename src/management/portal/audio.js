@@ -286,7 +286,11 @@ async function framesFor(text, opts = {}) {
   if (cache.has(key)) return cache.get(key);
   let frames;
   try { frames = await textToFrames(text, opts); } catch { frames = []; }
-  if (cache.size > CACHE_MAX) cache.clear();
+  if (cache.size > CACHE_MAX) {
+    // Evict oldest entry (first key in insertion order)
+    const oldest = cache.keys().next().value;
+    if (oldest) cache.delete(oldest);
+  }
   cache.set(key, frames);
   return frames;
 }

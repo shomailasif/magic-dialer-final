@@ -372,12 +372,13 @@ function hear({ timeoutMs = 6000, waveFile = null, locale = "en" } = {}) {
     const engineLine = locale === "en"
       ? `      $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine`
       : `      if ($info) { $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine($info) } else { $r = New-Object System.Speech.Recognition.SpeechRecognitionEngine }`;
+    const safeWaveFile = String(waveFile || "").replace(/'/g, "''").replace(/\\/g, "\\\\");
     const script = `
     Add-Type -AssemblyName System.Speech
     try {
       ${cultureLine}
       ${engineLine}
-      $r.SetInputToWaveFile('${waveFile}')
+      $r.SetInputToWaveFile('${safeWaveFile}')
       $r.InitialSilenceTimeout = New-Object System.TimeSpan(0,0,${sec})
       $r.EndSilenceTimeout     = New-Object System.TimeSpan(0,0,2)
       $dg = New-Object System.Speech.Recognition.DictationGrammar

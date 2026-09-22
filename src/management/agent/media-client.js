@@ -44,6 +44,7 @@ function mediaConnect({ portal, sessionId, token, onLog = () => {} }) {
     const settle = (err, ch) => {
       if (state._settled) return;
       state._settled = true;
+      if (state._connectTimer) { clearTimeout(state._connectTimer); state._connectTimer = null; }
       if (err) reject(err);
       else resolve(ch);
     };
@@ -87,12 +88,15 @@ function mediaConnect({ portal, sessionId, token, onLog = () => {} }) {
     });
 
     // Timeout if portal doesn't accept the connection
-    setTimeout(() => {
+    const connectTimer = setTimeout(() => {
       if (!state._settled) {
         ws.close();
         settle(new Error("media channel connection timeout"));
       }
     }, 10000);
+    if (connectTimer.unref) connectTimer.unref();
+    // Store timer so it can be cleared when connection succeeds
+    state._connectTimer = connectTimer;
   });
 }
 
