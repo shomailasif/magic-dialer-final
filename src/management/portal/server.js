@@ -1077,7 +1077,7 @@ function dashboardHtml(rows, calls = [], outbox = []) {
         <div style="margin-top:8px;display:flex;gap:6px">
           <button class="btn ghost" title="Rename the agent (persona)" style="padding:4px 9px;font-size:11.5px;color:#a5b4fc" data-token="${c.token}" data-action="qname">Rename</button>
           <button class="btn ghost" title="Numbers this agent should call" style="padding:4px 9px;font-size:11.5px;color:#a5b4fc" data-token="${c.token}" data-action="qnums">Numbers</button>
-          <button class="btn ghost" title="Connect this user's dialer line" style="padding:4px 9px;font-size:11.5px;color:${c.voip_ready === 1 ? "#34d399" : "#6b7a99"}" data-token="${c.token}" data-action="qvoip">VOIP ${c.voip_ready === 1 ? "ON" : ""}</button>
+          <button class="btn ghost" title="Connect this user's dialer line" style="padding:4px 9px;font-size:11.5px;color:${c.voip_ready === 1 ? "#34d399" : "#6b7a99"}" data-token="${c.token}" data-action="qvoip">VOIP ${((cust(c.token).settings||{}).voipShared) ? "SHARED" : (c.voip_ready === 1 ? "ON" : "")}</button>
           <button class="btn ghost" title="Place a test call through the cloud gateway (over 443, no ports needed on the PC)" style="padding:4px 9px;font-size:11.5px;color:#7dd3fc" data-token="${c.token}" data-action="qdial">Dial test</button>
         </div>
       </td>
@@ -1269,8 +1269,15 @@ function dashboardHtml(rows, calls = [], outbox = []) {
         }
         if (a === 'qvoip') {
           const cur = (cust(token).settings || {}).voip || {};
-          const hosted = Object.keys(HOSTED_VOIP_SERVERS);
-          const provider = prompt('VOIP provider (RingCentral, Twilio, Vonage, Plivo, Flowroute, ...) or a custom value for your own SIP server:', cur.provider || (hosted.includes(cur.provider) ? cur.provider : 'ringcentral'));
+          const isShared = !!(cust(token).settings || {}).voipShared;
+          const choice = prompt('VOIP setup:\n\n1 = Use shared RingCentral (admin credentials)\n2 = Configure custom SIP\n\nType 1 or 2 (cancel to skip):', isShared ? '1' : '2');
+          if (choice == null) return;
+          if (choice.trim() === '1') {
+            await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voipShared: true}})});
+            alert('Shared RingCentral credentials enabled for this customer.');
+            location.reload(); return;
+          }
+          const provider = prompt('VOIP provider (RingCentral, Twilio, Vonage, ...) or custom SIP server:', cur.provider || 'ringcentral');
           if (provider == null) return;
           const p = String(provider).trim().toLowerCase();
           let server = '';
@@ -1293,7 +1300,7 @@ function dashboardHtml(rows, calls = [], outbox = []) {
           const transport = prompt('Transport (tls, tcp or udp; blank = auto):', cur.transport || '');
           if (transport == null) return;
           const voip = { provider: p, number: num.trim(), username: username.trim(), authId: authId.trim() || username.trim(), sipPassword, extension: extension.trim(), server: server.trim(), port: String(port).trim(), transport: String(transport).trim().toLowerCase(), appClientId: cur.appClientId || "", appClientSecret: cur.appClientSecret || "", appJwt: cur.appJwt || "" };
-          await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voip}})});
+          await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voip, voipShared: false}})});
           location.reload(); return;
         }
         if (a === 'qdial') {

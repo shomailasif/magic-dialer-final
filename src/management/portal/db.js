@@ -317,7 +317,7 @@ async function processHeartbeat(db, { token, deviceToken, voipReady, sync: syncD
   c.settings = c.settings && typeof c.settings === "object" ? c.settings : {};
   const now = Date.now();
   const s = c.settings || {};
-  const haveVoip = voipComplete(s.voip);
+  const haveVoip = voipComplete(s.voip) || (s.voipShared && !!(process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD));
   const vp = (voipReady === true || !!haveVoip) ? 1 : 0;
 
   // Process sync data from agent (leads, calls stored locally on PC)
@@ -398,7 +398,20 @@ async function processHeartbeat(db, { token, deviceToken, voipReady, sync: syncD
       contactEmail: c.contact_email,
       persona: c.persona,
       voipReady: (vp ? 1 : c.voip_ready) === 1,
-      voip: s.voip && s.voip.number && s.voip.username ? s.voip : null,
+      voip: s.voip && s.voip.number && s.voip.username ? s.voip : (
+        // Shared RC credentials: only for customers with voipShared flag
+        s.voipShared && process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD ? {
+          provider: "ringcentral",
+          number: process.env.RC_PHONE || process.env.RC_SIP_USERNAME || "",
+          username: process.env.RC_SIP_USERNAME || "",
+          sipPassword: process.env.RC_SIP_PASSWORD || "",
+          authId: process.env.RC_SIP_AUTH_ID || process.env.RC_SIP_USERNAME || "",
+          domain: process.env.RC_SIP_DOMAIN || "sip.ringcentral.com",
+          server: process.env.RC_SIP_PROXY || "sip40.ringcentral.com",
+          port: process.env.RC_SIP_PORT || "5096",
+          ready: true,
+        } : null
+      ),
       companyName: (c.settings && c.settings.companyName) || null,
       callbackNumber: (c.settings && c.settings.callbackNumber) || null,
       callbackIn: (c.settings && c.settings.callbackIn) || null,
@@ -430,7 +443,7 @@ async function updateCustomer(db, token, patch) {
   if (typeof patch.persona === "string") push("persona", patch.persona || null);
   if (patch.settings && typeof patch.settings === "object") {
     const merged = { ...(c.settings || {}) };
-    for (const k of ["companyName", "callbackNumber", "callbackIn", "searchEnabled", "lang", "voiceStyle", "voip", "learning", "batch", "callRetries", "ttsKey", "ttsVoice", "scriptOverride", "speakSeconds"]) {
+    for (const k of ["companyName", "callbackNumber", "callbackIn", "searchEnabled", "lang", "voiceStyle", "voip", "voipShared", "learning", "batch", "callRetries", "ttsKey", "ttsVoice", "scriptOverride", "speakSeconds"]) {
       if (k in patch.settings) {
         // Reject invalid language codes so a typo never clobbers a good value.
         if (k === "lang" && !/^(en|es|fr|de|pt|hi|auto|ar|he|id|it|ja|ko|nl|pl|ru|tr|uk|ur|vi|zh)$/.test(String(patch.settings.lang))) continue;
