@@ -297,7 +297,7 @@ function friendlyName(persona) {
  */
 function scoreLead({ transcript, fields, locale = "en" }) {
   const loc = I18N.normalizeLocale(locale);
-  const text = transcript.map((t) => (t.role === "lead" ? t.text : "")).join(" ").toLowerCase();
+  const text = (transcript || []).map((t) => (t.role === "lead" ? t.text : "")).join(" ").toLowerCase();
 
   let positive;
   let negative;

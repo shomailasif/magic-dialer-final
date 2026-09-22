@@ -12,7 +12,7 @@ const schema = z.object({
   accountSid: z.string().optional().default(""),
   outboundNumber: z.string().optional().default(""),
   sipUsername: z.string().optional().default(""),
-  sipPassword: z.string().optional().default(""),
+  sipPassword: z.string().nullable().optional().default(null),
   sipAuthId: z.string().optional().default(""),
   sipDomain: z.string().optional().default(""),
   sipProxy: z.string().optional().default(""),
@@ -59,7 +59,8 @@ export async function POST(request: Request) {
 
   const apiKey = d.apiKey && !isMask(d.apiKey) ? d.apiKey : prevApiKey;
   const accountSid = d.accountSid && !isMask(d.accountSid) ? d.accountSid : prevSid;
-  const sipPassword = d.sipPassword && !isMask(d.sipPassword) ? d.sipPassword : prevSipPassword;
+  // null/undefined = keep existing; "" = clear; anything else = set new
+  const sipPassword = d.sipPassword != null ? (isMask(d.sipPassword) ? prevSipPassword : d.sipPassword) : prevSipPassword;
 
   const temp = {
     provider: d.provider as DialerProvider,

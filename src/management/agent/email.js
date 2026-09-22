@@ -45,7 +45,8 @@ async function sendEmail(opts) {
           send(`Subject: ${safeSubject}`);
           send(`Content-Type: text/plain; charset=utf-8`);
           send(``);
-          send(text || "");
+          const body = (text || "").replace(/^\./gm, "..");
+          send(body);
           send(`.`);
         },
         () => { send(`QUIT`); clearTimeout(timer); socket.destroy(); resolve({ ok: true }); },

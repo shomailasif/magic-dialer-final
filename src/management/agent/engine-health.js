@@ -18,6 +18,7 @@ function json(res, code, body, origin = "*") {
 function startEngineHealthServer({ version, getStatus = () => "online", onCall = null, allowedOrigin = "*", port = 18787 } = {}) {
   let callActive = false;
   let callTimer = null;
+  let activeAbort = null;
   const CALL_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes max per call
   const server = http.createServer(async (req, res) => {
     const origin = String(req.headers.origin || "");
@@ -40,13 +41,14 @@ function startEngineHealthServer({ version, getStatus = () => "online", onCall =
       const number = String(body.number || "").replace(/[^0-9+]/g, "");
       if (!/^\+?[0-9]{7,15}$/.test(number)) return json(res, 400, { error: "invalid phone number" }, corsOrigin || allowedOrigin);
       callActive = true;
-      callTimer = setTimeout(() => { console.warn("[engine-health] call exceeded 5min timeout"); }, CALL_TIMEOUT_MS);
+      activeAbort = new AbortController();
+      callTimer = setTimeout(() => { console.warn("[engine-health] call exceeded 5min timeout, aborting"); activeAbort?.abort(); }, CALL_TIMEOUT_MS);
       try {
-        const result = await onCall(number);
+        const result = await onCall(number, activeAbort.signal);
         return json(res, 200, { ok: true, engine: "local", result }, corsOrigin || allowedOrigin);
       } catch (e) {
         return json(res, 500, { error: e && e.message || "local call failed", engine: "local" }, corsOrigin || allowedOrigin);
-      } finally { clearTimeout(callTimer); callActive = false; }
+      } finally { clearTimeout(callTimer); activeAbort = null; callActive = false; }
     }
     return json(res, 404, { error: "not found" }, corsOrigin || allowedOrigin);
   });

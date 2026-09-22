@@ -8,7 +8,7 @@
 
 const cache = new Map<string, Record<string, unknown>>();
 
-const VALID_LOCALES = new Set(["en", "es", "fr", "de", "pt", "hi", "auto"]);
+const VALID_LOCALES = new Set(["en","es","fr","de","pt","hi","auto","ar","he","id","it","ja","ko","nl","pl","ru","tr","uk","ur","vi","zh"]);
 
 export function loadMessages(locale: string): Record<string, unknown> {
   const safe = VALID_LOCALES.has(locale) ? locale : "en";

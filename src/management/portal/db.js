@@ -433,7 +433,7 @@ async function updateCustomer(db, token, patch) {
     for (const k of ["companyName", "callbackNumber", "callbackIn", "searchEnabled", "lang", "voiceStyle", "voip", "learning", "batch", "callRetries", "ttsKey", "ttsVoice", "scriptOverride", "speakSeconds"]) {
       if (k in patch.settings) {
         // Reject invalid language codes so a typo never clobbers a good value.
-        if (k === "lang" && !/^(en|es|fr|de|pt|hi|auto)$/.test(String(patch.settings.lang))) continue;
+        if (k === "lang" && !/^(en|es|fr|de|pt|hi|auto|ar|he|id|it|ja|ko|nl|pl|ru|tr|uk|ur|vi|zh)$/.test(String(patch.settings.lang))) continue;
         if (k === "voiceStyle" && !/^(human|frank|friendly)$/.test(String(patch.settings.voiceStyle))) continue;
         merged[k] = patch.settings[k];
       }

@@ -846,7 +846,8 @@ function callbackCloseFor(locale, who, inTime, number) {
 function questionsFor(locale, field, asked) {
   const loc = normalizeLocale(locale);
   const stages = QUESTIONS_BY_LOCALE[loc] || QUESTIONS_BY_LOCALE.en;
-  const pool = stages[Math.min(asked, stages.length - 1)];
+  const pool = stages[Math.min(Math.max(0, asked), stages.length - 1)];
+  if (!pool || !pool.length) return "";
   return pool[Math.abs(asked * 7 + field.length) % pool.length].replace(/\{f\}/g, field);
 }
 
@@ -900,7 +901,7 @@ const STOP_WORDS = new Set(
 function signatureOf(text) {
   const words = String(text || "")
     .toLowerCase()
-    .replace(/[^a-z\s]/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .split(/\s+/)
     .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
   const uniq = Array.from(new Set(words)).slice(0, 2);

@@ -62,7 +62,11 @@ export function DialerSettings({ initial, active }: Props) {
     setMessage(null);
     setSaving(true);
     const payload: Record<string, string> = { provider, apiKey, accountSid, outboundNumber, sipUsername, sipAuthId, sipDomain, sipProxy, sipPort };
-    if (sipPassword && sipPassword !== "••••••••") payload.sipPassword = sipPassword;
+    if (sipPassword === "") {
+      payload.sipPassword = "";
+    } else if (sipPassword && sipPassword !== "••••••••") {
+      payload.sipPassword = sipPassword;
+    }
     const res = await fetch("/api/dialer", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

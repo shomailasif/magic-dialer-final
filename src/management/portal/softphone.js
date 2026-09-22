@@ -300,6 +300,7 @@ function sipCallBridge(o) {
         });
       } catch (e) {
         const msg = (e && e.message) || String(e);
+        cleanup();
         finish({ ok: false, callSession: null, softphone, steps, last: msg, media: null, cleanup });
       }
     })();

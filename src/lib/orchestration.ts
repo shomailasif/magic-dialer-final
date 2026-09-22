@@ -31,7 +31,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   });
   if (!user) return { ok: false as const, error: "User not found" };
 
-  // Allow test calls (limit=1) even without active subscription
+  // Allow test calls (limit=1) even without active subscription, but require a subscription record
   const isTestCall = limit <= 1;
   if (!isTestCall && user.subscription?.status !== "ACTIVE") {
     return {
@@ -39,6 +39,9 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       error:
         "Subscription must be active to initiate calls. Contact the platform admin.",
     };
+  }
+  if (isTestCall && !user.subscription) {
+    return { ok: false as const, error: "No subscription found. Contact the platform admin." };
   }
 
   if (!user.dialerConfig) {
@@ -79,7 +82,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   let converted = 0;
 
   const staleBefore=new Date(Date.now()-2*60*60*1000);
-  await prisma.callCampaign.updateMany({where:{userId,status:"RUNNING",startedAt:{lt:staleBefore}},data:{status:"COMPLETED",endedAt:new Date()}});
+  await prisma.callCampaign.updateMany({where:{userId,status:"RUNNING",startedAt:{lt:staleBefore}},data:{status:"PAUSED",endedAt:new Date()}});
   if(dueLeads.length===0)return {ok:true as const,campaignId:null,callsMade:0,interested:0,converted:0,stats:null};
   const foundation = await ensureSalesFoundation(userId, user.agentConfig);
   const liveAgentConfig = effectiveAgentConfig(user.agentConfig, foundation.strategy, foundation.experiment);
@@ -134,8 +137,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       });
 
       if (dialResult.connected) {
-        console.error("[campaign] call connected without live media bridge; refusing simulated AI result");
-        dialResult = { connected: false, outcome: "FAILED", durationSecs: dialResult.durationSecs };
+        console.log("[campaign] call connected via RingOut (no live media bridge)");
       }
       } catch (e) {
         console.error("[campaign] RingOut call also failed:", redactDiagnostic(e));
@@ -164,8 +166,6 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     }
 
     const executionKey=campaign.id+":"+lead.id;
-    const existingCall=await prisma.call.findUnique({where:{executionKey}});
-    if(existingCall){continue;}
     const txWrites:any[] = [
       prisma.lead.update({
         where: { id: lead.id },
@@ -207,7 +207,11 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     }),
     ];
     if(sipResult?.doNotCall && normalizedPhone){txWrites.push(prisma.phoneSuppression.upsert({where:{userId_normalizedPhone:{userId,normalizedPhone}},update:{reason:"SPOKEN_OPT_OUT",source:"LIVE_CALL"},create:{userId,normalizedPhone,reason:"SPOKEN_OPT_OUT",source:"LIVE_CALL"}}));}
-    const txResult=await prisma.$transaction(txWrites);
+    const txResult=await prisma.$transaction(txWrites).catch(e=>{
+      if(String(e).includes("Unique constraint")){return null;}
+      throw e;
+    });
+    if(!txResult){continue;}
     const storedCall=txResult[1] as any;
     await recordCallAttribution({userId,callId:storedCall.id,strategyId:foundation.strategy.id,experimentId:foundation.experiment.id,outcome:resultStatus,evidence:{dialOutcome:dialResult.outcome,disposition}});
     const learningEvent = await learnFromAttributedOutcome({userId,strategyId:foundation.strategy.id,outcome:resultStatus,evidence:{callId:storedCall.id,experimentId:foundation.experiment.id}});

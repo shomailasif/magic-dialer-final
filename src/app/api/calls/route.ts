@@ -15,9 +15,9 @@ export async function GET(request: Request) {
 
   const where: Record<string, unknown> = { userId: user.id };
   const rangeFilter: { gte?: Date; lte?: Date } = {};
-  if (from) rangeFilter.gte = new Date(from);
-  if (to) rangeFilter.lte = new Date(new Date(to).getTime() + 86399999);
-  if (from || to) where.timestamp = rangeFilter;
+  if (from) { const d = new Date(from); if (!Number.isNaN(d.getTime())) rangeFilter.gte = d; }
+  if (to) { const d = new Date(to); if (!Number.isNaN(d.getTime())) rangeFilter.lte = new Date(d.getTime() + 86399999); }
+  if (rangeFilter.gte || rangeFilter.lte) where.timestamp = rangeFilter;
   if (outcome && outcome !== "ALL") where.outcome = outcome as CallOutcome;
   if (status && status !== "ALL") where.resultStatus = status as LeadStatus;
 

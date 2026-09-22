@@ -1377,6 +1377,20 @@ function dashboardHtml(rows, calls = [], outbox = []) {
             <option value="de">Deutsch (German)</option>
             <option value="pt">PortuguÃªs (Portuguese)</option>
             <option value="hi">à¤¹à¤¿à¤¨à¥à¤¦à¥€ (Hindi)</option>
+            <option value="ar">Ø§Ù„Ø¹Ø±Ø¨ÙŠØ© (Arabic)</option>
+            <option value="he">×¢×‘×¨×™×ª (Hebrew)</option>
+            <option value="id">Bahasa Indonesia</option>
+            <option value="it">Italiano (Italian)</option>
+            <option value="ja">æ—¥æœ¬èªž (Japanese)</option>
+            <option value="ko">í•œêµ­ì–´ (Korean)</option>
+            <option value="nl">Nederlands (Dutch)</option>
+            <option value="pl">Polski (Polish)</option>
+            <option value="ru">Ð ÑƒÑ�Ñ�ÐºÐ¸Ð¹ (Russian)</option>
+            <option value="tr">TÃ¼rkÃ§e (Turkish)</option>
+            <option value="uk">Ð£ÐºÑ€Ð°Ñ—Ð½Ñ�ÑŒÐºÐ° (Ukrainian)</option>
+            <option value="ur">Ø§Ø±Ø¯Ùˆ (Urdu)</option>
+            <option value="vi">Tiáº¿ng Viá»‡t (Vietnamese)</option>
+            <option value="zh">ä¸­æ–‡ (Chinese)</option>
             <option value="auto">Auto-detect on first reply</option>
           </select></div>
           <div><label class="f">Agent voice</label><select id="eVStyle" class="inp">
@@ -1399,7 +1413,7 @@ function dashboardHtml(rows, calls = [], outbox = []) {
         const closeBtns = $('mEdit').querySelectorAll('[data-close]');
         closeBtns.forEach(b => b.addEventListener('click', closeModals));
         const langEl = $('eLang');
-        if (langEl) langEl.value = /^(en|es|fr|de|pt|hi|auto)$/.test(s.lang || '') ? s.lang : 'en';
+        if (langEl) langEl.value = /^(en|es|fr|de|pt|hi|auto|ar|he|id|it|ja|ko|nl|pl|ru|tr|uk|ur|vi|zh)$/.test(s.lang || '') ? s.lang : 'en';
         const vsEl = $('eVStyle');
         if (vsEl) vsEl.value = /^(human|frank|friendly)$/.test(s.voiceStyle || '') ? s.voiceStyle : 'human';
         $('eSave').addEventListener('click', async () => {
