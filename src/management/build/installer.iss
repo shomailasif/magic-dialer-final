@@ -37,9 +37,12 @@ Source: "assets\logo-256.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{userstartup}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
-Name: "{commondesktop}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
 Name: "{group}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
+Name: "{commondesktop}\Magic Dialer"; Filename: "{app}\MagicDialer.exe"; IconFilename: "{app}\logo.ico"; WorkingDir: "{app}"
+
+[Registry]
+; Auto-start via Run key (works on all Windows, no shortcut permissions needed)
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Magic Dialer"; ValueData: """{app}\MagicDialer.exe"" --no-browser"; Flags: uninsdeletevalue
 
 [Code]
 procedure StopRunningMagicDialer();
