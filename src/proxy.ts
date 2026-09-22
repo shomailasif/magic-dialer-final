@@ -12,6 +12,7 @@ const PUBLIC_PATHS = [
   "/register",
   "/forgot-password",
   "/reset-password",
+  "/admin",
 ];
 
 const handleI18nRouting = createMiddleware(routing);
@@ -39,6 +40,11 @@ export default function proxy(request: NextRequest) {
   const clean = stripLocale(pathname);
   const locale = localeFromPath(pathname);
 
+  // /admin/* routes bypass auth and i18n — handled by embedded admin portal
+  if (pathname.startsWith("/admin") || clean.startsWith("/admin")) {
+    return NextResponse.next();
+  }
+
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
   const isPublic = PUBLIC_PATHS.some(
     (p) => clean === p || clean.startsWith(`${p}/`),
@@ -60,8 +66,8 @@ export default function proxy(request: NextRequest) {
   return handleI18nRouting(request);
 }
 
-// Matcher: everything except API and static/manifest assets.
+// Matcher: everything except API, admin portal, and static/manifest assets.
 export const config = {
   matcher:
-    "/((?!api|_next/static|_next/image|favicon.ico|manifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|txt|xml)$).*)",
+    "/((?!api|admin|_next/static|_next/image|favicon.ico|manifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico|txt|xml)$).*)",
 };
