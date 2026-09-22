@@ -1077,8 +1077,8 @@ function dashboardHtml(rows, calls = [], outbox = []) {
         <div style="margin-top:8px;display:flex;gap:6px">
           <button class="btn ghost" title="Rename the agent (persona)" style="padding:4px 9px;font-size:11.5px;color:#a5b4fc" data-token="${c.token}" data-action="qname">Rename</button>
           <button class="btn ghost" title="Numbers this agent should call" style="padding:4px 9px;font-size:11.5px;color:#a5b4fc" data-token="${c.token}" data-action="qnums">Numbers</button>
-          <button class="btn ghost" title="Connect this user's dialer line" style="padding:4px 9px;font-size:11.5px;color:${c.voip_ready === 1 ? "#34d399" : "#6b7a99"}" data-token="${c.token}" data-action="qvoip">VOIP ${((cust(c.token).settings||{}).voipShared) ? "SHARED" : (c.voip_ready === 1 ? "ON" : "")}</button>
-          <button class="btn ghost" title="Toggle shared RingCentral credentials for this account" style="padding:4px 9px;font-size:11.5px;color:${((cust(c.token).settings||{}).voipShared) ? "#f59e0b" : "#6b7a99"}" data-token="${c.token}" data-action="qtoggleshared">${((cust(c.token).settings||{}).voipShared) ? "Unshare RC" : "Share RC"}</button>
+          <button class="btn ghost" title="Connect this user's dialer line" style="padding:4px 9px;font-size:11.5px;color:${c.voip_ready === 1 ? "#34d399" : "#6b7a99"}" data-token="${c.token}" data-action="qvoip">VOIP ${((c.settings||{}).voipShared) ? "SHARED" : (c.voip_ready === 1 ? "ON" : "")}</button>
+          <button class="btn ghost" title="Toggle shared RingCentral credentials for this account" style="padding:4px 9px;font-size:11.5px;color:${((c.settings||{}).voipShared) ? "#f59e0b" : "#6b7a99"}" data-token="${c.token}" data-action="qtoggleshared">${((c.settings||{}).voipShared) ? "Unshare RC" : "Share RC"}</button>
           <button class="btn ghost" title="Place a test call through the cloud gateway (over 443, no ports needed on the PC)" style="padding:4px 9px;font-size:11.5px;color:#7dd3fc" data-token="${c.token}" data-action="qdial">Dial test</button>
         </div>
       </td>
