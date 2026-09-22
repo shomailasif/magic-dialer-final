@@ -1078,6 +1078,7 @@ function dashboardHtml(rows, calls = [], outbox = []) {
           <button class="btn ghost" title="Rename the agent (persona)" style="padding:4px 9px;font-size:11.5px;color:#a5b4fc" data-token="${c.token}" data-action="qname">Rename</button>
           <button class="btn ghost" title="Numbers this agent should call" style="padding:4px 9px;font-size:11.5px;color:#a5b4fc" data-token="${c.token}" data-action="qnums">Numbers</button>
           <button class="btn ghost" title="Connect this user's dialer line" style="padding:4px 9px;font-size:11.5px;color:${c.voip_ready === 1 ? "#34d399" : "#6b7a99"}" data-token="${c.token}" data-action="qvoip">VOIP ${((cust(c.token).settings||{}).voipShared) ? "SHARED" : (c.voip_ready === 1 ? "ON" : "")}</button>
+          <button class="btn ghost" title="Toggle shared RingCentral credentials for this account" style="padding:4px 9px;font-size:11.5px;color:${((cust(c.token).settings||{}).voipShared) ? "#f59e0b" : "#6b7a99"}" data-token="${c.token}" data-action="qtoggleshared">${((cust(c.token).settings||{}).voipShared) ? "Unshare RC" : "Share RC"}</button>
           <button class="btn ghost" title="Place a test call through the cloud gateway (over 443, no ports needed on the PC)" style="padding:4px 9px;font-size:11.5px;color:#7dd3fc" data-token="${c.token}" data-action="qdial">Dial test</button>
         </div>
       </td>
@@ -1267,15 +1268,27 @@ function dashboardHtml(rows, calls = [], outbox = []) {
           await apiFetch('/api/customer/'+token+'/calllist', {method:'POST', body: JSON.stringify({numbers: v.split(/\r?\n/).map(s=>s.trim()).filter(Boolean)})});
           location.reload(); return;
         }
+        if (a === 'qtoggleshared') {
+          const isShared = !!(cust(token).settings || {}).voipShared;
+          if (isShared) {
+            await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voipShared: false}})});
+          } else {
+            if (!process.env.RC_SIP_USERNAME || !process.env.RC_SIP_PASSWORD) { alert('No shared RingCentral credentials configured on the server.'); return; }
+            await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voipShared: true}})});
+          }
+          location.reload(); return;
+        }
         if (a === 'qvoip') {
           const cur = (cust(token).settings || {}).voip || {};
           const isShared = !!(cust(token).settings || {}).voipShared;
-          const choice = prompt('VOIP setup:\n\n1 = Use shared RingCentral (admin credentials)\n2 = Configure custom SIP\n\nType 1 or 2 (cancel to skip):', isShared ? '1' : '2');
-          if (choice == null) return;
-          if (choice.trim() === '1') {
-            await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voipShared: true}})});
-            alert('Shared RingCentral credentials enabled for this customer.');
-            location.reload(); return;
+          if (isShared) {
+            const choice = prompt('This account uses shared RingCentral credentials.\n\n1 = Keep shared (switch to custom SIP)\n2 = Remove shared (disable VOIP)\n\nType 1 or 2 (cancel to skip):', '1');
+            if (choice == null) return;
+            if (choice.trim() === '2') {
+              await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voipShared: false, voip: {}}})});
+              alert('Shared credentials removed.');
+              location.reload(); return;
+            }
           }
           const provider = prompt('VOIP provider (RingCentral, Twilio, Vonage, ...) or custom SIP server:', cur.provider || 'ringcentral');
           if (provider == null) return;
