@@ -459,12 +459,6 @@ async function setCallList(db, token, list) {
   const c = await getCustomerByToken(db, token);
   if (!c) return null;
   const arr = Array.isArray(list) ? list.map((n) => String(n).trim()).filter(Boolean) : [];
-  const json = JSON.stringify(arr);
-  if (db.pool) {
-    await db.pool.query("UPDATE customers SET call_list = $1 WHERE token = $2", [json, token]);
-  } else {
-    db.sqlite.prepare("UPDATE customers SET call_list = ? WHERE token = ?").run(json, token);
-  }
   return setCallListRaw(db, token, arr);
 }
 

@@ -90,20 +90,22 @@ function saveLead(lead) {
   return id;
 }
 
+const ALLOWED_LEAD_COLUMNS = new Set(["name", "phone", "email", "company", "product", "source", "status", "score", "summary", "answers"]);
+
 function updateLead(id, fields) {
   if (!id || !fields || typeof fields !== "object") return;
   const d = db();
   const sets = [];
   const vals = [];
   for (const [k, v] of Object.entries(fields)) {
-    if (k === "id") continue;
+    if (k === "id" || !ALLOWED_LEAD_COLUMNS.has(k)) continue;
     sets.push(`${k} = ?`);
     vals.push(k === "answers" ? JSON.stringify(v) : v);
   }
   if (!sets.length) return;
   sets.push("synced = 0");
   vals.push(id);
-  try { d.prepare(`UPDATE leads SET ${sets.join(", ")} WHERE id = ?`).run(...vals); } catch {}
+  try { d.prepare(`UPDATE leads SET ${sets.join(", ")} WHERE id = ?`).run(...vals); } catch (e) { console.error("[local-db] updateLead failed:", e.message); }
 }
 
 function getUnsyncedLeads() {

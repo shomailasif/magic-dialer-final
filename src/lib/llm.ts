@@ -22,23 +22,28 @@ export async function chatCompletion(messages: LLMMessage[], options: { maxToken
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
-    const resp = await fetch(GROQ_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
-      body: JSON.stringify({ model: GROQ_MODEL, messages, max_tokens: maxTokens, temperature, stream: false }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!resp.ok) {
-      const errorText = await resp.text().catch(() => "unknown");
-      console.error("[llm] Groq HTTP", resp.status, redactDiagnostic(errorText, [GROQ_KEY]));
-      return { content: "", error: `Groq HTTP ${resp.status}` };
+    try {
+      const resp = await fetch(GROQ_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROQ_KEY}` },
+        body: JSON.stringify({ model: GROQ_MODEL, messages, max_tokens: maxTokens, temperature, stream: false }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => "unknown");
+        console.error("[llm] Groq HTTP", resp.status, redactDiagnostic(errorText, [GROQ_KEY]));
+        return { content: "", error: `Groq HTTP ${resp.status}` };
+      }
+      const data = await resp.json();
+      const content = data?.choices?.[0]?.message?.content || "";
+      if (!content.trim()) return { content: "", error: "Empty response" };
+      console.log(`[llm] Groq OK:`, content.slice(0, 60));
+      return { content };
+    } catch (fetchErr) {
+      clearTimeout(timeout);
+      throw fetchErr;
     }
-    const data = await resp.json();
-    const content = data?.choices?.[0]?.message?.content || "";
-    if (!content.trim()) return { content: "", error: "Empty response" };
-    console.log(`[llm] Groq OK:`, content.slice(0, 60));
-    return { content };
   } catch (e: any) {
     console.error("[llm] Groq error:", redactDiagnostic(e, [GROQ_KEY]));
     return { content: "", error: "LLM_REQUEST_FAILED" };

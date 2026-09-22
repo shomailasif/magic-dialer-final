@@ -10,7 +10,7 @@ const HEALTH_URL = "http://127.0.0.1:18787/health";
 const CUSTOMER_HEALTH_URL = "http://127.0.0.1:48771/api/health";
 
 function newer(a,b){const x=String(a).split(".").map(Number),y=String(b).split(".").map(Number);for(let i=0;i<3;i++){if((x[i]||0)!==(y[i]||0))return(x[i]||0)>(y[i]||0)}return false}
-function validRelease(r){return !!(r&&r.immutable===true&&/^engine-v\d+\.\d+\.\d+$/.test(String(r.tag_name))&&Array.isArray(r.assets)&&r.assets.some(a=>a&&a.name==="engine-manifest.json"&&typeof a.browser_download_url==="string"&&a.browser_download_url===RELEASE_BASE+r.tag_name+"/engine-manifest.json"))}
+function validRelease(r){return !!(r&&/^engine-v\d+\.\d+\.\d+$/.test(String(r.tag_name))&&Array.isArray(r.assets)&&r.assets.some(a=>a&&a.name==="engine-manifest.json"&&typeof a.browser_download_url==="string"&&a.browser_download_url===RELEASE_BASE+r.tag_name+"/engine-manifest.json"))}
 function validManifest(m,tag){return !!(m&&/^\d+\.\d+\.\d+$/.test(String(m.version))&&m.tag===tag&&tag==="engine-v"+m.version&&/^[a-f0-9]{64}$/i.test(String(m.sha256))&&/^[a-f0-9]{40}$/i.test(String(m.sourceCommit))&&typeof m.url==="string"&&m.url===RELEASE_BASE+tag+"/magic-dialer-engine-windows.exe")}
 async function sha256(file){return await new Promise((resolve,reject)=>{const h=crypto.createHash("sha256"),s=fs.createReadStream(file);s.on("data",d=>h.update(d));s.on("end",()=>resolve(h.digest("hex")));s.on("error",reject)})}
 async function download(url,dest){const r=await fetch(url,{redirect:"follow",cache:"no-store"});if(!r.ok)throw new Error("update download HTTP "+r.status);fs.writeFileSync(dest,Buffer.from(await r.arrayBuffer()))}

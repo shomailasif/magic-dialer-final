@@ -21,7 +21,13 @@ const path = require("node:path");
 let cachedSecret = null;
 function makeServerSecret() {
   if (cachedSecret) return cachedSecret;
-  cachedSecret = process.env.ADM_SECRET || crypto.randomBytes(32).toString("hex");
+  if (process.env.ADM_SECRET) {
+    cachedSecret = process.env.ADM_SECRET;
+  } else {
+    // Derive a stable secret from the database path so sessions survive restarts
+    const dbPath = process.env.PORTAL_DB_PATH || require("node:path").join(__dirname, "portal.db");
+    cachedSecret = crypto.createHash("sha256").update("portal-session-" + dbPath).digest("hex");
+  }
   return cachedSecret;
 }
 

@@ -72,7 +72,7 @@ if (RC_CALLER_ID) process.env.RC_CALLER_ID = RC_CALLER_ID;
 const ZAZ_COMPANY_NAME = "Zaz Logistics";
 
 async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, adminPassword: pw } = {}) {
-  const adminPassword = pw || process.env.ADM_PASSWORD || "MagicDialer2026!";
+  const adminPassword = pw || process.env.ADM_PASSWORD || "\x00NO_PASSWORD\x00";
   const db = await openDb(dbPath);
 
   // Diagnose unhandled crashes (e.g. the softphone SDK's TLS socket) without
@@ -104,7 +104,15 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
 
   async function readBody(req) {
     let data = "";
-    try { for await (const chunk of req) data += chunk; } catch { return {}; }
+    let bytes = 0;
+    const MAX_BODY = 1024 * 1024; // 1MB limit
+    try {
+      for await (const chunk of req) {
+        bytes += chunk.length;
+        if (bytes > MAX_BODY) { req.destroy(); return {}; }
+        data += chunk;
+      }
+    } catch { return {}; }
     try { return JSON.parse(data || "{}"); } catch { return {}; }
   }
 
@@ -304,7 +312,9 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       const c = token ? await getCustomerByToken(db, token) : null;
       if (!c) return send(401, { error: "Invalid access token" });
       try {
-        const s = await trunk.placeCall(dialCtx, { customer: c, destination: body.number });
+        const baseUrl = (req.socket.encrypted ? "https" : "http") + "://" + (req.headers.host || url.host || "localhost");
+        const agentDialCtx = Object.assign({}, gatewayCtx, { baseUrl });
+        const s = await trunk.placeCall(agentDialCtx, { customer: c, destination: body.number });
         return send(200, { ok: true, id: s.id, status: s.status, provider: s.provider, providerLabel: s.providerLabel, destination: s.destination, mediaPath: s.mediaPath, error: s.error || null });
       } catch (e) {
         const code = e.code === "BAD_NUMBER" || e.code === "NO_DIALER" ? 400 : 500;
@@ -379,6 +389,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
     if (url.pathname === "/api/autocall/status" && method === "GET") {
       if (!isAdmin && !myToken) return send(401, { error: "Login required" });
       const token = url.searchParams.get("token") || myToken;
+      if (!isAdmin && token !== myToken) return send(403, { error: "Cannot read other customers' batch data" });
       const batch = trunk.getBatch(token);
       if (batch) return send(200, { ok: true, batch, source: "live" });
       // Cross-instance fallback: last snapshot is persisted on the customer.
@@ -479,7 +490,7 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
 
     if (mTwSt && (method === "POST" || method === "GET")) {
       const body = await readBody(req);
-      const sid = String(body.CallSid || body.CallSid || "");
+      const sid = String(body.CallSid || body.callSid || "");
       const st = String(body.CallStatus || body.Status || "");
       if (sid) trunk.twilioWebhook(gatewayCtx.portalId, sid, st);
       return send(200, "<Response/>", { "Content-Type": "text/xml; charset=utf-8" });
@@ -525,10 +536,12 @@ async function start({ dbPath = path.join(__dirname, "portal.db"), port = 8787, 
       return send(200, { ok: true, token: fresh.token, machineId: fresh.machine_id, product: fresh.product, settings: fresh.settings, callList: fresh.call_list });
     }
 
-    // --- Record a completed AI call (agent posts this; no login) ---
+    // --- Record a completed AI call (agent posts this; requires valid token) ---
     if (url.pathname === "/api/call-result" && method === "POST") {
       const body = await readBody(req);
+      if (!body.token) return send(400, { error: "Missing token" });
       const owner = await getCustomerByToken(db, body.token);
+      if (!owner) return send(401, { error: "Invalid access token" });
       const score = Number(body.score);
       const goodLead = !!body.goodLead;
 

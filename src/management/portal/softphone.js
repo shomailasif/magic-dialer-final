@@ -267,7 +267,10 @@ function sipCallBridge(o) {
         callSession = await softphone.call(number);
         steps.push("invite:" + number);
 
-        callSession.once("busy", () => finish({ ok: false, callSession: null, softphone, steps, last: "busy", media: null, cleanup }));
+        callSession.once("busy", () => {
+          try { if (callSession && !callSession.disposed) callSession.hangup(); } catch {}
+          finish({ ok: false, callSession: null, softphone, steps, last: "busy", media: null, cleanup });
+        });
         callSession.once("disposed", () => {
           if (!settled) finish({ ok: false, callSession: null, softphone, steps, last: "disposed", media: null, cleanup });
         });

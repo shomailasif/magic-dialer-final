@@ -22,10 +22,9 @@ async function sendEmail(opts) {
 
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve({ ok: false, error: "SMTP timeout" }), 15000);
-    const socket = tls.connect({ host, port, rejectUnauthorized: false }, () => {
+    const socket = tls.connect({ host, port }, () => {
       let buf = "";
       const send = (line) => socket.write(line + "\r\n");
-      const expect = (code, cb) => { buf = ""; cb(); };
 
       send(`EHLO ${crypto.randomBytes(8).toString("hex")}.local`);
       // Simple SMTP flow — AUTH LOGIN
@@ -50,9 +49,16 @@ async function sendEmail(opts) {
       ];
 
       socket.on("data", (d) => {
-        const line = d.toString("ascii");
-        if (/^5/.test(line)) { clearTimeout(timer); socket.destroy(); resolve({ ok: false, error: line.trim() }); return; }
-        if (step < steps.length) steps[step++]();
+        buf += d.toString("ascii");
+        // Process one complete line at a time (SMTP responses can be multi-line)
+        const lines = buf.split(/\r\n/);
+        buf = lines.pop(); // keep incomplete line in buffer
+        for (const line of lines) {
+          if (!line) continue;
+          if (/^5/.test(line)) { clearTimeout(timer); socket.destroy(); resolve({ ok: false, error: line.trim() }); return; }
+          // Only advance on the last line of a response (no dash = complete)
+          if (step < steps.length && !/^-/.test(line)) steps[step++]();
+        }
       });
     });
     socket.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: e.message }); });

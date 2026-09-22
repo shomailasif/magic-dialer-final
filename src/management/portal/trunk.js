@@ -60,13 +60,14 @@ const SIP_TRUNK_PROVIDERS = (provider) =>
 async function dialViaSim(ctx, session) {
   session.status = "ringing";
   session.providerLabel = "Simulator (dry-run)";
-  setTimeout(() => {
+  const timer = setTimeout(() => {
     if (session.status === "ringing") {
       session.status = "in_call";
       session.answeredAt = Date.now();
       session.sim = { notes: "Simulated call. The WSS media channel is the next milestone - until then this line is audio-silent." };
     }
   }, 400);
+  session._simTimer = timer;
   return session;
 }
 
@@ -607,6 +608,8 @@ function hangUp(portalId, id) {
   if (!s) return null;
   s.status = "completed";
   s.endedAt = Date.now();
+  // Cancel any pending sim timer
+  try { if (s._simTimer) clearTimeout(s._simTimer); } catch {}
   // Actively terminate the SIP call if a bridge/softphone is available
   try {
     if (s._bridge && s._bridge.cleanup) s._bridge.cleanup();

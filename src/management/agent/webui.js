@@ -458,12 +458,14 @@ async function startWebUi(opts) {
       try {
         if (typeof opts.onEnroll !== "function") throw new Error("Enrollment unavailable");
         await opts.onEnroll({ ticket, portal });
+        const safePortal = JSON.stringify(portal).replace(/<\/script>/gi, "<\\/script>");
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#15803d'>This PC is connected.</h3><p>Returning to the portal...</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrolled'}, "+JSON.stringify(portal)+");setTimeout(function(){window.close()},250)}}catch(e){}</script></body>");
+        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#15803d'>This PC is connected.</h3><p>Returning to the portal...</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrolled'}, "+safePortal+");setTimeout(function(){window.close()},250)}}catch(e){}</script></body>");
       } catch (e) {
         res.writeHead(409, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         const msg = e && e.message ? e.message : "Enrollment rejected";
-        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#b91c1c'>PC connection failed.</h3><p>"+escapHtml(msg)+"</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrollment-failed',error:"+JSON.stringify(String(msg))+"}, "+JSON.stringify(portal)+")}}catch(e){}</script></body>");
+        const safePortal2 = JSON.stringify(portal).replace(/<\/script>/gi, "<\\/script>");
+        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#b91c1c'>PC connection failed.</h3><p>"+escapHtml(msg)+"</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrollment-failed',error:"+JSON.stringify(String(msg))+"}, "+safePortal2+")}}catch(e){}</script></body>");
       }
       return;
     }

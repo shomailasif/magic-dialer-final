@@ -164,7 +164,6 @@ async function runWatchdog(args) {
       log(`agent exited cleanly (code ${exited.code}) after ${exited.ranFor}ms — restarting in 4s.`);
       await restart(4000);
     } else {
-      crashes = wasCrash && crashy ? crashes + 1 : Math.max(0, crashes - 1);
       log(`agent exited early (code ${exited.code}) — restarting in ${wasCrash ? 4000 : 2000}ms.`);
       await restart(wasCrash ? 4000 : 2000);
     }

@@ -5,6 +5,10 @@ import type { MailPayload } from "@/lib/mailer";
 import type { Lead } from "@prisma/client";
 import { redactDiagnostic } from "@/lib/safe-diagnostic";
 
+function escHtml(s: unknown): string {
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 export interface LeadOutcomeEmailData {
   leadName: string;
   phone: string;
@@ -68,11 +72,11 @@ export async function deliverOutcomeNotification(
     `<h2 style="color:#0f172a">${getMessage(locale, "email", htmlHeadingKey)}</h2>`,
     `<p>${getMessage(locale, "email", "htmlBody", { name: leadNameLabel })}</p>`,
     `<table style="border-collapse:collapse;width:100%">`,
-    `<tr><td style="padding:6px 0"><strong>${fieldName}</strong></td><td>${collected.leadName} (${lead.name ?? ""})</td></tr>`,
-    `<tr><td style="padding:6px 0"><strong>${fieldPhone}</strong></td><td>${collected.phone}</td></tr>`,
-    `<tr><td style="padding:6px 0"><strong>${fieldEmail}</strong></td><td>${collected.leadEmail}</td></tr>`,
-    `<tr><td style="padding:6px 0"><strong>${fieldSeats}</strong></td><td>${seatsText}</td></tr>`,
-    otherRows ? `<tr><td style="padding:6px 0"><strong>${getMessage(locale, "email", "otherDetails")}</strong></td><td><pre>${otherRows}</pre></td></tr>` : "",
+    `<tr><td style="padding:6px 0"><strong>${fieldName}</strong></td><td>${escHtml(collected.leadName)} (${escHtml(lead.name ?? "")})</td></tr>`,
+    `<tr><td style="padding:6px 0"><strong>${fieldPhone}</strong></td><td>${escHtml(collected.phone)}</td></tr>`,
+    `<tr><td style="padding:6px 0"><strong>${fieldEmail}</strong></td><td>${escHtml(collected.leadEmail)}</td></tr>`,
+    `<tr><td style="padding:6px 0"><strong>${fieldSeats}</strong></td><td>${escHtml(seatsText)}</td></tr>`,
+    otherRows ? `<tr><td style="padding:6px 0"><strong>${getMessage(locale, "email", "otherDetails")}</strong></td><td><pre>${escHtml(otherRows)}</pre></td></tr>` : "",
     `</table>`,
     `<p style="margin-top:24px;color:#64748b">${getMessage(locale, "email", "signature")}</p>`,
     `</div>`,

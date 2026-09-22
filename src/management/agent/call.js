@@ -150,10 +150,14 @@ async function voiceCall({
   let posted = null;
   if (portal && token) {
     try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 15000);
       const res = await fetch(`${portal.replace(/\/+$/, "")}/api/call-result`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, product, transcript: result.transcript, score: result.score, goodLead: result.goodLead, escalateToHuman: result.escalateToHuman, strategies: result.strategies || [], summary: result.summary }),
+        signal: ac.signal,
       });
+      clearTimeout(timer);
       posted = res.status;
       const body = await res.json().catch(() => ({}));
       onLog(body.emailed ? "Qualified lead email sent ✓" : "Result reported.");

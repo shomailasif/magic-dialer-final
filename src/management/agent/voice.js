@@ -305,7 +305,12 @@ function speakWindows(text, { rate = 1, volume = 100 } = {}) {
   return r.status === 0;
 }
 
-function ps(v) { return v.replace(/'/g, "''"); }
+function ps(v) {
+  return String(v || "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "''");
+}
 
 /**
  * Play a generated audio file (WAV or MP3) through the speakers using the
