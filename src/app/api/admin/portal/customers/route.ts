@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin, getPool } from "../_lib";
+import { requireAdmin, getAdminEmail, getPool } from "../_lib";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const err = await requireAdmin();
   if (err) return err;
+  const adminEmail = await getAdminEmail();
   const pool = getPool();
   try {
-    const r = await pool.query("SELECT token, product, persona, contact_email, status, last_seen, voip_ready, settings, call_list, leads_found, disabled, machine_id FROM customers WHERE portal_id = $1 ORDER BY created_at ASC", ["main"]);
+    const r = await pool.query(
+      "SELECT token, product, persona, contact_email, status, last_seen, voip_ready, settings, call_list, leads_found, disabled, machine_id, created_by FROM customers WHERE portal_id = $1 AND (created_by = $2 OR created_by = '' OR created_by IS NULL) ORDER BY created_at ASC",
+      ["main", adminEmail]
+    );
     const customers = r.rows.map((c: any) => ({
       token: c.token,
       product: c.product || "Untitled",
@@ -24,6 +28,7 @@ export async function GET(req: NextRequest) {
       disabled: c.disabled === 1,
       machineId: c.machine_id || "",
       companyName: c.settings && typeof c.settings === "object" ? c.settings.companyName || "" : "",
+      createdBy: c.created_by || "",
     }));
     return NextResponse.json({ customers });
   } catch (e: any) {
