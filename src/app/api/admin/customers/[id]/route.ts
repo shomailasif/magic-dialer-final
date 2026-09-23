@@ -6,6 +6,7 @@ import { z } from "zod";
 const schema = z.object({
   status: z.enum(["PENDING", "ACTIVE", "SUSPENDED", "DEACTIVATED"]).optional(),
   plan: z.enum(["FREE", "STARTER", "PRO", "ENTERPRISE"]).optional(),
+  voipShared: z.boolean().optional(),
 });
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {

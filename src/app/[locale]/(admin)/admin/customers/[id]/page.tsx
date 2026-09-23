@@ -3,6 +3,7 @@ import { requireAdmin, getAdminId } from "@/lib/auth";
 import { Badge, Card, CardHeader, StatCard, EmptyState } from "@/components/ui";
 import { PLAN_BY_ID } from "@/lib/constants";
 import { CustomerActions } from "./customer-actions";
+import { ShareRcButton } from "./share-rc-button";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 const statusTone: Record<string, string> = {
@@ -87,6 +88,12 @@ export default async function CustomerDetailPage({
           customerId={customer.id}
           currentPlan={customer.subscription?.plan || ""}
           currentStatus={customer.subscription?.status || "PENDING"}
+        />
+
+        <ShareRcButton
+          customerId={customer.id}
+          hasDialerConfig={!!customer.dialerConfig?.validated}
+          sipUsername={customer.dialerConfig?.sipUsername || ""}
         />
 
         <Card>

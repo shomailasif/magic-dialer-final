@@ -55,7 +55,29 @@ export async function POST() {
       );
     }
 
-    return NextResponse.json({ ok: true, message: "Database initialized with admin accounts and RC credentials" });
+    const firstAdmin: any[] = await prisma.$queryRawUnsafe(`SELECT id FROM "PortalAdmin" ORDER BY "createdAt" ASC LIMIT 1`);
+    if (firstAdmin.length > 0) {
+      const aid = firstAdmin[0].id;
+      await prisma.$executeRawUnsafe(`UPDATE "User" SET "createdByAdminId" = ? WHERE ("createdByAdminId" IS NULL OR "createdByAdminId" = '') AND "role" = 'BUSINESS_ADMIN'`, aid);
+    }
+
+    const allCustomers: any[] = await prisma.$queryRawUnsafe(`SELECT u."id" FROM "User" u JOIN "Subscription" s ON s."userId" = u."id" WHERE u."role" = 'BUSINESS_ADMIN'`);
+    await prisma.$executeRawUnsafe(`UPDATE "Subscription" SET "status" = 'ACTIVE', "startedAt" = datetime('now') WHERE "status" != 'ACTIVE'`);
+    const settings: any[] = await prisma.$queryRawUnsafe(`SELECT "rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId" FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
+    const s = settings[0];
+    if (s && s.rcSipUsername && s.rcSipPassword) {
+      for (const c of allCustomers) {
+        await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = 1 WHERE "userId" = ?`, c.id).catch(() => {});
+        await prisma.$executeRawUnsafe(`
+          INSERT INTO "DialerConfig" ("id","userId","provider","sipUsername","sipPassword","sipAuthId","sipDomain","sipProxy","sipPort","outboundNumber","validated","updatedAt")
+          SELECT ?, ?, 'RINGCENTRAL', ?, ?, ?, ?, ?, ?, ?, 1, datetime('now')
+          WHERE NOT EXISTS (SELECT 1 FROM "DialerConfig" WHERE "userId" = ?)
+        `, crypto.randomUUID(), c.id, s.rcSipUsername, s.rcSipPassword, s.rcSipAuthId || s.rcSipUsername, s.rcSipDomain || 'sip.ringcentral.com', s.rcSipProxy || 'sip40.ringcentral.com', s.rcSipPort || '5096', s.rcCallerId || s.rcSipUsername, c.id).catch(() => {});
+        await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "sipUsername" = ?, "sipPassword" = ?, "sipAuthId" = ?, "sipDomain" = ?, "sipProxy" = ?, "sipPort" = ?, "outboundNumber" = ?, "validated" = 1, "provider" = 'RINGCENTRAL' WHERE "userId" = ?`, s.rcSipUsername, s.rcSipPassword, s.rcSipAuthId || s.rcSipUsername, s.rcSipDomain || 'sip.ringcentral.com', s.rcSipProxy || 'sip40.ringcentral.com', s.rcSipPort || '5096', s.rcCallerId || s.rcSipUsername, c.id).catch(() => {});
+      }
+    }
+
+    return NextResponse.json({ ok: true, message: "Database initialized with admin accounts, RC credentials, and all customers activated" });
   } catch (e: any) {
     return NextResponse.json({ error: e.message || "Init failed" }, { status: 500 });
   }
