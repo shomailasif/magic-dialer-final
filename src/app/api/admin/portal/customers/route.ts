@@ -1,37 +1,55 @@
 import { NextRequest, NextResponse } from "next/server";
-import { requireAdmin, getAdminEmail, getPool } from "../_lib";
+import { requireAdmin, getAdminId } from "../_lib";
+import { prisma } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const err = await requireAdmin();
   if (err) return err;
-  const adminEmail = await getAdminEmail();
-  const pool = getPool();
-  try {
-    const r = await pool.query(
-      "SELECT token, product, persona, contact_email, status, last_seen, voip_ready, settings, call_list, leads_found, disabled, machine_id, created_by FROM customers WHERE portal_id = $1 AND (created_by = $2 OR created_by = '' OR created_by IS NULL) ORDER BY created_at ASC",
-      ["main", adminEmail]
-    );
-    const customers = r.rows.map((c: any) => ({
-      token: c.token,
-      product: c.product || "Untitled",
-      persona: c.persona || "",
-      contactEmail: c.contact_email || "",
-      status: c.status || "offline",
-      lastSeen: c.last_seen,
-      voipReady: c.voip_ready === 1,
-      voipShared: !!(c.settings && typeof c.settings === "object" && c.settings.voipShared),
-      voip: c.settings && typeof c.settings === "object" ? c.settings.voip || null : null,
-      callList: Array.isArray(c.call_list) ? c.call_list : [],
-      leadsFound: Array.isArray(c.leads_found) ? c.leads_found : [],
-      disabled: c.disabled === 1,
-      machineId: c.machine_id || "",
-      companyName: c.settings && typeof c.settings === "object" ? c.settings.companyName || "" : "",
-      createdBy: c.created_by || "",
-    }));
-    return NextResponse.json({ customers });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message || "DB error" }, { status: 500 });
-  }
+  const adminId = await getAdminId();
+  const users = await prisma.user.findMany({
+    where: { createdByAdminId: adminId },
+    include: { engineDevices: true, dialerConfig: true, subscription: true, agentConfig: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const customers = users.map((u) => {
+    const dc = u.dialerConfig;
+    const voipReady = !!(dc?.validated && dc.sipUsername && dc.sipPassword && dc.outboundNumber);
+    const lastDevice = u.engineDevices.sort((a, b) => (b.lastSeenAt?.getTime() || 0) - (a.lastSeenAt?.getTime() || 0))[0];
+    const status = u.activeEngineMachineId ? "online" : "offline";
+    const disabled = u.subscription?.status === "SUSPENDED" || u.subscription?.status === "DEACTIVATED";
+    let leadsFound: any[] = [];
+    let callList: string[] = [];
+    try {
+      const ac = u.agentConfig as any;
+      if (ac?.leadsJson) leadsFound = JSON.parse(ac.leadsJson);
+      if (ac?.callListJson) callList = JSON.parse(ac.callListJson);
+    } catch {}
+    return {
+      userId: u.id,
+      product: u.agentConfig?.productName || u.companyName || "Untitled",
+      persona: "",
+      contactEmail: u.email,
+      status: disabled ? "disabled" : status,
+      lastSeen: lastDevice?.lastSeenAt?.getTime() || null,
+      voipReady,
+      voipShared: false,
+      voip: dc ? {
+        provider: dc.provider?.toLowerCase() || "",
+        number: dc.outboundNumber || "",
+        username: dc.sipUsername || "",
+        sipPassword: "********",
+        server: dc.sipProxy || "",
+        port: dc.sipPort || "",
+      } : null,
+      callList,
+      leadsFound,
+      disabled,
+      machineId: u.activeEngineMachineId || "",
+      companyName: u.companyName || "",
+      createdBy: u.createdByAdminId || "",
+    };
+  });
+  return NextResponse.json({ customers });
 }

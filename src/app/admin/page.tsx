@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 
 interface Customer {
-  token: string;
+  userId: string;
   product: string;
   persona: string;
   contactEmail: string;
@@ -28,7 +28,6 @@ export default function AdminPortal() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [initialized, setInitialized] = useState(false);
 
   const fetchCustomers = useCallback(async () => {
     setLoading(true);
@@ -57,7 +56,7 @@ export default function AdminPortal() {
     try {
       const r = await fetch("/api/admin/portal/init", { method: "POST" });
       const data = await r.json();
-      if (r.ok) { setInitialized(true); setError(""); alert("Database initialized! Admin accounts created."); }
+      if (r.ok) setError("");
       else setError(data.error || "Init failed");
     } catch { setError("Init failed"); }
   };
@@ -65,6 +64,7 @@ export default function AdminPortal() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    await initDatabase();
     const r = await fetch("/api/admin/portal/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -84,20 +84,7 @@ export default function AdminPortal() {
     setPassword("");
   };
 
-  const toggleShared = async (token: string, current: boolean) => {
-    setError("");
-    try {
-      const r = await fetch("/api/admin/portal/toggle-voip", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, voipShared: !current }),
-      });
-      if (!r.ok) { setError("Toggle failed"); return; }
-      fetchCustomers();
-    } catch { setError("Toggle failed"); }
-  };
-
-  const setVoipConfig = async (token: string) => {
+  const setVoipConfig = async (userId: string) => {
     const provider = prompt("VOIP provider (ringcentral, twilio, etc.):", "ringcentral");
     if (!provider?.trim()) return;
     const number = prompt("Outgoing caller ID / number:", "");
@@ -116,9 +103,9 @@ export default function AdminPortal() {
       const r = await fetch("/api/admin/portal/toggle-voip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, voip }),
+        body: JSON.stringify({ userId, voip }),
       });
-      if (!r.ok) { setError("VOIP config failed"); return; }
+      if (!r.ok) { const d = await r.json(); setError(d.error || "VOIP config failed"); return; }
       fetchCustomers();
     } catch { setError("VOIP config failed"); }
   };
@@ -135,9 +122,6 @@ export default function AdminPortal() {
             <button type="submit" style={{ width: "100%", padding: 12, borderRadius: 8, border: "none", background: "linear-gradient(135deg,#6366f1,#38bdf8)", color: "white", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Sign in</button>
           </form>
           {error && <p style={{ color: "#f87171", fontSize: 13, marginTop: 12, textAlign: "center" }}>{error}</p>}
-          {!initialized && (
-            <button onClick={initDatabase} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(248,113,113,.3)", background: "transparent", color: "#f87171", cursor: "pointer", fontSize: 12, marginTop: 16 }}>Initialize Database (first time only)</button>
-          )}
         </div>
       </div>
     );
@@ -167,7 +151,7 @@ export default function AdminPortal() {
             const stateColor = c.disabled ? "#f87171" : c.status === "online" ? "#34d399" : "#6b7a99";
             const lastSeen = c.lastSeen ? new Date(c.lastSeen).toLocaleString() : "never";
             return (
-              <div key={c.machineId || idx} style={{ background: "#111827", borderRadius: 12, padding: 20, border: "1px solid rgba(99,102,241,.1)" }}>
+              <div key={c.userId || idx} style={{ background: "#111827", borderRadius: 12, padding: 20, border: "1px solid rgba(99,102,241,.1)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
                   <div style={{ flex: 1, minWidth: 200 }}>
                     <div style={{ fontWeight: 600, fontSize: 15 }}>{c.product}</div>
@@ -177,19 +161,18 @@ export default function AdminPortal() {
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: stateColor + "15", color: stateColor, border: "1px solid " + stateColor + "30" }}>{state}</span>
-                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: c.voipReady ? "#34d39915" : "#6b7a9915", color: c.voipReady ? "#34d399" : "#6b7a99", border: "1px solid " + (c.voipReady ? "#34d39930" : "#6b7a9930") }}>{c.voipShared ? "SHARED" : c.voipReady ? "VOIP ON" : "no line"}</span>
+                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: c.voipReady ? "#34d39915" : "#6b7a9915", color: c.voipReady ? "#34d399" : "#6b7a99", border: "1px solid " + (c.voipReady ? "#34d39930" : "#6b7a9930") }}>{c.voipReady ? "VOIP ON" : "no line"}</span>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{(c.callList ?? []).length} numbers</span>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{(c.leadsFound ?? []).length} leads</span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                  <button onClick={() => toggleShared(c.token, c.voipShared)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid " + (c.voipShared ? "#f59e0b40" : "rgba(99,102,241,.3)"), background: c.voipShared ? "#f59e0b15" : "transparent", color: c.voipShared ? "#f59e0b" : "#a5b4fc", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{c.voipShared ? "Unshare RC" : "Share RC"}</button>
-                  <button onClick={() => setVoipConfig(c.token)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid rgba(99,102,241,.3)", background: "transparent", color: "#a5b4fc", cursor: "pointer", fontSize: 12 }}>VOIP Config</button>
+                  <button onClick={() => setVoipConfig(c.userId)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid rgba(99,102,241,.3)", background: "transparent", color: "#a5b4fc", cursor: "pointer", fontSize: 12 }}>VOIP Config</button>
                 </div>
               </div>
             );
           })}
-          {!loading && customers.length === 0 && <p style={{ color: "#7c8aa8", textAlign: "center", padding: 40 }}>No customers yet.</p>}
+          {!loading && customers.length === 0 && <p style={{ color: "#7c8aa8", textAlign: "center", padding: 40 }}>No customers yet. Customers appear here after they sign up and link their agent.</p>}
         </div>
       </div>
     </div>

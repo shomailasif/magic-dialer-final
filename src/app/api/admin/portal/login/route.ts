@@ -8,9 +8,9 @@ export async function POST(req: NextRequest) {
   const email = (body.email || "").trim().toLowerCase();
   const password = body.password || "";
   if (!email || !password) return NextResponse.json({ error: "Email and password required" }, { status: 400 });
-  const valid = await verifyAdmin(email, password);
-  if (!valid) return NextResponse.json({ error: "Wrong email or password" }, { status: 401 });
-  const token = createSession(email);
+  const result = await verifyAdmin(email, password);
+  if (!result) return NextResponse.json({ error: "Wrong email or password" }, { status: 401 });
+  const token = createSession(email, result.id);
   const res = NextResponse.json({ ok: true, email });
   res.cookies.set("portal_admin", token, { httpOnly: true, path: "/", sameSite: "lax", maxAge: 86400, secure: process.env.NODE_ENV === "production" });
   return res;
