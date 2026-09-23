@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin, getAdminId } from "../_lib";
 import { prisma } from "@/lib/db";
+import { isSharedRcEmail } from "@/lib/constants";
 import { DialerProvider } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,9 @@ export async function POST(req: NextRequest) {
   if (voip !== undefined && (typeof voip !== "object" || voip === null)) return NextResponse.json({ error: "Invalid voip" }, { status: 400 });
   const user = await prisma.user.findFirst({ where: { id: userId, createdByAdminId: adminId } });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  if (voipShared !== undefined && voipShared && !isSharedRcEmail(user.email)) {
+    return NextResponse.json({ error: "Shared RingCentral is only available for the designated accounts." }, { status: 403 });
+  }
   if (voipShared !== undefined) {
     await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, voipShared ? 1 : 0, userId);
     if (voipShared) {

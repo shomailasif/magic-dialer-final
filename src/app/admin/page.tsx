@@ -80,13 +80,13 @@ export default function AdminPortal() {
     setPassword("");
   };
 
-  const toggleShared = async (userId: string) => {
+  const toggleShared = async (userId: string, currentlyShared: boolean) => {
     setError("");
     try {
       const r = await fetch("/api/admin/portal/toggle-voip", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId, voipShared: true }),
+        body: JSON.stringify({ userId, voipShared: !currentlyShared }),
       });
       if (!r.ok) { const d = await r.json(); setError(d.error || "Toggle failed"); return; }
       fetchCustomers();
@@ -196,7 +196,7 @@ export default function AdminPortal() {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-                  <button onClick={() => toggleShared(c.userId)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid " + (c.voipShared ? "#f59e0b40" : "rgba(99,102,241,.3)"), background: c.voipShared ? "#f59e0b15" : "transparent", color: c.voipShared ? "#f59e0b" : "#a5b4fc", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{c.voipShared ? "Unshare RC" : "Share RC"}</button>
+                  <button onClick={() => toggleShared(c.userId, !!c.voipShared)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid " + (c.voipShared ? "#f59e0b40" : "rgba(99,102,241,.3)"), background: c.voipShared ? "#f59e0b15" : "transparent", color: c.voipShared ? "#f59e0b" : "#a5b4fc", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{c.voipShared ? "Unshare RC" : "Share RC"}</button>
                   <button onClick={() => setVoipConfig(c.userId)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid rgba(99,102,241,.3)", background: "transparent", color: "#a5b4fc", cursor: "pointer", fontSize: 12 }}>VOIP Config</button>
                 </div>
               </div>

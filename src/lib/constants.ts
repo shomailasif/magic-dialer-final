@@ -79,3 +79,15 @@ export const SUBSCRIPTION_STATUS_LABEL: Record<string, string> = {
   SUSPENDED: "Suspended",
   DEACTIVATED: "Deactivated",
 };
+
+// Only these accounts may use the platform-shared RingCentral line.
+// Every other (including future) account must configure its own VOIP.
+export const SHARED_RC_EMAILS: readonly string[] = [
+  "zaz1@autodial.ai",
+  "zaz2@autodial.ai",
+  "zaz3@autodial.ai",
+];
+
+export function isSharedRcEmail(email: string | null | undefined): boolean {
+  return !!email && SHARED_RC_EMAILS.includes(String(email).toLowerCase());
+}

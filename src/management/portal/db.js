@@ -1,7 +1,7 @@
 ﻿const path = require("node:path");
 const fs = require("node:fs");
 const crypto = require("node:crypto");
-const { HOSTED_VOIP_SERVERS, voipComplete, STALE_AFTER_MS } = require("../shared/protocol");
+const { HOSTED_VOIP_SERVERS, voipComplete } = require("../shared/protocol");
 
 /**
  * Portal database â€” DUAL BACKEND.
@@ -259,34 +259,30 @@ async function getCustomerByToken(db, token) {
 async function enrollDevice(db, customerToken, machineId) {
   if (!customerToken || !machineId) return null;
   const deviceToken = crypto.randomBytes(32).toString("hex");
-  const staleBefore = Date.now() - STALE_AFTER_MS;
 
-  // Compare-and-set in one UPDATE. Concurrent enrollment attempts serialize on
-  // this customer row; after one wins, PostgreSQL rechecks the WHERE predicate
-  // against the updated row so a different active machine cannot also win.
+  // The enrollment ticket was created from this customer's authenticated
+  // dashboard session, so this PC always wins: the previous machine_id /
+  // device_token binding is replaced and the old PC's heartbeat token stops
+  // matching. Customers can switch PCs at any time without contacting support.
   if (db.pool) {
     const r = await db.pool.query(
       `UPDATE customers
        SET machine_id=$1, device_token=$2
        WHERE token=$3 AND portal_id=$4
-         AND (device_token IS NULL OR machine_id IS NULL OR machine_id=$1 OR last_seen IS NULL OR last_seen < $5)
        RETURNING token`,
-      [machineId, deviceToken, customerToken, db.portalId, staleBefore],
+      [machineId, deviceToken, customerToken, db.portalId],
     );
     if (r.rowCount === 1) return { deviceToken };
-    const exists = await getCustomerByToken(db, customerToken);
-    return exists ? { error: "active_device" } : null;
+    return null;
   }
 
   const r = db.sqlite.prepare(
     `UPDATE customers
      SET machine_id=?, device_token=?
-     WHERE token=? AND portal_id=?
-       AND (device_token IS NULL OR machine_id IS NULL OR machine_id=? OR last_seen IS NULL OR last_seen < ?)`
-  ).run(machineId, deviceToken, customerToken, db.portalId, machineId, staleBefore);
+     WHERE token=? AND portal_id=?`
+  ).run(machineId, deviceToken, customerToken, db.portalId);
   if (Number(r.changes) === 1) return { deviceToken };
-  const exists = await getCustomerByToken(db, customerToken);
-  return exists ? { error: "active_device" } : null;
+  return null;
 }
 
 async function getCustomerByDeviceToken(db, deviceToken) {

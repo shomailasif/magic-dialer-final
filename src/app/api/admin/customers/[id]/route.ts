@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
+import { isSharedRcEmail } from "@/lib/constants";
 import { z } from "zod";
 
 const schema = z.object({
@@ -34,6 +35,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   const sub = target.subscription;
   const upd: { status?: string; plan?: string; startedAt?: Date; notes?: string } = {};
+  let voipTouched = false;
 
   if (parsed.data.status) {
     upd.status = parsed.data.status;
@@ -43,8 +45,41 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
   if (parsed.data.plan) upd.plan = parsed.data.plan;
 
+  if (parsed.data.voipShared !== undefined) {
+    if (parsed.data.voipShared && !isSharedRcEmail(target.email)) {
+      return NextResponse.json({ error: "Shared RingCentral is only available for the designated accounts." }, { status: 403 });
+    }
+    voipTouched = true;
+    try {
+      await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, parsed.data.voipShared ? 1 : 0, id);
+    } catch {}
+    if (parsed.data.voipShared) {
+      const settings: any[] = await prisma.$queryRawUnsafe(`SELECT "rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId" FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
+      const ps = settings[0];
+      if (ps && ps.rcSipUsername && ps.rcSipPassword) {
+        await prisma.dialerConfig.upsert({
+          where: { userId: id },
+          create: {
+            userId: id, provider: "RINGCENTRAL",
+            sipUsername: ps.rcSipUsername, sipPassword: ps.rcSipPassword,
+            sipAuthId: ps.rcSipAuthId || ps.rcSipUsername, sipDomain: ps.rcSipDomain || "sip.ringcentral.com",
+            sipProxy: ps.rcSipProxy || "sip40.ringcentral.com", sipPort: ps.rcSipPort || "5096",
+            outboundNumber: ps.rcCallerId || ps.rcSipUsername, validated: true,
+          },
+          update: {
+            provider: "RINGCENTRAL",
+            sipUsername: ps.rcSipUsername, sipPassword: ps.rcSipPassword,
+            sipAuthId: ps.rcSipAuthId || ps.rcSipUsername, sipDomain: ps.rcSipDomain || "sip.ringcentral.com",
+            sipProxy: ps.rcSipProxy || "sip40.ringcentral.com", sipPort: ps.rcSipPort || "5096",
+            outboundNumber: ps.rcCallerId || ps.rcSipUsername, validated: true,
+          },
+        });
+      }
+    }
+  }
+
   if (!Object.keys(upd).length) {
-    return NextResponse.json({ ok: true, message: "No changes." });
+    return NextResponse.json({ ok: true, message: voipTouched ? "VOIP sharing updated." : "No changes." });
   }
 
   if (sub) {

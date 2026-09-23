@@ -6,7 +6,6 @@ import type { User, Subscription } from "@prisma/client";
 
 const SESSION_COOKIE = "autodial_session";
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // maximum session lifetime
-const DEVICE_LOCK_MS = 1000 * 60 * 10; // stale device locks recover automatically
 
 function secret(): string {
   const configured = process.env.AUTH_SECRET?.trim();
@@ -70,13 +69,13 @@ export async function createDeviceSession(
 ): Promise<string> {
   const now = new Date();
   await prisma.session.deleteMany({ where: { userId, expiresAt: { lte: now } } });
-  const lockCutoff = new Date(now.getTime() - DEVICE_LOCK_MS);
   const active = await prisma.session.findFirst({
-    where: { userId, expiresAt: { gt: now }, lastActiveAt: { gt: lockCutoff } },
+    where: { userId, expiresAt: { gt: now } },
     orderBy: { lastActiveAt: "desc" },
   });
-  if (active) {
-    if (active.deviceFingerprint !== deviceFingerprint) throw new Error("ACCOUNT_ACTIVE_ON_ANOTHER_PC");
+  // Same device: reuse and touch its session. Any other device presenting valid
+  // credentials takes over — customers can log in and connect a new PC anytime.
+  if (active && active.deviceFingerprint === deviceFingerprint) {
     await prisma.session.update({ where: { id: active.id }, data: { lastActiveAt: now } });
     return active.id;
   }

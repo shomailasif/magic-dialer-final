@@ -139,7 +139,9 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     const audio = Buffer.concat(captured.chunks);
     onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
     const stt = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale), portal: config.portalUrl, deviceToken: config.deviceToken });
-    if (stt.language) { activeLocale = stt.language; onLog(`[local-media-v2] detected language ${activeLocale}`); }
+    // Locale changes are owned by call-runner (it applies command/substantial
+    // guards); here we only report what the recognizer saw.
+    if (stt.language) onLog(`[local-media-v2] STT detected language ${stt.language}`);
     if (stt.error) onLog(`[local-media-v2] STT ${stt.error}`);
     return stt.text ? { text: stt.text, language: stt.language || activeLocale } : null;
   };

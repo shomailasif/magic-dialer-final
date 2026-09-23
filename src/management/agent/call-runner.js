@@ -5,6 +5,42 @@ const { normalizeLanguage } = require("./language");
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
 
+// Explicit switch-language requests (e.g. speak spanish) so language changes
+// work even when the speech recognizer is unsure of the detected language.
+const LANGUAGE_NAMES = {
+  english: "en", spanish: "es", french: "fr", german: "de", portuguese: "pt",
+  italian: "it", dutch: "nl", polish: "pl", russian: "ru", ukrainian: "uk",
+  turkish: "tr", arabic: "ar", hindi: "hi", urdu: "ur", chinese: "zh",
+  mandarin: "zh", japanese: "ja", korean: "ko", indonesian: "id", malay: "ms",
+  vietnamese: "vi", thai: "th", hebrew: "he", greek: "el", czech: "cs",
+  romanian: "ro", swedish: "sv", danish: "da", finnish: "fi", norwegian: "nb",
+  slovak: "sk", slovenian: "sl",
+  espanol: "es", francais: "fr", deutsch: "de",
+  portugues: "pt", italiano: "it",
+};
+
+function detectLanguageCommand(text) {
+  const s = String(text || "");
+  const m = s.match(/\b(?:speak|talk|say|switch|respond|reply)(?:\s+(?:in|to|with|into))?[\s'":,.!]*(?:the\s+)?([^\s.,!?;:]+(?:\s+[^\s.,!?;:]+){0,2})/i);
+  if (!m) return null;
+  // Negations like do not speak french / cannot switch are not requests.
+  const before = s.slice(0, m.index);
+  if (/\b(?:do\s+not|don't|doesn't|didn't|won't|can't|cannot|never|not)\s+(?:\w+\s+){0,2}$/i.test(before)) return null;
+  const win = m[1].toLowerCase();
+  if (LANGUAGE_NAMES[win]) return LANGUAGE_NAMES[win];
+  for (const w of win.split(/\s+/)) {
+    if (LANGUAGE_NAMES[w]) return LANGUAGE_NAMES[w];
+  }
+  return null;
+}
+
+// Switching on a lone hola/si would make the agent flip-flop, so a recognizer
+// detected language only takes over once the prospect says a real sentence.
+function isSubstantialUtterance(text) {
+  const s = String(text || "").trim();
+  return s.split(/\s+/).length >= 3 || s.length >= 15;
+}
+
 function fallbackOpening({ companyName, product, locale }) {
   const company = String(companyName || "our team").trim();
   const offering = String(product || "what we offer").trim();
@@ -57,14 +93,20 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // Turn count is only a runaway-call safety bound. Turn endings themselves are
   // controlled by the speech/VAD listener in call.js, never by a conversation timer.
   for (let turn = 0; turn < 12; turn++) {
-    const heardResult = await listen({ locale: activeLocale, autoLanguage: locale === "auto" });
+    // Always let the recognizer auto-detect the spoken language; the configured
+    // locale is only the starting language, never a permanent pin.
+    const heardResult = await listen({ locale: activeLocale, autoLanguage: true });
     const heard = typeof heardResult === "string" ? heardResult : (heardResult && heardResult.text);
     const detected = typeof heardResult === "object" && heardResult && heardResult.language
       ? normalizeLanguage(heardResult.language, activeLocale || "en")
       : null;
-    if (detected && detected !== activeLocale) {
+    const commanded = detectLanguageCommand(heard);
+    if (commanded && commanded !== activeLocale) {
+      activeLocale = commanded;
+      timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "command" });
+    } else if (detected && detected !== activeLocale && isSubstantialUtterance(heard)) {
       activeLocale = detected;
-      timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale });
+      timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "detected" });
     }
 
     if (!heard || String(heard).startsWith("(silence)")) {

@@ -82,7 +82,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
   let converted = 0;
 
   const staleBefore=new Date(Date.now()-2*60*60*1000);
-  await prisma.callCampaign.updateMany({where:{userId,status:"RUNNING",startedAt:{lt:staleBefore}},data:{status:"PAUSED",endedAt:new Date()}});
+  await prisma.callCampaign.updateMany({where:{userId,status:"RUNNING",startedAt:{lt:staleBefore}},data:{status:"COMPLETED",endedAt:new Date()}});
   if(dueLeads.length===0)return {ok:true as const,campaignId:null,callsMade:0,interested:0,converted:0,stats:null};
   const foundation = await ensureSalesFoundation(userId, user.agentConfig);
   const liveAgentConfig = effectiveAgentConfig(user.agentConfig, foundation.strategy, foundation.experiment);
@@ -158,6 +158,9 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
       collectedEmail = sipResult.collectedEmail;
       collectedSeats = null;
     } else {
+      if (dialResult.connected) {
+        console.warn("[campaign] refusing simulated AI result: connected without live media bridge");
+      }
       resultStatus = "FAILED";
       disposition = dialResult.outcome;
       transcript = "";
@@ -166,6 +169,8 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     }
 
     const executionKey=campaign.id+":"+lead.id;
+    const existingCall=await prisma.call.findUnique({where:{executionKey}});
+    if(existingCall){continue;}
     const txWrites:any[] = [
       prisma.lead.update({
         where: { id: lead.id },

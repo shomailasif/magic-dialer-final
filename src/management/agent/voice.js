@@ -1,4 +1,4 @@
-const { spawnSync } = require("node:child_process");
+const { spawnSync, spawn } = require("node:child_process");
 const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -179,15 +179,18 @@ function styleRate(style, rate) {
 }
 
 let PYTHON = null;
+let PYTHON_PROBED = false;
 
 /**
  * Find a working Python for edge-tts. On Windows the bare `python` command can
  * resolve to the Microsoft Store stub, which fails silently. Prefer a real
  * interpreter found on disk, then fall back to `python`/`py` on PATH.
- * Result is cached after the first successful check.
+ * The result (including "none found") is cached after the first probe so a
+ * missing Python cannot re-run every candidate on every utterance.
  */
 function resolvePython() {
-  if (PYTHON) return PYTHON;
+  if (PYTHON_PROBED) return PYTHON;
+  PYTHON_PROBED = true;
   const home = os.homedir();
   const bundledPython = path.join(path.dirname(process.execPath || ""), "runtime", "python", "python.exe");
   const candidates = [
@@ -211,8 +214,37 @@ function resolvePython() {
   return null;
 }
 
-/** Speak via edge-tts (Python). Returns true on success. */
-function speakEdge(text, { locale = "en", rate = 1, style = "human" } = {}) {
+/**
+ * Spawn a child process WITHOUT blocking the event loop. A blocking spawnSync
+ * during a live call freezes the media WebSocket, VAD and heartbeats for the
+ * whole synthesis, which the carrier hears as a dead/broken line.
+ */
+function runAsync(cmd, args, timeoutMs) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      resolve({ status: -1, stdout: "", stderr: String((e && e.message) || e) });
+      return;
+    }
+    let stdout = "", stderr = "", done = false;
+    const finish = (status) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    };
+    const timer = setTimeout(() => { try { child.kill(); } catch {} finish(-1); }, timeoutMs);
+    if (child.stdout) child.stdout.on("data", (d) => { if (stdout.length < 8192) stdout += d; });
+    if (child.stderr) child.stderr.on("data", (d) => { if (stderr.length < 8192) stderr += d; });
+    child.on("error", (e) => { stderr += String((e && e.message) || e); finish(-1); });
+    child.on("close", (status) => finish(status == null ? -1 : status));
+  });
+}
+
+/** Speak via edge-tts (Python). Returns true on success. Async: never blocks the event loop. */
+async function speakEdge(text, { locale = "en", rate = 1, style = "human" } = {}) {
   if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return false;
   const python = resolvePython();
   if (!python) return false;
@@ -221,10 +253,10 @@ function speakEdge(text, { locale = "en", rate = 1, style = "human" } = {}) {
   const rateArg = effRate === 1 ? "+0%" : `${effRate > 1 ? "+" : ""}${Math.round((effRate - 1) * 60)}%`;
   const voice = edgeVoiceFor(locale, style);
   try {
-    const r = spawnSync(
+    const r = await runAsync(
       python,
       ["-m", "edge_tts", "--voice", voice, "--rate", rateArg, "--text", text, "--write-media", file],
-      { stdio: "pipe", timeout: 90000, encoding: "utf8" },
+      90000,
     );
     if (r.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 100) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -348,16 +380,22 @@ function playFile(file) {
  * Returns { engine, ok } so callers know which tier was used.
  */
 async function speak(text, { voice, rate = 1, volume = 100, locale = "en", style = "human" } = {}) {
-  if (speakEdge(text, { locale, rate, style })) return { engine: "edge", ok: true };
+  if (await speakEdge(text, { locale, rate, style })) return { engine: "edge", ok: true };
   if (await speakHeadTTS(text, { locale, rate, style })) return { engine: "headtts", ok: true };
   const ok = speakWindows(text, { rate: styleRate(style, rate), volume });
   return { engine: "windows", ok };
 }
 
+let FFMPEG = null;
+let FFMPEG_PROBED = false;
+
 /**
- * Find ffmpeg binary. Checks Python's imageio-ffmpeg first, then PATH.
+ * Find ffmpeg binary (cached after first probe, including "not found").
+ * Checks Python's imageio-ffmpeg first, then PATH.
  */
 function resolveFfmpeg() {
+  if (FFMPEG_PROBED) return FFMPEG;
+  FFMPEG_PROBED = true;
   // Try Python's bundled ffmpeg
   const python = resolvePython();
   if (python) {
@@ -367,7 +405,7 @@ function resolveFfmpeg() {
       });
       if (r.status === 0) {
         const p = (r.stdout || "").toString().trim();
-        if (p && fs.existsSync(p)) return p;
+        if (p && fs.existsSync(p)) { FFMPEG = p; return FFMPEG; }
       }
     } catch {}
   }
@@ -375,53 +413,135 @@ function resolveFfmpeg() {
   for (const c of ["ffmpeg", "ffmpeg.exe"]) {
     try {
       const r = spawnSync(c, ["-version"], { stdio: "ignore", timeout: 5000 });
-      if (r.status === 0) return c;
+      if (r.status === 0) { FFMPEG = c; return FFMPEG; }
     } catch {}
   }
   return null;
 }
 
 /**
- * Generate TTS audio and return as a raw PCM buffer (mulaw 8kHz mono).
- * Used by the media channel to stream agent voice to the lead.
- * Returns { buffer, engine } or null on failure.
+ * ITU-T G.711 mu-law encode table, built once from the SAME decode formula
+ * used by vad.js / multilingual-stt.js so every decoded sample round-trips.
  */
-async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } = {}) {
+const MULAW_ENC = (() => {
+  const table = new Uint8Array(32768);
+  const codes = [];
+  for (let u = 255; u >= 128; u--) {
+    const c = (~u) & 0xff;
+    const e = (c >> 4) & 7;
+    const m = c & 15;
+    codes.push({ u, val: (((m << 1) + 33) << (e + 2)) - 132 });
+  }
+  let ci = 0;
+  for (let v = 0; v <= 32767; v++) {
+    while (ci < codes.length - 1 && v >= (codes[ci].val + codes[ci + 1].val) / 2) ci++;
+    table[v] = codes[ci].u;
+  }
+  return table;
+})();
+
+function mulawEncode(sample) {
+  let v = Math.round(sample);
+  if (v < 0) return MULAW_ENC[v < -32767 ? 32767 : -v] ^ 0x80;
+  return MULAW_ENC[v > 32767 ? 32767 : v];
+}
+
+/** Parse a PCM WAV buffer into mono Int16 samples at its native rate, or null. */
+function wavToMono16(wav) {
+  if (!Buffer.isBuffer(wav) || wav.length < 44) return null;
+  if (wav.toString("ascii", 0, 4) !== "RIFF" || wav.toString("ascii", 8, 12) !== "WAVE") return null;
+  let pos = 12, format = 0, channels = 0, rate = 0, bits = 0, data = null;
+  while (pos + 8 <= wav.length) {
+    const id = wav.toString("ascii", pos, pos + 4);
+    const size = wav.readUInt32LE(pos + 4);
+    const body = pos + 8;
+    if (id === "fmt " && body + 16 <= wav.length) {
+      format = wav.readUInt16LE(body);
+      channels = wav.readUInt16LE(body + 2);
+      rate = wav.readUInt32LE(body + 4);
+      bits = wav.readUInt16LE(body + 14);
+    } else if (id === "data") {
+      data = wav.subarray(body, Math.min(body + size, wav.length));
+      break;
+    }
+    pos = body + size + (size % 2);
+  }
+  if (!data || !rate || !channels || bits !== 16 || (format !== 1 && format !== 0xfffe)) return null;
+  const frames = Math.floor(data.length / (channels * 2));
+  if (frames <= 0) return null;
+  const out = new Int16Array(frames);
+  for (let i = 0; i < frames; i++) {
+    let acc = 0;
+    for (let c = 0; c < channels; c++) acc += data.readInt16LE((i * channels + c) * 2);
+    out[i] = Math.round(acc / channels);
+  }
+  return { samples: out, rate };
+}
+
+/** Linear resample mono Int16 samples to 8000 Hz (telephony rate). */
+function resampleTo8k(samples, rate) {
+  if (rate === 8000) return samples;
+  if (!rate || rate <= 0 || !samples.length) return null;
+  const ratio = rate / 8000;
+  const outLen = Math.max(1, Math.floor(samples.length / ratio));
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const src = i * ratio;
+    const i0 = Math.floor(src);
+    const i1 = Math.min(i0 + 1, samples.length - 1);
+    const frac = src - i0;
+    const v = samples[i0] * (1 - frac) + samples[i1] * frac;
+    out[i] = v < -32768 ? -32768 : v > 32767 ? 32767 : Math.round(v);
+  }
+  return out;
+}
+
+/** Convert any PCM WAV to raw PCMU/8000 telephone audio, or null. */
+function wavToMulaw(wav) {
+  const parsed = wavToMono16(wav);
+  if (!parsed) return null;
+  const samples = resampleTo8k(parsed.samples, parsed.rate);
+  if (!samples || !samples.length) return null;
+  const out = Buffer.allocUnsafe(samples.length);
+  for (let i = 0; i < samples.length; i++) out[i] = mulawEncode(samples[i]);
+  return out;
+}
+
+/**
+ * Tier 1 for the phone path: edge-tts MP3 -> ffmpeg -> PCMU/8000.
+ * Async spawn so the media WebSocket / VAD / heartbeats keep running while
+ * the voice synthesizes.
+ */
+async function edgeToBuffer(text, { locale, style, rate }) {
+  if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return null;
   const ffmpeg = resolveFfmpeg();
   if (!ffmpeg) return null;
-
+  const python = resolvePython();
+  if (!python) return null;
   const file = path.join(TMP, `tts-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.mp3`);
   try {
-    const python = resolvePython();
-    if (!python) return null;
     const voice = edgeVoiceFor(locale, style);
     const effRate = styleRate(style, rate);
     const rateArg = effRate === 1 ? "+0%" : `${effRate > 1 ? "+" : ""}${Math.round((effRate - 1) * 60)}%`;
-    const r = spawnSync(
+    const r = await runAsync(
       python,
       ["-m", "edge_tts", "--voice", voice, "--rate", rateArg, "--text", text, "--write-media", file],
-      { stdio: "pipe", timeout: 60000, encoding: "utf8" },
+      60000,
     );
     if (r.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 100) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
       return null;
     }
-
-    // Convert MP3 → raw mulaw 8kHz mono PCM
     const rawPath = file.replace(/\.mp3$/, ".raw");
-    const conv = spawnSync(
-      ffmpeg,
-      ["-i", file, "-ar", "8000", "-ac", "1", "-f", "mulaw", "-y", rawPath],
-      { stdio: "pipe", timeout: 15000 },
-    );
-    if (conv.status !== 0 || !fs.existsSync(rawPath)) {
+    const conv = spawnSync(ffmpeg, ["-i", file, "-ar", "8000", "-ac", "1", "-f", "mulaw", "-y", rawPath], { stdio: "pipe", timeout: 15000 });
+    if (conv.status !== 0 || !fs.existsSync(rawPath) || fs.statSync(rawPath).size < 160) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
       if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
       return null;
     }
     const buffer = fs.readFileSync(rawPath);
-    if (fs.existsSync(file)) fs.unlinkSync(file);
-    if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
+    try { fs.unlinkSync(file); } catch {}
+    try { fs.unlinkSync(rawPath); } catch {}
     return { buffer, engine: "edge" };
   } catch {
     if (fs.existsSync(file)) fs.unlinkSync(file);
@@ -429,4 +549,79 @@ async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } 
   }
 }
 
-module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate };
+/** Tier 2: local HeadTTS (Kokoro) -> WAV -> pure-JS PCMU (no ffmpeg needed). */
+async function headTtsToBuffer(text, { locale, style, rate }) {
+  if (process.env.AUTODIAL_NO_HEADTTS === "1") return null;
+  const file = path.join(TMP, `headtts-buf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.wav`);
+  try {
+    const ok = await synthViaServer(text, file, locale, styleRate(style, rate));
+    if (!ok || !fs.existsSync(file) || fs.statSync(file).size < 1000) {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+      return null;
+    }
+    const wav = fs.readFileSync(file);
+    try { fs.unlinkSync(file); } catch {}
+    const buffer = wavToMulaw(wav);
+    return buffer && buffer.length >= 160 ? { buffer, engine: "headtts" } : null;
+  } catch {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return null;
+  }
+}
+
+/** Tier 3: Windows SAPI -> WAV -> pure-JS PCMU (always available on Windows). */
+function sapiToBuffer(text, { rate = 1 } = {}) {
+  const file = path.join(TMP, `sapi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.wav`);
+  try {
+    const chosen = "Microsoft Zira Desktop";
+    const rate10 = Math.round(rate * 10);
+    const wavPath = file.replace(/\\/g, "/").replace(/'/g, "''");
+    const script = `
+      Add-Type -AssemblyName System.Speech
+      $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+      foreach($v in $s.GetInstalledVoices()) { if($v.VoiceInfo.Name -eq '${ps(chosen)}') { $s.SelectVoice($v.VoiceInfo.Name); break } }
+      $s.Rate = ${rate10}
+      $s.SetOutputToWaveFile('${wavPath}')
+      $s.Speak('${ps(text)}')
+      $s.SetOutputToNull()
+      $s.Dispose()
+    `;
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { stdio: "ignore", timeout: 30000 });
+    if (r.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 100) {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+      return null;
+    }
+    const wav = fs.readFileSync(file);
+    try { fs.unlinkSync(file); } catch {}
+    const buffer = wavToMulaw(wav);
+    return buffer && buffer.length >= 160 ? { buffer, engine: "windows" } : null;
+  } catch {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    return null;
+  }
+}
+
+/**
+ * Generate TTS audio and return as a raw PCM buffer (mulaw 8kHz mono).
+ * Used by the media channel to stream agent voice to the lead.
+ *
+ * Three tiers, best first:
+ *   1. edge-tts   (neural, multilingual) -> ffmpeg -> PCMU
+ *   2. HeadTTS    (local Kokoro)         -> WAV -> pure-JS PCMU
+ *   3. Windows    (System.Speech/Zira)   -> WAV -> pure-JS PCMU
+ *
+ * A silent turn sounds like a broken line to the prospect, so lower tiers
+ * keep the phone fed even when Python / edge-tts / ffmpeg are unavailable.
+ * Returns { buffer, engine } or null only when every tier fails.
+ */
+async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } = {}) {
+  const edge = await edgeToBuffer(text, { locale, style, rate });
+  if (edge) return edge;
+  const headtts = await headTtsToBuffer(text, { locale, style, rate });
+  if (headtts) return headtts;
+  const sapi = sapiToBuffer(text, { locale, style, rate });
+  if (sapi) return sapi;
+  return null;
+}
+
+module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate, wavToMulaw, mulawEncode };
