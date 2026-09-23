@@ -84,6 +84,19 @@ export default function AdminPortal() {
     setPassword("");
   };
 
+  const toggleShared = async (userId: string) => {
+    setError("");
+    try {
+      const r = await fetch("/api/admin/portal/toggle-voip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, voipShared: true }),
+      });
+      if (!r.ok) { const d = await r.json(); setError(d.error || "Toggle failed"); return; }
+      fetchCustomers();
+    } catch { setError("Toggle failed"); }
+  };
+
   const setVoipConfig = async (userId: string) => {
     const provider = prompt("VOIP provider (ringcentral, twilio, etc.):", "ringcentral");
     if (!provider?.trim()) return;
@@ -122,6 +135,7 @@ export default function AdminPortal() {
             <button type="submit" style={{ width: "100%", padding: 12, borderRadius: 8, border: "none", background: "linear-gradient(135deg,#6366f1,#38bdf8)", color: "white", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Sign in</button>
           </form>
           {error && <p style={{ color: "#f87171", fontSize: 13, marginTop: 12, textAlign: "center" }}>{error}</p>}
+          <button onClick={initDatabase} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(248,113,113,.3)", background: "transparent", color: "#f87171", cursor: "pointer", fontSize: 12, marginTop: 16 }}>Initialize Database (first time only)</button>
         </div>
       </div>
     );
@@ -161,12 +175,13 @@ export default function AdminPortal() {
                   </div>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: stateColor + "15", color: stateColor, border: "1px solid " + stateColor + "30" }}>{state}</span>
-                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: c.voipReady ? "#34d39915" : "#6b7a9915", color: c.voipReady ? "#34d399" : "#6b7a99", border: "1px solid " + (c.voipReady ? "#34d39930" : "#6b7a9930") }}>{c.voipReady ? "VOIP ON" : "no line"}</span>
+                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: c.voipReady ? "#34d39915" : "#6b7a9915", color: c.voipReady ? "#34d399" : "#6b7a99", border: "1px solid " + (c.voipReady ? "#34d39930" : "#6b7a9930") }}>{c.voipShared ? "SHARED" : c.voipReady ? "VOIP ON" : "no line"}</span>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{(c.callList ?? []).length} numbers</span>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{(c.leadsFound ?? []).length} leads</span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+                  <button onClick={() => toggleShared(c.userId)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid " + (c.voipShared ? "#f59e0b40" : "rgba(99,102,241,.3)"), background: c.voipShared ? "#f59e0b15" : "transparent", color: c.voipShared ? "#f59e0b" : "#a5b4fc", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>{c.voipShared ? "Unshare RC" : "Share RC"}</button>
                   <button onClick={() => setVoipConfig(c.userId)} style={{ padding: "5px 14px", borderRadius: 6, border: "1px solid rgba(99,102,241,.3)", background: "transparent", color: "#a5b4fc", cursor: "pointer", fontSize: 12 }}>VOIP Config</button>
                 </div>
               </div>

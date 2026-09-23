@@ -13,9 +13,14 @@ export async function GET(req: NextRequest) {
     include: { engineDevices: true, dialerConfig: true, subscription: true, agentConfig: true },
     orderBy: { createdAt: "asc" },
   });
-  const customers = users.map((u) => {
+  const customers = await Promise.all(users.map(async (u) => {
     const dc = u.dialerConfig;
-    const voipReady = !!(dc?.validated && dc.sipUsername && dc.sipPassword && dc.outboundNumber);
+    let voipShared = false;
+    try {
+      const rows: any[] = await prisma.$queryRawUnsafe(`SELECT "voipShared" FROM "DialerConfig" WHERE "userId" = ? LIMIT 1`, u.id);
+      voipShared = rows[0]?.voipShared === 1;
+    } catch {}
+    const voipReady = !!(dc?.validated && dc.sipUsername && dc.sipPassword && dc.outboundNumber) || voipShared;
     const lastDevice = u.engineDevices.sort((a, b) => (b.lastSeenAt?.getTime() || 0) - (a.lastSeenAt?.getTime() || 0))[0];
     const status = u.activeEngineMachineId ? "online" : "offline";
     const disabled = u.subscription?.status === "SUSPENDED" || u.subscription?.status === "DEACTIVATED";
@@ -34,7 +39,7 @@ export async function GET(req: NextRequest) {
       status: disabled ? "disabled" : status,
       lastSeen: lastDevice?.lastSeenAt?.getTime() || null,
       voipReady,
-      voipShared: false,
+      voipShared,
       voip: dc ? {
         provider: dc.provider?.toLowerCase() || "",
         number: dc.outboundNumber || "",
@@ -50,6 +55,6 @@ export async function GET(req: NextRequest) {
       companyName: u.companyName || "",
       createdBy: u.createdByAdminId || "",
     };
-  });
+  }));
   return NextResponse.json({ customers });
 }

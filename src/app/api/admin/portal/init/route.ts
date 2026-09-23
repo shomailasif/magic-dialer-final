@@ -24,6 +24,8 @@ export async function POST() {
     `);
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "PortalAdmin_email_key" ON "PortalAdmin"("email")`);
 
+    try { await prisma.$executeRawUnsafe(`ALTER TABLE "DialerConfig" ADD COLUMN "voipShared" INTEGER NOT NULL DEFAULT 0`); } catch {}
+
     const admins = [
       { email: "admin1@autodial.ai", password: "Admin1Pass!", name: "Admin 1" },
       { email: "admin2@autodial.ai", password: "Admin2Pass!", name: "Admin 2" },

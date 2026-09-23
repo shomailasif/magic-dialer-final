@@ -16,6 +16,9 @@ export async function POST(req: NextRequest) {
   if (voip !== undefined && (typeof voip !== "object" || voip === null)) return NextResponse.json({ error: "Invalid voip" }, { status: 400 });
   const user = await prisma.user.findFirst({ where: { id: userId, createdByAdminId: adminId } });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+  if (voipShared !== undefined) {
+    await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, voipShared ? 1 : 0, userId);
+  }
   if (voip !== undefined) {
     const allowed = ["provider", "number", "username", "sipPassword", "server", "domain", "authId", "port"];
     const clean: any = {};
