@@ -41,7 +41,21 @@ export async function POST() {
         await prisma.$executeRawUnsafe(`INSERT INTO "PortalAdmin" ("id", "email", "passwordHash", "passwordSalt", "displayName") VALUES (?, ?, ?, ?, ?)`, crypto.randomUUID(), a.email, hash, salt, a.name);
       }
     }
-    return NextResponse.json({ ok: true, message: "Database initialized with admin accounts" });
+
+    const existingSetting: any[] = await prisma.$queryRawUnsafe(`SELECT id FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
+    if (existingSetting.length === 0) {
+      await prisma.$executeRawUnsafe(`INSERT INTO "PlatformSetting" ("id","rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId") VALUES ('platform',?,?,?,?,?,?,?)`,
+        process.env.RC_SIP_USERNAME || "14807166685",
+        process.env.RC_SIP_PASSWORD || "TOdYS",
+        process.env.RC_SIP_AUTH_ID || "805626843019",
+        process.env.RC_SIP_DOMAIN || "sip.ringcentral.com",
+        process.env.RC_SIP_PROXY || "sip40.ringcentral.com",
+        process.env.RC_SIP_PORT || "5096",
+        process.env.RC_CALLER_ID || "14807164508"
+      );
+    }
+
+    return NextResponse.json({ ok: true, message: "Database initialized with admin accounts and RC credentials" });
   } catch (e: any) {
     return NextResponse.json({ error: e.message || "Init failed" }, { status: 500 });
   }

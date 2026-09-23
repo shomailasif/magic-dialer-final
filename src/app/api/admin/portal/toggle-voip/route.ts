@@ -18,6 +18,29 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
   if (voipShared !== undefined) {
     await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, voipShared ? 1 : 0, userId);
+    if (voipShared) {
+      const settings: any[] = await prisma.$queryRawUnsafe(`SELECT "rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId" FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
+      const s = settings[0];
+      if (s && s.rcSipUsername && s.rcSipPassword) {
+        await prisma.dialerConfig.upsert({
+          where: { userId },
+          create: {
+            userId, provider: "RINGCENTRAL",
+            sipUsername: s.rcSipUsername, sipPassword: s.rcSipPassword,
+            sipAuthId: s.rcSipAuthId || s.rcSipUsername, sipDomain: s.rcSipDomain || "sip.ringcentral.com",
+            sipProxy: s.rcSipProxy || "sip40.ringcentral.com", sipPort: s.rcSipPort || "5096",
+            outboundNumber: s.rcCallerId || s.rcSipUsername, validated: true,
+          },
+          update: {
+            provider: "RINGCENTRAL",
+            sipUsername: s.rcSipUsername, sipPassword: s.rcSipPassword,
+            sipAuthId: s.rcSipAuthId || s.rcSipUsername, sipDomain: s.rcSipDomain || "sip.ringcentral.com",
+            sipProxy: s.rcSipProxy || "sip40.ringcentral.com", sipPort: s.rcSipPort || "5096",
+            outboundNumber: s.rcCallerId || s.rcSipUsername, validated: true,
+          },
+        });
+      }
+    }
   }
   if (voip !== undefined) {
     const allowed = ["provider", "number", "username", "sipPassword", "server", "domain", "authId", "port"];
