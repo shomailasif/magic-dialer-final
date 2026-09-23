@@ -58,24 +58,25 @@ function unauthorized(): Response {
   return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "content-type": "application/json" } });
 }
 
-export async function seedAdmins(): Promise<void> {
-  const admins = [
-    { email: "admin1@autodial.ai", password: "Admin1Pass!", name: "Admin 1" },
-    { email: "admin2@autodial.ai", password: "Admin2Pass!", name: "Admin 2" },
-  ];
-  for (const a of admins) {
-    const existing = await prisma.portalAdmin.findUnique({ where: { email: a.email } });
-    if (!existing) {
-      const { hash, salt } = hashPassword(a.password);
-      await prisma.portalAdmin.create({ data: { email: a.email, passwordHash: hash, passwordSalt: salt, displayName: a.name } });
-    }
-  }
+async function tableExists(): Promise<boolean> {
+  try {
+    const rows: any[] = await prisma.$queryRawUnsafe(`SELECT name FROM sqlite_master WHERE type='table' AND name='PortalAdmin' LIMIT 1`);
+    return rows.length > 0;
+  } catch { return false; }
+}
+
+export async function ensureInit(): Promise<void> {
+  if (await tableExists()) return;
+  const res = await fetch(`${process.env.VERCEL_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/admin/portal/init`, { method: "POST" });
+  if (!res.ok) throw new Error("Failed to initialize admin database");
 }
 
 export async function verifyAdmin(email: string, password: string): Promise<{ id: string } | null> {
-  const admin = await prisma.portalAdmin.findUnique({ where: { email } });
-  if (!admin) return null;
-  const valid = verifyPassword(password, admin.passwordHash, admin.passwordSalt);
+  await ensureInit();
+  const rows: any[] = await prisma.$queryRawUnsafe(`SELECT id, passwordHash, passwordSalt FROM "PortalAdmin" WHERE email = ? LIMIT 1`, email);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  const valid = verifyPassword(password, row.passwordHash, row.passwordSalt);
   if (!valid) return null;
-  return { id: admin.id };
+  return { id: row.id };
 }

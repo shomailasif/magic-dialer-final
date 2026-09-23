@@ -1,0 +1,1 @@
+Admin portal: auto-create PortalAdmin table via raw SQL
