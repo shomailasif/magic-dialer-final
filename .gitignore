@@ -37,6 +37,7 @@
 
 # build artifacts (binaries, installers)
 build/dist/
+**/build/dist/
 
 # deploy (separate concern)
 /deploy
