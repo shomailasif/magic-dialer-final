@@ -17,14 +17,15 @@ function frame(amplitude) {
   return b;
 }
 
-let vad = createVad({ minSpeechMs: 160, endSilenceMs: 620 });
+let vad = createVad({ minSpeechMs: 160, endSilenceMs: 420 });
 for (let i = 0; i < 50; i++) assert.equal(vad.push(Buffer.alloc(160, 0xff)).speaking, false);
-vad = createVad({ minSpeechMs: 160, endSilenceMs: 620 });
+vad = createVad({ minSpeechMs: 160, endSilenceMs: 420 });
 for (let i = 0; i < 20; i++) vad.push(Buffer.alloc(160, 0xff));
 let state;
 for (let i = 0; i < 12; i++) state = vad.push(frame(7000));
 assert.equal(state.speaking, true);
-for (let i = 0; i < 30; i++) state = vad.push(Buffer.alloc(160, 0xff));
+// endSilenceMs is 420ms = 21 frames of 20ms silence.
+for (let i = 0; i < 20; i++) state = vad.push(Buffer.alloc(160, 0xff));
 assert.equal(state.ended, false);
 state = vad.push(Buffer.alloc(160, 0xff));
 assert.equal(state.ended, true);
@@ -40,7 +41,7 @@ const softphone = fs.readFileSync(path.join(__dirname, "../src/management/portal
 const projectNotes = fs.readFileSync(path.join(__dirname, "../PROJECT_NOTES.md"), "utf8");
 
 assert(call.includes('require("./vad")'));
-assert(call.includes("endSilenceMs: 620"));
+assert(call.includes("endSilenceMs: 420"));
 assert(runner.includes('require("./intelligent-brain")'));
 assert(!runner.includes('require("./brain-i18n")'));
 assert(!runner.includes("setTimeout(r, 600)"));

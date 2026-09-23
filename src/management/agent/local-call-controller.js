@@ -98,6 +98,13 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
   const speakFn = async (text, turn = {}) => {
     const locale = normalizeLanguage(turn.locale || activeLocale);
     activeLocale = locale;
+    // Create capture state BEFORE awaiting TTS so inbound audio is never
+    // dropped while state is null during synthesis.
+    if (!state) {
+      let release;
+      const ended = new Promise((resolve) => { release = resolve; });
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
+    }
     let out;
     if (preparedOpening && String(text || "").trim() === preparedOpening.text) {
       out = preparedOpening.audio;
@@ -109,7 +116,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -128,7 +135,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 620 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
     }
     const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, 15000);
     await ended;

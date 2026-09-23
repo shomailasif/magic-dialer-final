@@ -33,14 +33,14 @@ Rules:
 - Output only the exact words to speak. No labels, stage directions, markdown, or analysis.`;
 }
 
-async function complete({ history, config, maxTokens = 140 }) {
+async function complete({ history, config, maxTokens = 220 }) {
   const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||""),callId=String(config&&config.callId||requestId());
-  if(portal&&deviceToken){const reqId=requestId(),c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-14)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok){return {text:"",error:safeError(d.error||("AI gateway HTTP "+r.status),[deviceToken]),requestId:d.requestId||reqId};}const text=clean(d.text);return text?{text}:{text:"",error:safeError(d.error||"empty AI response",[deviceToken]),requestId:d.requestId||reqId};}catch(e){console.log("[brain] AI gateway failed: "+e?.message+", falling back to direct Groq");}finally{clearTimeout(t);}}
+  if(portal&&deviceToken){const reqId=requestId(),c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-20)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok){return {text:"",error:safeError(d.error||("AI gateway HTTP "+r.status),[deviceToken]),requestId:d.requestId||reqId};}const text=clean(d.text);return text?{text}:{text:"",error:safeError(d.error||"empty AI response",[deviceToken]),requestId:d.requestId||reqId};}catch(e){console.log("[brain] AI gateway failed: "+e?.message+", falling back to direct Groq");}finally{clearTimeout(t);}}
   const key = process.env.GROQ_API_KEY || process.env.AUTODIAL_GROQ_KEY || "";
   if (!key) return { text: "", error: "Secure AI gateway unavailable" };
   const preferred = process.env.AUTODIAL_GROQ_MODEL || process.env.GROQ_MODEL || DEFAULT_MODEL;
   const models = preferred === DEFAULT_MODEL ? [preferred] : [preferred, DEFAULT_MODEL];
-  const messages = [{ role: "system", content: systemPrompt(config) }, ...history.slice(-14)];
+  const messages = [{ role: "system", content: systemPrompt(config) }, ...history.slice(-20)];
   let lastError = "";
   for (const model of models) {
     const controller = new AbortController();

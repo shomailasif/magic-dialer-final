@@ -24,7 +24,7 @@ function rmsPcmu(buf) {
 
 function createVad(opts = {}) {
   const minSpeechMs = Number(opts.minSpeechMs || 160);
-  const endSilenceMs = Number(opts.endSilenceMs || 620);
+  const endSilenceMs = Number(opts.endSilenceMs || 420);
   const floorFrames = Number(opts.floorFrames || 20);
   const absoluteFloor = Number(opts.absoluteFloor || 180);
   let noise = 0;

@@ -180,6 +180,7 @@ function styleRate(style, rate) {
 
 let PYTHON = null;
 let PYTHON_PROBED = false;
+let PYTHON_PROMISE = null;
 
 /**
  * Find a working Python for edge-tts. On Windows the bare `python` command can
@@ -205,13 +206,28 @@ function resolvePython() {
     "python",
     "py",
   ].filter(Boolean);
-  for (const c of candidates) {
-    try {
-      const t = spawnSync(c, ["--version"], { stdio: "ignore", timeout: 10000 });
-      if (t.status === 0) { PYTHON = c; return c; }
-    } catch { /* keep looking */ }
+  // Probe asynchronously so a live call's media/VAD/heartbeats never freeze
+  // while we look for Python. Concurrent callers share one probe.
+  if (!PYTHON_PROMISE) {
+    PYTHON_PROMISE = (async () => {
+      for (const c of candidates) {
+        try {
+          const t = await runAsync(c, ["--version"], 10000);
+          if (t.status === 0) { PYTHON = c; return c; }
+        } catch { /* keep looking */ }
+      }
+      return null;
+    })();
   }
-  return null;
+  // Synchronous callers (legacy paths) get the cached value only; hot paths
+  // must await resolvePythonAsync().
+  return PYTHON;
+}
+
+async function resolvePythonAsync() {
+  if (PYTHON_PROBED && PYTHON) return PYTHON;
+  if (!PYTHON_PROMISE) { PYTHON_PROBED = false; return resolvePython() || await PYTHON_PROMISE; }
+  return await PYTHON_PROMISE;
 }
 
 /**
@@ -246,7 +262,7 @@ function runAsync(cmd, args, timeoutMs) {
 /** Speak via edge-tts (Python). Returns true on success. Async: never blocks the event loop. */
 async function speakEdge(text, { locale = "en", rate = 1, style = "human" } = {}) {
   if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return false;
-  const python = resolvePython();
+  const python = await resolvePythonAsync();
   if (!python) return false;
   const file = path.join(TMP, `edge-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.mp3`);
   const effRate = styleRate(style, rate);
@@ -262,7 +278,7 @@ async function speakEdge(text, { locale = "en", rate = 1, style = "human" } = {}
       if (fs.existsSync(file)) fs.unlinkSync(file);
       return false;
     }
-    const ok = playFile(file);
+    const ok = await playFile(file);
     try { fs.unlinkSync(file); } catch {}
     return ok;
   } catch {
@@ -281,7 +297,7 @@ async function speakHeadTTS(text, { locale = "en", rate = 1, style = "human" } =
       if (fs.existsSync(file)) fs.unlinkSync(file);
       return false;
     }
-    const played = playFile(file);
+    const played = await playFile(file);
     try { fs.unlinkSync(file); } catch {}
     return played;
   } catch {
@@ -326,7 +342,7 @@ function localeToHeadTTS(locale) { return String(locale).split("-")[0] === "fi" 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 /** Speak via Windows System.Speech (always available). Returns true. */
-function speakWindows(text, { rate = 1, volume = 100 } = {}) {
+async function speakWindows(text, { rate = 1, volume = 100 } = {}) {
   const chosen = "Microsoft Zira Desktop";
   const rate10 = Math.round(rate * 10);
   const script = `
@@ -337,7 +353,7 @@ function speakWindows(text, { rate = 1, volume = 100 } = {}) {
     $s.Volume = ${Number(volume) || 100}
     $s.Speak('${ps(text)}')
   `;
-  const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { stdio: "ignore", timeout: 60000 });
+  const r = await runAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], 60000);
   return r.status === 0;
 }
 
@@ -354,7 +370,7 @@ function ps(v) {
  * duration (so short lines don't stall and long lines don't get cut off).
  * Returns true on success.
  */
-function playFile(file) {
+async function playFile(file) {
   const url = "file:///" + file.replace(/\\/g, "/").replace(/ /g, "%20");
   const script =
     "Add-Type -AssemblyName PresentationCore;" +
@@ -365,10 +381,10 @@ function playFile(file) {
     "$p.Play(); Start-Sleep -Milliseconds ([Math]::Min(15000, ($d * 1000) + 350));" +
     "$p.Stop(); $p.Close()";
   try {
-    const r = spawnSync(
+    const r = await runAsync(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
-      { stdio: "ignore", timeout: 30000 },
+      30000,
     );
     return r.status === 0;
   } catch { return false; }
@@ -382,7 +398,7 @@ function playFile(file) {
 async function speak(text, { voice, rate = 1, volume = 100, locale = "en", style = "human" } = {}) {
   if (await speakEdge(text, { locale, rate, style })) return { engine: "edge", ok: true };
   if (await speakHeadTTS(text, { locale, rate, style })) return { engine: "headtts", ok: true };
-  const ok = speakWindows(text, { rate: styleRate(style, rate), volume });
+  const ok = await speakWindows(text, { rate: styleRate(style, rate), volume });
   return { engine: "windows", ok };
 }
 
@@ -396,28 +412,35 @@ let FFMPEG_PROBED = false;
 function resolveFfmpeg() {
   if (FFMPEG_PROBED) return FFMPEG;
   FFMPEG_PROBED = true;
-  // Try Python's bundled ffmpeg
-  const python = resolvePython();
-  if (python) {
-    try {
-      const r = spawnSync(python, ["-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"], {
-        stdio: ["ignore", "pipe", "pipe"], timeout: 5000,
-      });
-      if (r.status === 0) {
-        const p = (r.stdout || "").toString().trim();
-        if (p && fs.existsSync(p)) { FFMPEG = p; return FFMPEG; }
-      }
-    } catch {}
-  }
-  // Try PATH
-  for (const c of ["ffmpeg", "ffmpeg.exe"]) {
-    try {
-      const r = spawnSync(c, ["-version"], { stdio: "ignore", timeout: 5000 });
-      if (r.status === 0) { FFMPEG = c; return FFMPEG; }
-    } catch {}
-  }
-  return null;
+  return FFMPEG;
 }
+
+async function resolveFfmpegAsync() {
+  if (FFMPEG_PROBED && FFMPEG) return FFMPEG;
+  if (resolveFfmpegCachePromise) return await resolveFfmpegCachePromise;
+  FFMPEG_PROBED = true;
+  resolveFfmpegCachePromise = (async () => {
+    const python = await resolvePythonAsync();
+    if (python) {
+      try {
+        const r = await runAsync(python, ["-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"], 5000);
+        if (r.status === 0) {
+          const p = (r.stdout || "").toString().trim();
+          if (p && fs.existsSync(p)) { FFMPEG = p; return FFMPEG; }
+        }
+      } catch {}
+    }
+    for (const c of ["ffmpeg", "ffmpeg.exe"]) {
+      try {
+        const r = await runAsync(c, ["-version"], 5000);
+        if (r.status === 0) { FFMPEG = c; return FFMPEG; }
+      } catch {}
+    }
+    return null;
+  })();
+  return await resolveFfmpegCachePromise;
+}
+let resolveFfmpegCachePromise = null;
 
 /**
  * ITU-T G.711 mu-law encode table, built once from the SAME decode formula
@@ -514,9 +537,9 @@ function wavToMulaw(wav) {
  */
 async function edgeToBuffer(text, { locale, style, rate }) {
   if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return null;
-  const ffmpeg = resolveFfmpeg();
+  const ffmpeg = await resolveFfmpegAsync();
   if (!ffmpeg) return null;
-  const python = resolvePython();
+  const python = await resolvePythonAsync();
   if (!python) return null;
   const file = path.join(TMP, `tts-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.mp3`);
   try {
@@ -533,7 +556,7 @@ async function edgeToBuffer(text, { locale, style, rate }) {
       return null;
     }
     const rawPath = file.replace(/\.mp3$/, ".raw");
-    const conv = spawnSync(ffmpeg, ["-i", file, "-ar", "8000", "-ac", "1", "-f", "mulaw", "-y", rawPath], { stdio: "pipe", timeout: 15000 });
+    const conv = await runAsync(ffmpeg, ["-i", file, "-ar", "8000", "-ac", "1", "-f", "mulaw", "-y", rawPath], 15000);
     if (conv.status !== 0 || !fs.existsSync(rawPath) || fs.statSync(rawPath).size < 160) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
       if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
@@ -570,7 +593,7 @@ async function headTtsToBuffer(text, { locale, style, rate }) {
 }
 
 /** Tier 3: Windows SAPI -> WAV -> pure-JS PCMU (always available on Windows). */
-function sapiToBuffer(text, { rate = 1 } = {}) {
+async function sapiToBuffer(text, { rate = 1 } = {}) {
   const file = path.join(TMP, `sapi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.wav`);
   try {
     const chosen = "Microsoft Zira Desktop";
@@ -586,7 +609,7 @@ function sapiToBuffer(text, { rate = 1 } = {}) {
       $s.SetOutputToNull()
       $s.Dispose()
     `;
-    const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { stdio: "ignore", timeout: 30000 });
+    const r = await runAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], 30000);
     if (r.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 100) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
       return null;
@@ -619,7 +642,7 @@ async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } 
   if (edge) return edge;
   const headtts = await headTtsToBuffer(text, { locale, style, rate });
   if (headtts) return headtts;
-  const sapi = sapiToBuffer(text, { locale, style, rate });
+  const sapi = await sapiToBuffer(text, { locale, style, rate });
   if (sapi) return sapi;
   return null;
 }
