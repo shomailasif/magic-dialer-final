@@ -28,6 +28,7 @@ export default function AdminPortal() {
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [initDone, setInitDone] = useState(false);
 
   const fetchCustomers = useCallback(async () => {
     setLoading(true);
@@ -42,6 +43,7 @@ export default function AdminPortal() {
   }, []);
 
   useEffect(() => {
+    fetch("/api/admin/portal/init", { method: "POST" }).then(() => setInitDone(true)).catch(() => setInitDone(true));
     fetch("/api/admin/portal/customers").then(async r => {
       if (r.ok) {
         setLoggedIn(true);
@@ -51,20 +53,10 @@ export default function AdminPortal() {
     }).catch(() => {});
   }, []);
 
-  const initDatabase = async () => {
-    setError("");
-    try {
-      const r = await fetch("/api/admin/portal/init", { method: "POST" });
-      const data = await r.json();
-      if (r.ok) setError("");
-      else setError(data.error || "Init failed");
-    } catch { setError("Init failed"); }
-  };
-
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    await initDatabase();
+    try { await fetch("/api/admin/portal/init", { method: "POST" }); } catch {}
     const r = await fetch("/api/admin/portal/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -135,7 +127,7 @@ export default function AdminPortal() {
             <button type="submit" style={{ width: "100%", padding: 12, borderRadius: 8, border: "none", background: "linear-gradient(135deg,#6366f1,#38bdf8)", color: "white", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Sign in</button>
           </form>
           {error && <p style={{ color: "#f87171", fontSize: 13, marginTop: 12, textAlign: "center" }}>{error}</p>}
-          <button onClick={initDatabase} style={{ width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(248,113,113,.3)", background: "transparent", color: "#f87171", cursor: "pointer", fontSize: 12, marginTop: 16 }}>Initialize Database (first time only)</button>
+          <a href="/api/admin/portal/init" target="_blank" style={{ display: "block", width: "100%", padding: 10, borderRadius: 8, border: "1px solid rgba(248,113,113,.3)", background: "transparent", color: "#f87171", cursor: "pointer", fontSize: 12, marginTop: 16, textAlign: "center", textDecoration: "none" }}>Initialize Database (first time only)</a>
         </div>
       </div>
     );

@@ -10,6 +10,10 @@ function hashPassword(password: string, salt?: string): { hash: string; salt: st
   return { hash: h, salt: s };
 }
 
+export async function GET() {
+  return POST();
+}
+
 export async function POST() {
   try {
     await prisma.$executeRawUnsafe(`
