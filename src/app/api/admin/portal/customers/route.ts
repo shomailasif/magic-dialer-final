@@ -1,31 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requireAdmin, getPool } from "../_lib";
 
 export const dynamic = "force-dynamic";
 
-function requireAdmin(req: NextRequest) {
-  const cookie = req.headers.get("cookie") || "";
-  const m = cookie.match(/portal_admin=([^;]+)/);
-  if (!m) return false;
-  try {
-    const decoded = Buffer.from(m[1], "base64").toString();
-    return decoded === process.env.ADM_PASSWORD;
-  } catch {
-    return false;
-  }
-}
-
-async function getPool() {
-  const url = process.env.DATABASE_URL;
-  if (!url) return null;
-  const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: url, ssl: { rejectUnauthorized: false } });
-  return pool;
-}
-
 export async function GET(req: NextRequest) {
-  if (!requireAdmin(req)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const pool = await getPool();
-  if (!pool) return NextResponse.json({ error: "No database" }, { status: 500 });
+  const err = await requireAdmin();
+  if (err) return err;
+  const pool = getPool();
   try {
     const r = await pool.query("SELECT token, product, persona, contact_email, status, last_seen, voip_ready, settings, call_list, leads_found, disabled, machine_id FROM customers WHERE portal_id = $1 ORDER BY created_at ASC", ["main"]);
     const customers = r.rows.map((c: any) => ({
@@ -45,7 +26,7 @@ export async function GET(req: NextRequest) {
       companyName: c.settings && typeof c.settings === "object" ? c.settings.companyName || "" : "",
     }));
     return NextResponse.json({ customers });
-  } finally {
-    pool.end();
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message || "DB error" }, { status: 500 });
   }
 }

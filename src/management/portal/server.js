@@ -1273,7 +1273,6 @@ function dashboardHtml(rows, calls = [], outbox = []) {
           if (isShared) {
             await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voipShared: false}})});
           } else {
-            if (!process.env.RC_SIP_USERNAME || !process.env.RC_SIP_PASSWORD) { alert('No shared RingCentral credentials configured on the server.'); return; }
             await apiFetch('/api/customer/'+token, {method:'PATCH', body: JSON.stringify({settings: {voipShared: true}})});
           }
           location.reload(); return;
@@ -1294,7 +1293,7 @@ function dashboardHtml(rows, calls = [], outbox = []) {
           if (provider == null) return;
           const p = String(provider).trim().toLowerCase();
           let server = '';
-          if (!HOSTED_VOIP_SERVERS[p]) {
+          if (!HOSTED[p]) {
             server = prompt('SIP server / domain for this dialer:', cur.server || '');
             if (server == null) return;
           }

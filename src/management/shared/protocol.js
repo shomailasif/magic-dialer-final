@@ -34,8 +34,7 @@ function voipComplete(v) {
   if (HOSTED_VOIP_SERVERS[v.provider]) {
     // RingCentral: SIP credentials OR RingOut REST (JWT + app credentials)
     if (v.provider === "ringcentral") {
-      return !!((v.username && v.sipPassword) || (v.appClientId && v.appClientSecret && v.appJwt)
-        || (typeof process !== "undefined" && process.env && process.env.RC_JWT && process.env.RC_CLIENT_ID && process.env.RC_CLIENT_SECRET));
+      return !!((v.username && v.sipPassword) || (v.appClientId && v.appClientSecret && v.appJwt));
     }
     // Sim provider needs no real credentials
     if (v.provider === "sim") return true;

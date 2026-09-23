@@ -453,7 +453,7 @@ async function updateCustomer(db, token, patch) {
     }
     push("settings", JSON.stringify(merged));
     const v = merged.voip || {};
-    const voipReady = voipComplete(v) ? 1 : 0;
+    const voipReady = voipComplete(v) ? 1 : (merged.voipShared && process.env.RC_SIP_USERNAME && process.env.RC_SIP_PASSWORD ? 1 : 0);
     push("voip_ready", voipReady);
   }
 

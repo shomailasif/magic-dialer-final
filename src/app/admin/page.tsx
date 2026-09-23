@@ -28,23 +28,29 @@ export default function AdminPortal() {
 
   const fetchCustomers = useCallback(async () => {
     setLoading(true);
+    setError("");
     try {
       const r = await fetch("/api/admin/portal/customers");
-      if (r.status === 401) { setLoggedIn(false); return; }
+      if (r.status === 401) { setLoggedIn(false); setLoading(false); return; }
       const data = await r.json();
       setCustomers(data.customers || []);
-    } catch { setError("Failed to load"); }
+    } catch { setError("Failed to load customers"); }
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    fetch("/api/admin/portal/customers").then(r => {
-      if (r.ok) { setLoggedIn(true); fetchCustomers(); }
+    fetch("/api/admin/portal/customers").then(async r => {
+      if (r.ok) {
+        setLoggedIn(true);
+        const data = await r.json();
+        setCustomers(data.customers || []);
+      }
     }).catch(() => {});
-  }, [fetchCustomers]);
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError("");
     const r = await fetch("/api/admin/portal/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -61,34 +67,42 @@ export default function AdminPortal() {
   };
 
   const toggleShared = async (token: string, current: boolean) => {
-    await fetch("/api/admin/portal/toggle-voip", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, voipShared: !current }),
-    });
-    fetchCustomers();
+    setError("");
+    try {
+      const r = await fetch("/api/admin/portal/toggle-voip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, voipShared: !current }),
+      });
+      if (!r.ok) { setError("Toggle failed"); return; }
+      fetchCustomers();
+    } catch { setError("Toggle failed"); }
   };
 
   const setVoipConfig = async (token: string) => {
     const provider = prompt("VOIP provider (ringcentral, twilio, etc.):", "ringcentral");
-    if (!provider) return;
+    if (!provider?.trim()) return;
     const number = prompt("Outgoing caller ID / number:", "");
-    if (number == null) return;
+    if (!number?.trim()) return;
     const username = prompt("SIP username:", "");
-    if (username == null) return;
+    if (!username?.trim()) return;
     const sipPassword = prompt("SIP password:", "");
     if (sipPassword == null) return;
     const server = prompt("SIP server (e.g. sip40.ringcentral.com):", "sip40.ringcentral.com");
-    if (server == null) return;
+    if (!server?.trim()) return;
     const port = prompt("Port:", "5096");
     if (port == null) return;
     const voip = { provider: provider.trim(), number: number.trim(), username: username.trim(), sipPassword, authId: username.trim(), server: server.trim(), port: port.trim(), ready: true };
-    await fetch("/api/admin/portal/toggle-voip", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, voipShared: false, voip }),
-    });
-    fetchCustomers();
+    setError("");
+    try {
+      const r = await fetch("/api/admin/portal/toggle-voip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, voip }),
+      });
+      if (!r.ok) { setError("VOIP config failed"); return; }
+      fetchCustomers();
+    } catch { setError("VOIP config failed"); }
   };
 
   if (!loggedIn) {
@@ -120,15 +134,16 @@ export default function AdminPortal() {
           </div>
         </div>
 
+        {error && <div style={{ background: "#7f1d1d30", border: "1px solid #7f1d1d", borderRadius: 8, padding: 12, marginBottom: 16, color: "#fca5a5", fontSize: 13 }}>{error}</div>}
         {loading && <p style={{ color: "#7c8aa8" }}>Loading...</p>}
 
         <div style={{ display: "grid", gap: 12 }}>
-          {customers.map(c => {
+          {customers.map((c, idx) => {
             const state = c.disabled ? "DISABLED" : c.status === "online" ? "ONLINE" : "OFFLINE";
             const stateColor = c.disabled ? "#f87171" : c.status === "online" ? "#34d399" : "#6b7a99";
             const lastSeen = c.lastSeen ? new Date(c.lastSeen).toLocaleString() : "never";
             return (
-              <div key={c.token} style={{ background: "#111827", borderRadius: 12, padding: 20, border: "1px solid rgba(99,102,241,.1)" }}>
+              <div key={c.machineId || idx} style={{ background: "#111827", borderRadius: 12, padding: 20, border: "1px solid rgba(99,102,241,.1)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12 }}>
                   <div style={{ flex: 1, minWidth: 200 }}>
                     <div style={{ fontWeight: 600, fontSize: 15 }}>{c.product}</div>
@@ -139,8 +154,8 @@ export default function AdminPortal() {
                   <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: stateColor + "15", color: stateColor, border: "1px solid " + stateColor + "30" }}>{state}</span>
                     <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, fontWeight: 600, background: c.voipReady ? "#34d39915" : "#6b7a9915", color: c.voipReady ? "#34d399" : "#6b7a99", border: "1px solid " + (c.voipReady ? "#34d39930" : "#6b7a9930") }}>{c.voipShared ? "SHARED" : c.voipReady ? "VOIP ON" : "no line"}</span>
-                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{c.callList.length} numbers</span>
-                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{c.leadsFound.length} leads</span>
+                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{(c.callList ?? []).length} numbers</span>
+                    <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 20, background: "#64748b15", color: "#94a3b8" }}>{(c.leadsFound ?? []).length} leads</span>
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>

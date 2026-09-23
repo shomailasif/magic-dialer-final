@@ -211,9 +211,15 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
   if (typeof portalCfg.callbackIn === "string" && portalCfg.callbackIn.trim()) set("callbackIn", portalCfg.callbackIn.trim());
   if (Array.isArray(portalCfg.callList)) set("callList", portalCfg.callList.map((n) => String(n).trim()).filter(Boolean));
   if (typeof portalCfg.searchEnabled === "boolean") set("searchEnabled", portalCfg.searchEnabled);
-  if (typeof portalCfg.lang === "string" && /^(en|es|fr|de|pt|hi|auto)$/.test(portalCfg.lang.trim())) set("lang", portalCfg.lang.trim());
+  if (typeof portalCfg.lang === "string" && /^(en|es|fr|de|pt|hi|auto|ar|he|id|it|ja|ko|nl|pl|ru|tr|uk|ur|vi|zh)$/.test(portalCfg.lang.trim())) set("lang", portalCfg.lang.trim());
   if (typeof portalCfg.voiceStyle === "string" && /^(human|frank|friendly)$/.test(portalCfg.voiceStyle.trim())) set("voiceStyle", portalCfg.voiceStyle.trim());
-  if (portalCfg.voip && typeof portalCfg.voip === "object" && portalCfg.voip.number && portalCfg.voip.username) {
+  if (portalCfg.voip === null || portalCfg.voip === undefined) {
+    if (config.voip && config.voip.ready) {
+      config.voip = { ...config.voip, ready: false };
+      changed = true;
+      pushActivity(config, "VOIP config cleared by admin.");
+    }
+  } else if (portalCfg.voip && typeof portalCfg.voip === "object" && portalCfg.voip.number && portalCfg.voip.username) {
     const prior = config.voip || {};
     const provider = portalCfg.voip.provider || prior.provider || "";
     const defaultServer = HOSTED_VOIP_SERVERS[provider] || HOSTED_VOIP_SERVERS[prior.provider] || "";
