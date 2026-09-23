@@ -66,6 +66,13 @@ export async function POST() {
     if (firstAdmin.length > 0) {
       const aid = firstAdmin[0].id;
       await prisma.$executeRawUnsafe(`UPDATE "User" SET "createdByAdminId" = ? WHERE ("createdByAdminId" IS NULL OR "createdByAdminId" = '') AND "role" = 'BUSINESS_ADMIN'`, aid);
+      await prisma.$executeRawUnsafe(`
+        UPDATE "User" SET "createdByAdminId" = ?
+        WHERE "role" = 'BUSINESS_ADMIN'
+          AND "createdByAdminId" IS NOT NULL
+          AND "createdByAdminId" != ''
+          AND NOT EXISTS (SELECT 1 FROM "PortalAdmin" p WHERE p."id" = "User"."createdByAdminId")
+      `, aid);
     }
 
     const allCustomers: any[] = await prisma.$queryRawUnsafe(`SELECT u."id", u."email" FROM "User" u JOIN "Subscription" s ON s."userId" = u."id" WHERE u."role" = 'BUSINESS_ADMIN'`);
@@ -75,7 +82,17 @@ export async function POST() {
     for (const c of allCustomers) {
       const shared = isSharedRcEmail(c.email);
       await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, shared ? 1 : 0, c.id).catch(() => {});
-      if (!shared || !s || !s.rcSipUsername || !s.rcSipPassword) continue;
+      if (!shared) {
+        if (s?.rcSipUsername) {
+          await prisma.$executeRawUnsafe(
+            `UPDATE "DialerConfig" SET "sipUsername" = '', "sipPassword" = '', "sipAuthId" = '', "sipProxy" = '', "outboundNumber" = '', "validated" = 0
+             WHERE "userId" = ? AND "sipUsername" = ?`,
+            c.id, s.rcSipUsername
+          ).catch(() => {});
+        }
+        continue;
+      }
+      if (!s || !s.rcSipUsername || !s.rcSipPassword) continue;
       await prisma.$executeRawUnsafe(`
         INSERT INTO "DialerConfig" ("id","userId","provider","sipUsername","sipPassword","sipAuthId","sipDomain","sipProxy","sipPort","outboundNumber","validated","updatedAt")
         SELECT ?, ?, 'RINGCENTRAL', ?, ?, ?, ?, ?, ?, ?, 1, datetime('now')
