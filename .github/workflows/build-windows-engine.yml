@@ -102,8 +102,8 @@ jobs:
           foreach ($file in @("agent.exe","MagicDialer.exe","logo.ico")) {
             if (-not (Test-Path (Join-Path $app $file))) { throw "Missing installed $file" }
           }
-          $startup = Join-Path $env:APPDATA "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\Magic Dialer.lnk"
-          if (-not (Test-Path $startup)) { throw "Missing Windows startup shortcut" }
+          $runKey = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Magic Dialer" -ErrorAction SilentlyContinue
+          if (-not $runKey -or -not ($runKey."Magic Dialer" -like "*MagicDialer.exe*")) { throw "Missing HKCU Run auto-start entry" }
           $launcher = Join-Path $app "MagicDialer.exe"
           Write-Host "SMOKE MARKER C: starting launcher verification"
           $proc = Start-Process -FilePath $launcher -ArgumentList "--no-browser" -PassThru -WindowStyle Hidden
