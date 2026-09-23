@@ -41,14 +41,20 @@ export async function POST(request: Request) {
 
   const passwordHash = await hashPassword(password);
 
-  // Only stamp createdByAdminId if the caller is a SUPER_ADMIN.
-  let createdByAdminId: string | undefined;
+  // Only stamp createdByAdminId if the caller is a SUPER_ADMIN, or assign to first admin.
+  let createdByAdminId: string | null = null;
   try {
     const currentUser = await getCurrentUser();
     if (currentUser?.role === "SUPER_ADMIN") {
       createdByAdminId = currentUser.id;
     }
   } catch {}
+  if (!createdByAdminId) {
+    try {
+      const firstAdmin = await prisma.portalAdmin.findFirst({ orderBy: { createdAt: "asc" } });
+      if (firstAdmin) createdByAdminId = firstAdmin.id;
+    } catch {}
+  }
 
   const user = await prisma.user.create({
     data: {

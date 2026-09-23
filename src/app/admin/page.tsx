@@ -29,6 +29,10 @@ export default function AdminPortal() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [initDone, setInitDone] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newCompany, setNewCompany] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
 
   const fetchCustomers = useCallback(async () => {
     setLoading(true);
@@ -115,6 +119,24 @@ export default function AdminPortal() {
     } catch { setError("VOIP config failed"); }
   };
 
+  const createCustomer = async () => {
+    setError("");
+    if (!newCompany.trim() || !newEmail.trim() || !newPassword.trim()) { setError("All fields required"); return; }
+    if (newPassword.length < 8) { setError("Password must be at least 8 characters"); return; }
+    try {
+      const r = await fetch("/api/admin/portal/create-customer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName: newCompany.trim(), email: newEmail.trim().toLowerCase(), password: newPassword }),
+      });
+      const data = await r.json();
+      if (!r.ok) { setError(data.error || "Create failed"); return; }
+      setShowCreate(false);
+      setNewCompany(""); setNewEmail(""); setNewPassword("");
+      fetchCustomers();
+    } catch { setError("Create failed"); }
+  };
+
   if (!loggedIn) {
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0a0e1a" }}>
@@ -143,6 +165,7 @@ export default function AdminPortal() {
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
             <span style={{ color: "#7c8aa8", fontSize: 12 }}>{customers.length} customers</span>
+            <button onClick={() => setShowCreate(true)} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #34d399", background: "#34d39915", color: "#34d399", cursor: "pointer", fontSize: 12, fontWeight: 500 }}>+ Create Customer</button>
             <button onClick={() => fetchCustomers()} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(99,102,241,.3)", background: "transparent", color: "#a5b4fc", cursor: "pointer", fontSize: 12 }}>Refresh</button>
             <button onClick={handleLogout} style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid rgba(248,113,113,.3)", background: "transparent", color: "#f87171", cursor: "pointer", fontSize: 12 }}>Sign out</button>
           </div>
@@ -182,6 +205,20 @@ export default function AdminPortal() {
           {!loading && customers.length === 0 && <p style={{ color: "#7c8aa8", textAlign: "center", padding: 40 }}>No customers yet. Customers appear here after they sign up and link their agent.</p>}
         </div>
       </div>
+      {showCreate && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }} onClick={() => setShowCreate(false)}>
+          <div style={{ background: "#111827", padding: 32, borderRadius: 16, width: 400, border: "1px solid rgba(99,102,241,.3)" }} onClick={e => e.stopPropagation()}>
+            <h2 style={{ fontSize: 18, fontWeight: 700, color: "#e2e8f0", marginBottom: 20 }}>Create Customer</h2>
+            <input value={newCompany} onChange={e => setNewCompany(e.target.value)} placeholder="Company name" style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(99,102,241,.3)", background: "#0d1226", color: "#e2e8f0", fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
+            <input type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} placeholder="Email" style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(99,102,241,.3)", background: "#0d1226", color: "#e2e8f0", fontSize: 14, marginBottom: 12, boxSizing: "border-box" }} />
+            <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Password (min 8 chars)" style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(99,102,241,.3)", background: "#0d1226", color: "#e2e8f0", fontSize: 14, marginBottom: 20, boxSizing: "border-box" }} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={createCustomer} style={{ flex: 1, padding: 10, borderRadius: 8, border: "none", background: "linear-gradient(135deg,#34d399,#22c55e)", color: "white", fontWeight: 600, fontSize: 14, cursor: "pointer" }}>Create</button>
+              <button onClick={() => setShowCreate(false)} style={{ flex: 1, padding: 10, borderRadius: 8, border: "1px solid rgba(99,102,241,.3)", background: "transparent", color: "#a5b4fc", cursor: "pointer", fontSize: 14 }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
