@@ -149,20 +149,29 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 350 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     let out;
     if (isOpening) {
       out = preparedOpening.audio;
       preparedOpening = null;
     } else {
-      out = await tts(text, { locale, style: config.voiceStyle || "friendly" });
+      // Keep RTP warm while Edge/python TTS synthesizes so the carrier does
+      // not hear a dead/broken gap between turns.
+      const ka = typeof engine.keepAlive === "function"
+        ? setInterval(() => { try { engine.keepAlive(); } catch {} }, 1200)
+        : 0;
+      try {
+        out = await tts(text, { locale, style: config.voiceStyle || "friendly" });
+      } finally {
+        if (ka) clearInterval(ka);
+      }
     }
     if (!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) throw new Error("TTS produced no valid PCMU/8000 telephone audio");
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 350 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -187,7 +196,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 350 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, 15000);
     await ended;

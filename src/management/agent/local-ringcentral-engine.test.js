@@ -42,6 +42,12 @@ assert(controller.includes("engine.interrupt()") && controller.includes("opening
 assert(controller.includes("waitForInboundMedia"), "opening must wait for inbound RTP (or a short cap) before speaking");
 assert(engine.includes("waitForInboundMedia"), "engine must expose inbound-media gate");
 assert(engine.includes("watchdog") && engine.includes("outbound watchdog"), "playback must have a watchdog so a hung streamAudio cannot freeze the call");
+assert(engine.includes("settleUntil") && engine.includes("Soft re-entry"), "barge-in must soft-settle before the next streamAudio to avoid clicks");
+assert(engine.includes("keepAlive") && engine.includes("FRAME_BYTES * 5"), "engine must keep RTP warm while TTS/brain think");
+assert(voice.includes("edgeWsToBuffer") && voice.includes("riff-16khz-16bit-mono-pcm"), "primary live TTS must use Edge websocket PCM (no Python/ffmpeg spawn)");
+assert(voice.includes("Promise.all") && voice.includes("edgeWsSynth"), "multi-sentence Edge TTS must synthesize in parallel for lower turn latency");
+assert(voice.includes("padPcmu") && voice.includes("0xff"), "utterances must be silence-padded to prevent hard-start/hard-stop voice breaks");
+assert(controller.includes("engine.keepAlive"), "controller must pump keep-alive silence during non-opening TTS synthesis");
 assert(controller.includes("isJunkUtterance"), "STT junk (beep/tone) must not become a lead turn");
 assert(runner.includes("isJunkLead") || controller.includes("isJunkUtterance"), "call path must ignore junk lead utterances");
 assert(controller.includes("state && state.ended"), "listen phase must reuse speech captured during playback");
