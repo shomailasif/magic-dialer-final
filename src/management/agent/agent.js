@@ -129,13 +129,26 @@ async function runWatchdog(args) {
   const restart = (n) => new Promise((r) => setTimeout(r, n));
 
   while (true) {
+   try {
     log(`watchdog starting agent (pid engine: ${childCmd.cmd})...`);
     const watchdogLog = path.join(path.dirname(WATCHDOG_LOCK), "watchdog-child.log");
     let logFd = null;
     try { logFd = fs.openSync(watchdogLog, "a"); } catch {}
     const child = spawn(childCmd.cmd, childCmd.args, { stdio: ["ignore", logFd == null ? "inherit" : logFd, logFd == null ? "inherit" : logFd] });
     const exited = await new Promise((resolve) => {
-      child.on("exit", (code) => { try { if (logFd != null) fs.closeSync(logFd); } catch {} resolve({ code, ranFor: Date.now() - (child._start || Date.now()) }); });
+      let settled = false;
+      const done = (code) => {
+        if (settled) return;
+        settled = true;
+        try { if (logFd != null) fs.closeSync(logFd); } catch {}
+        resolve({ code, ranFor: Date.now() - (child._start || Date.now()) });
+      };
+      child.on("exit", (code) => done(code));
+      // A spawn issued while the installer is replacing agent.exe fails with an
+      // 'error' event and never emits 'exit'. With no listener the EventEmitter
+      // throws, runWatchdog()'s catch runs process.exit(1), and the machine is
+      // left with no supervisor at all the moment the update finishes.
+      child.on("error", (err) => { log(`watchdog could not start agent: ${safeLog(err)}`); done(-1); });
       child._start = Date.now();
     });
 
@@ -167,11 +180,17 @@ async function runWatchdog(args) {
       log(`agent exited early (code ${exited.code}) — restarting in ${wasCrash ? 4000 : 2000}ms.`);
       await restart(wasCrash ? 4000 : 2000);
     }
+   } catch (e) {
+      // The supervisor must outlive every failure mode of the loop itself:
+      // exiting here would leave the PC with no agent until the next logon.
+      log(`watchdog supervisor error: ${safeLog(e)} — retrying in 5s.`);
+      await restart(5000);
+    }
   }
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.9";
+const VERSION = "1.4.10";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));

@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.4.9
+AppVersion=1.4.10
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -60,6 +60,57 @@ begin
   Sleep(750);
 end;
 
+function AgentRunning(): Boolean;
+var ResultCode: Integer;
+begin
+  { Cheap gate first: in the normal case there is nothing called agent.exe at
+    all and this costs one tasklist. findstr exits 0 only on a real match, so
+    the exit code is the whole test. }
+  Result := Exec(ExpandConstant('{cmd}'),
+    '/d /c tasklist /FI "IMAGENAME eq agent.exe" | findstr /I "agent.exe" >nul',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  if not Result then exit;
+  { Some other product also ships agent.exe. Confirm the process is the copy
+    we just installed, otherwise we would wave a lost update through. }
+  Result := Exec(ExpandConstant('{cmd}'),
+    '/d /c powershell -NoProfile -NonInteractive -Command "if (Get-Process -Name agent -ErrorAction SilentlyContinue | Where-Object { $_.Path -ieq ''' +
+    ExpandConstant('{app}\agent.exe') +
+    ''' }) { exit 0 } else { exit 1 }"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+procedure EnsureAgentSupervised();
+var
+  i: Integer;
+  Attempts: Integer;
+  LaunchResult: Integer;
+begin
+  { StopRunningMagicDialer killed watchdog+agent at ssInstall, and the [Run]
+    entry is nowait: it hands MagicDialer control and moves straight on. Give
+    that launcher time to reach its first spawn before we conclude anything. }
+  for i := 1 to 12 do begin
+    if AgentRunning() then exit;
+    Sleep(1000);
+  end;
+  { Still nothing. If the one spawn [Run] attempted is ever lost, nothing else
+    on this machine brings the agent back until the next logon — the exact
+    failure an unattended upgrade cannot be allowed to ship. Do it ourselves. }
+  for Attempts := 1 to 3 do begin
+    Log('setup: no agent process after install (attempt ' + IntToStr(Attempts) +
+        '); relaunching supervisor');
+    if not Exec(ExpandConstant('{app}\MagicDialer.exe'), '--no-browser',
+                ExpandConstant('{app}'), SW_HIDE, ewNoWait, LaunchResult) then begin
+      Log('setup: relaunch failed to start');
+      break;
+    end;
+    for i := 1 to 5 do begin
+      Sleep(1000);
+      if AgentRunning() then exit;
+    end;
+  end;
+  Log('setup: WARNING — agent still not running after supervised relaunches');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var CacheDir, CacheFile: string;
 begin
@@ -69,10 +120,15 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.9.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.10.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;
+
+  { Last thing we do. If the supervisor is gone, nothing else on this machine
+    will bring the agent back until the next logon — so we prove it ourselves. }
+  if CurStep = ssDone then
+    EnsureAgentSupervised();
 end;
 
 [Run]

@@ -10,9 +10,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Magic Dialer")]
 [assembly: AssemblyCompany("Magic Dialer")]
 [assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
-[assembly: AssemblyVersion("1.4.9.0")]
-[assembly: AssemblyFileVersion("1.4.9.0")]
-[assembly: AssemblyInformationalVersion("1.4.9")]
+[assembly: AssemblyVersion("1.4.10.0")]
+[assembly: AssemblyFileVersion("1.4.10.0")]
+[assembly: AssemblyInformationalVersion("1.4.10")]
 [assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
 
 static class MagicDialerLauncher
@@ -25,12 +25,9 @@ static class MagicDialerLauncher
 
         if (!File.Exists(agent))
         {
-            MessageBox.Show(
+            ReportFailure(args,
                 "The Magic Dialer agent engine (agent.exe) is missing from this folder.\n\n" +
-                "Reinstall Magic Dialer to fix this.",
-                "Magic Dialer",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Error);
+                "Reinstall Magic Dialer to fix this.");
             return 2;
         }
 
@@ -87,18 +84,27 @@ static class MagicDialerLauncher
         }
         catch (Exception ex)
         {
-            try
-            {
-                MessageBox.Show(
-                    "Magic Dialer could not start its agent.\n\n" + ex.Message,
-                    "Magic Dialer",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
-            }
-            catch { }
+            ReportFailure(args, "Magic Dialer could not start its agent.\n\n" + ex.Message);
             return 1;
         }
         return 0;
+    }
+
+    // A headless start (--no-browser) runs unattended, at boot, and from the
+    // installer. Parking a modal dialog there means an hourglass on a machine
+    // nobody is looking at, with no agent and no watchdog behind it.
+    private static void ReportFailure(string[] args, string message)
+    {
+        if (HasArg(args, "--no-browser")) return;
+        try
+        {
+            MessageBox.Show(
+                message,
+                "Magic Dialer",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+        catch { }
     }
 
     private static bool WaitForEngine(int timeoutMs)
