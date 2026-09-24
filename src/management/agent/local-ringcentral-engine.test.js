@@ -42,6 +42,15 @@ assert(controller.includes("engine.interrupt()") && controller.includes("opening
 assert(controller.includes("waitForInboundMedia"), "opening must wait for inbound RTP (or a short cap) before speaking");
 assert(engine.includes("waitForInboundMedia"), "engine must expose inbound-media gate");
 assert(engine.includes("watchdog") && engine.includes("outbound watchdog"), "playback must have a watchdog so a hung streamAudio cannot freeze the call");
+// Windows timers fire every ~15.6ms, so the SDK's setTimeout(20) cadence sent RTP
+// at 62% of real time: the callee's jitter buffer underran and the live opening
+// broke where the source WAV did not. Outbound must be re-driven on wall clock.
+assert(engine.includes("paceStreamer"), "wall-clock outbound pacing helper missing");
+assert(engine.includes("const PACKET_MS = 20") && engine.includes("const PACE_TICK_MS"), "packet pacing constants missing");
+assert(engine.includes("streamer.sendPacket = "), "SDK self-rescheduling packet loop must be neutralised so catch-up is not multiplied into a burst");
+assert((engine.match(/streamer\.stop\(\)/g) || []).length >= 4, "warm-up, interrupt, watchdog and close must all stop the streamer");
+assert(engine.includes("stopWarmPace();") && engine.includes("paceStreamer(streamer, warm.length)"), "connect warm-up must be paced and stopped before the opening");
+assert(engine.includes("stopPace = paceStreamer(streamer, audio.length)"), "utterance playback must be paced to real time");
 assert(engine.includes("keepAlive") && engine.includes("FRAME_BYTES * 5"), "engine must expose RTP keep-alive for synthesis gaps");
 assert(controller.includes("engine.keepAlive"), "controller must keep RTP warm while non-opening TTS synthesizes");
 assert(voice.includes("edgeWsToBuffer") && voice.includes("audio-24khz-48kbitrate-mono-mp3"), "primary TTS must be single-shot Edge websocket mp3 (no chunk seams; riff/raw formats are rejected close 1007)");

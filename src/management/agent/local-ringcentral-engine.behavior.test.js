@@ -8,13 +8,18 @@ const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
   const received=[];
   const engine=createLocalRingCentralEngine({sip:{},number:"15555550100",onAudio:b=>received.push(Buffer.from(b)),bridgeFactory:async()=>({ok:true,callSession:session,cleanup:()=>cleanup++})});
   await engine.connect();
+  // The connect() warm-up stream must be stopped before the first utterance,
+  // otherwise its late frames interleave with the opening and punch silence in.
+  const warmStops=stopped;
+  assert.strictEqual(warmStops,1,"connect must stop its warm-up streamer");
   const first=engine.sendAudio(Buffer.alloc(320,0x7f));
   await new Promise(r=>setTimeout(r,5));
   session.emit("audioPacket",{payload:Buffer.alloc(160,0x22)});
   engine.interrupt();
   const result=await Promise.race([first,new Promise((_,reject)=>setTimeout(()=>reject(new Error("interrupted playback promise hung")),100))]);
-  assert.strictEqual(result,320); assert.strictEqual(stopped,1); assert.strictEqual(received.length,1); assert.strictEqual(received[0].length,160);
+  assert.strictEqual(result,320); assert.strictEqual(stopped,warmStops+1); assert.strictEqual(received.length,1); assert.strictEqual(received[0].length,160);
   const queued=engine.sendAudio(Buffer.alloc(160,0x33)); engine.interrupt(); assert.strictEqual(await queued,0);
+  assert.strictEqual(stopped,warmStops+1,"generation-invalidated queued utterance must not open a stream");
   engine.close(); assert.strictEqual(cleanup,1);
   console.log("PASS local media behavioral interruption");
 })().catch(e=>{console.error(e);process.exit(1);});
