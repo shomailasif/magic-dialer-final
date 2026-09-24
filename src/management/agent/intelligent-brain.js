@@ -93,7 +93,7 @@ async function preflightBrain(config) {
   const r = await complete({
     history: [{ role: "user", content: "Reply with exactly READY." }],
     config,
-    maxTokens: 8,
+    maxTokens: 64,
   });
   if (String(r.text || "").trim().toUpperCase() !== "READY") {
     throw new Error("AI brain preflight failed: " + (r.error || "unexpected response"));

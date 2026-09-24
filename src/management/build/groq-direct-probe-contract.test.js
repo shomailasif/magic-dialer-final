@@ -5,7 +5,7 @@ const checks=[
 ()=>assert.match(src,/requireAdmin\(\)/),()=>assert.match(src,/process\.env\.GROQ_API_KEY/),
 ()=>assert.match(src,/api\.groq\.com\/openai\/v1\/chat\/completions/),()=>assert.match(src,/openai\/gpt-oss-20b/),
 ()=>assert.match(src,/openai\/gpt-oss-120b/),()=>assert.match(src,/temperature:\.72/),
-()=>assert.match(src,/max_tokens:8/),()=>assert.match(src,/stream:false/),
+  ()=>assert.match(src,/max_tokens:64/),()=>assert.match(src,/stream:false/),
 ()=>assert.match(src,/AbortSignal\.timeout\(8000\)/),()=>assert.match(src,/cache:"no-store"/),
 ()=>assert.match(src,/Cache-Control":"no-store"/),()=>assert.match(src,/r\.status/),
 ()=>assert.match(src,/j\?\.error\?\.message/),()=>assert.match(src,/slice\(0,240\)/),

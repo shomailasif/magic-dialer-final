@@ -18,7 +18,7 @@ const route=fs.readFileSync(routePath,"utf8");
   assert.ok(seen.opts.signal);                                                            // 6
   const body=JSON.parse(seen.opts.body);
   assert.equal(body.deviceToken,"fresh-device-token");                                   // 7
-  assert.equal(body.maxTokens,8);                                                         // 8
+  assert.equal(body.maxTokens,64);                                                        // 8 reasoning model needs room for thought tokens
   assert.equal(Array.isArray(body.messages),true);                                        // 9
   assert.equal(body.messages.length,2);                                                   // 10
   assert.equal(body.messages[0].role,"system");                                           // 11

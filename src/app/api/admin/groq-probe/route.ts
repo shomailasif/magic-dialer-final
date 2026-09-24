@@ -4,7 +4,7 @@ export const runtime="nodejs"; export const dynamic="force-dynamic";
 function safeMessage(v:unknown){return String(v||"unknown provider response").replace(/[\r\n]/g," ").replace(/gsk_[A-Za-z0-9_-]+/g,"[REDACTED]").slice(0,240)}
 async function probe(key:string,model:string){
  try{
-  const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model,messages:[{role:"system",content:"You are a connectivity test."},{role:"user",content:"Reply with exactly READY."}],temperature:.72,max_tokens:8,stream:false}),signal:AbortSignal.timeout(8000),cache:"no-store"});
+  const r=await fetch("https://api.groq.com/openai/v1/chat/completions",{method:"POST",headers:{Authorization:`Bearer ${key}`,"Content-Type":"application/json"},body:JSON.stringify({model,messages:[{role:"system",content:"You are a connectivity test."},{role:"user",content:"Reply with exactly READY."}],temperature:.72,max_tokens:64,stream:false}),signal:AbortSignal.timeout(8000),cache:"no-store"});
   const raw=await r.text(); let error="";
   if(!r.ok){try{const j=JSON.parse(raw);error=safeMessage(j?.error?.message||j?.error||"")}catch{error=safeMessage(raw)}}
   return {ok:r.ok,status:r.status,model,error:r.ok?null:error};
