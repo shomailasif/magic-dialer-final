@@ -3,7 +3,6 @@ const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const crypto = require("node:crypto");
 
 /**
  * Hybrid neural voice for the agent — human-sounding, not the robotic Windows
@@ -502,33 +501,10 @@ function wavToMono16(wav) {
   return { samples: out, rate };
 }
 
-/** Convert any PCM WAV to raw PCMU/8000 telephone audio, or null. */
-function wavToMulaw(wav) {
-  const parsed = wavToMono16(wav);
-  if (!parsed) return null;
-  const samples = resampleTo8k(parsed.samples, parsed.rate);
-  if (!samples || !samples.length) return null;
-  const out = Buffer.allocUnsafe(samples.length);
-  for (let i = 0; i < samples.length; i++) out[i] = mulawEncode(samples[i]);
-  return out;
-}
-
-/** Box-average downsample when rate is an integer multiple of 8 kHz (16k→8k). */
+/** Linear resample mono Int16 samples to 8000 Hz (telephony rate). */
 function resampleTo8k(samples, rate) {
   if (rate === 8000) return samples;
   if (!rate || rate <= 0 || !samples.length) return null;
-  if (rate % 8000 === 0 && rate > 8000) {
-    const step = rate / 8000;
-    const outLen = Math.max(1, Math.floor(samples.length / step));
-    const out = new Int16Array(outLen);
-    for (let i = 0; i < outLen; i++) {
-      const start = i * step;
-      let acc = 0;
-      for (let j = 0; j < step; j++) acc += samples[start + j] || 0;
-      out[i] = Math.max(-32768, Math.min(32767, Math.round(acc / step)));
-    }
-    return out;
-  }
   const ratio = rate / 8000;
   const outLen = Math.max(1, Math.floor(samples.length / ratio));
   const out = new Int16Array(outLen);
@@ -543,155 +519,19 @@ function resampleTo8k(samples, rate) {
   return out;
 }
 
-/**
- * Pad PCMU with μ-law silence so utterances never hard-start/hard-stop mid
- * frame. 80ms lead-in + 200ms trail-out removes the click/"voice break" at
- * stream boundaries and gives the SBC a clean inter-turn gap.
- */
-function padPcmu(buffer) {
-  if (!Buffer.isBuffer(buffer) || !buffer.length) return buffer;
-  const lead = Buffer.alloc(4 * 160, 0xff);
-  const trail = Buffer.alloc(10 * 160, 0xff);
-  return Buffer.concat([lead, buffer, trail]);
-}
-
-/* Edge Read-Aloud websocket (same free neural voice as the portal). Returns
- * WAV/PCM bytes with no Python and no ffmpeg — primary live-call path. */
-const EDGE_WS_HOST = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
-const EDGE_WS_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
-const EDGE_WS_GEC_VERSION = "1-143.0.3650.75";
-const EDGE_WS_HEADERS = {
-  Pragma: "no-cache",
-  "Cache-Control": "no-cache",
-  Origin: "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold",
-  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0",
-};
-const EDGE_WS_WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const EDGE_WS_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function edgeWsDate() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  return `${EDGE_WS_WEEKDAYS[d.getUTCDay()]} ${EDGE_WS_MONTHS[d.getUTCMonth()]} ${p(d.getUTCDate())} ${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} GMT+0000 (Coordinated Universal Time)`;
-}
-
-function edgeWsGec(nowS = Date.now() / 1000) {
-  let ticks = nowS + 11644473600;
-  ticks -= ticks % 300;
-  ticks *= 1e9 / 100;
-  return crypto.createHash("sha256").update(`${Math.floor(ticks)}${EDGE_WS_TOKEN}`, "ascii").digest("hex").toUpperCase();
-}
-
-function edgeWsClean(text) {
-  return String(text || "")
-    .split("").map((c) => {
-      const code = c.charCodeAt(0);
-      return (code <= 0x08 || (code >= 0x0B && code <= 0x0C) || (code >= 0x0E && code <= 0x1F)) ? " " : c;
-    }).join("")
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/** One Edge WS synthesis → PCM WAV buffer (riff 16 kHz) or null. */
-function edgeWsSynth(text, voice, ratePct) {
-  return new Promise((resolve) => {
-    let WS;
-    try { WS = require("ws"); } catch { resolve(null); return; }
-    let done = false;
-    const timer = setTimeout(() => finish(null), 5000);
-    function finish(buf) {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      try { if (ws) ws.close(); } catch {}
-      resolve(buf);
-    }
-    let ws;
-    const stamp = edgeWsDate();
-    const rateArg = ratePct === 0 ? "+0%" : `${ratePct > 0 ? "+" : ""}${ratePct}%`;
-    try {
-      ws = new WS(
-        `${EDGE_WS_HOST}?TrustedClientToken=${EDGE_WS_TOKEN}&ConnectionId=${crypto.randomUUID().replace(/-/g, "")}&Sec-MS-GEC=${edgeWsGec()}&Sec-MS-GEC-Version=${EDGE_WS_GEC_VERSION}`,
-        { headers: { ...EDGE_WS_HEADERS, Cookie: `muid=${crypto.randomBytes(16).toString("hex").toUpperCase()};` }, perMessageDeflate: true },
-      );
-    } catch { finish(null); return; }
-    const chunks = [];
-    ws.on("open", () => {
-      ws.send(
-        `X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"riff-16khz-16bit-mono-pcm"}}}}\r\n`,
-        (err) => {
-          if (err) { finish(null); return; }
-          ws.send(
-            `X-RequestId:${crypto.randomUUID().replace(/-/g, "")}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
-            `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
-            `<voice name='${voice}'><prosody pitch='+0Hz' rate='${rateArg}' volume='+0%'>${edgeWsClean(text)}</prosody></voice></speak>`,
-            (e2) => { if (e2) finish(null); },
-          );
-        },
-      );
-    });
-    ws.on("message", (raw, isBinary) => {
-      if (!isBinary) {
-        if (String(raw).includes("turn.end")) finish(Buffer.concat(chunks));
-        return;
-      }
-      const buf = Buffer.from(raw);
-      try {
-        if (buf.length < 2) return;
-        const hl = buf.readUInt16BE(0);
-        const head = buf.toString("ascii", 2, 2 + hl);
-        if (!head.includes("Path:audio")) return;
-        chunks.push(buf.subarray(2 + hl + 2));
-      } catch { finish(null); }
-    });
-    ws.on("error", () => finish(null));
-    ws.on("close", () => { if (!done) finish(chunks.length ? Buffer.concat(chunks) : null); });
-  });
-}
-
-function splitForWsTts(text) {
-  const sentences = String(text || "").split(/(?<=[.!?])\s+/);
-  const chunks = [];
-  let cur = "";
-  for (const s of sentences) {
-    if ((cur + " " + s).trim().length > 180) { if (cur.trim()) chunks.push(cur.trim()); cur = s; }
-    else cur = (cur + " " + s).trim();
-  }
-  if (cur.trim()) chunks.push(cur.trim());
-  return chunks.length ? chunks : [String(text || "Hello").slice(0, 180)];
+/** Convert any PCM WAV to raw PCMU/8000 telephone audio, or null. */
+function wavToMulaw(wav) {
+  const parsed = wavToMono16(wav);
+  if (!parsed) return null;
+  const samples = resampleTo8k(parsed.samples, parsed.rate);
+  if (!samples || !samples.length) return null;
+  const out = Buffer.allocUnsafe(samples.length);
+  for (let i = 0; i < samples.length; i++) out[i] = mulawEncode(samples[i]);
+  return out;
 }
 
 /**
- * Tier 1 for the phone path: Edge websocket → riff PCM → pure-JS PCMU.
- * No Python, no ffmpeg, no process spawn — keeps media/VAD/heartbeats live
- * and cuts the multi-second inter-turn gap that sounds like a broken line.
- */
-async function edgeWsToBuffer(text, { locale, style, rate }) {
-  if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return null;
-  try {
-    const voice = edgeVoiceFor(locale, style);
-    const effRate = styleRate(style, rate);
-    const ratePct = Math.round((effRate - 1) * 100);
-    const chunks = splitForWsTts(text);
-    // Synthesize sentences in parallel — serial Edge round-trips stacked
-    // hundreds of ms onto every turn and sounded like a laggy/broken line.
-    const wavs = await Promise.all(chunks.map((chunk) => edgeWsSynth(chunk, voice, ratePct)));
-    const parts = [];
-    for (const wav of wavs) {
-      if (!wav || wav.length < 100) { if (parts.length) break; return null; }
-      const mulaw = wavToMulaw(wav);
-      if (!mulaw || mulaw.length < 160) { if (parts.length) break; return null; }
-      parts.push(mulaw);
-    }
-    if (!parts.length) return null;
-    const buffer = Buffer.concat(parts);
-    return buffer.length >= 160 ? { buffer, engine: "edge-ws" } : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Tier 1b: edge-tts MP3 -> ffmpeg -> PCMU/8000 (fallback when WS is blocked).
+ * Tier 1 for the phone path: edge-tts MP3 -> ffmpeg -> PCMU/8000.
  * Async spawn so the media WebSocket / VAD / heartbeats keep running while
  * the voice synthesizes.
  */
@@ -716,7 +556,7 @@ async function edgeToBuffer(text, { locale, style, rate }) {
       return null;
     }
     const rawPath = file.replace(/\.mp3$/, ".raw");
-    const conv = await runAsync(ffmpeg, ["-i", file, "-ar", "8000", "-ac", "1", "-af", "aresample=async=1:first_pts=0", "-f", "mulaw", "-y", rawPath], 15000);
+    const conv = await runAsync(ffmpeg, ["-i", file, "-ar", "8000", "-ac", "1", "-f", "mulaw", "-y", rawPath], 15000);
     if (conv.status !== 0 || !fs.existsSync(rawPath) || fs.statSync(rawPath).size < 160) {
       if (fs.existsSync(file)) fs.unlinkSync(file);
       if (fs.existsSync(rawPath)) fs.unlinkSync(rawPath);
@@ -798,15 +638,13 @@ async function sapiToBuffer(text, { rate = 1 } = {}) {
  * Returns { buffer, engine } or null only when every tier fails.
  */
 async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } = {}) {
-  const edgeWs = await edgeWsToBuffer(text, { locale, style, rate });
-  if (edgeWs) return { ...edgeWs, buffer: padPcmu(edgeWs.buffer) };
   const edge = await edgeToBuffer(text, { locale, style, rate });
-  if (edge) return { ...edge, buffer: padPcmu(edge.buffer) };
+  if (edge) return edge;
   const headtts = await headTtsToBuffer(text, { locale, style, rate });
-  if (headtts) return { ...headtts, buffer: padPcmu(headtts.buffer) };
+  if (headtts) return headtts;
   const sapi = await sapiToBuffer(text, { locale, style, rate });
-  if (sapi) return { ...sapi, buffer: padPcmu(sapi.buffer) };
+  if (sapi) return sapi;
   return null;
 }
 
-module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate, wavToMulaw, mulawEncode, padPcmu, edgeWsToBuffer };
+module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate, wavToMulaw, mulawEncode };

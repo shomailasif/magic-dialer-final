@@ -10,7 +10,6 @@ async function main() {
     async connect() {},
     sendAudio() { return new Promise(resolve => { finishPlayback = () => resolve(3200); }); },
     interrupt() { interrupted++; if (finishPlayback) finishPlayback(); },
-    keepAlive() { return Promise.resolve(0); },
     close() { closed++; }
   };
 
