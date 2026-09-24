@@ -88,7 +88,7 @@ async function voiceCall({
     listen = async (turn = {}) => {
       onMode("listening");
       onLog("(listening for speech…)");
-      const vad = createVad({ minSpeechMs: 160, endSilenceMs: 420 });
+      const vad = createVad({ minSpeechMs: 160, endSilenceMs: 350 });
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
       const state = { vad, chunks: [], preRoll: [], started: false, startedAt: 0, done: false, resolve: release };

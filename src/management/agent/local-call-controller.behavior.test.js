@@ -10,8 +10,10 @@ async function main() {
     async connect() {},
     sendAudio() { return new Promise(resolve => { finishPlayback = () => resolve(3200); }); },
     interrupt() { interrupted++; if (finishPlayback) finishPlayback(); },
+    keepAlive() { keepAlives++; return Promise.resolve(0); },
     close() { closed++; }
   };
+  let keepAlives = 0;
 
   let pushes = 0;
   const deps = {
@@ -45,6 +47,8 @@ async function main() {
       await speaking;
       const heard = await listenFn({ locale: "en" });
       assert.equal(heard.text, "please wait");
+      // Non-opening turn exercises RTP keep-alive during TTS synthesis.
+      await speakFn("Thanks - one quick question.");
       return { heard: heard.text };
     }
   };
@@ -59,6 +63,7 @@ async function main() {
   assert.equal(result.heard, "please wait");
   assert.ok(sttBytes >= 160 * 30, "captured turn must retain speech frames through barge-in");
   assert.equal(closed, 1, "engine must close");
+  assert.ok(keepAlives >= 1, "RTP keep-alive must run while non-opening TTS synthesizes");
   assert.equal(sipSeen.authId, "auth-7"); assert.equal(sipSeen.domain, "sip.example.test"); assert.equal(sipSeen.proxy, "proxy.example.test");
   assert.equal(sttOpts.portal, "https://portal.example.test"); assert.equal(sttOpts.deviceToken, "device-secret");
 
@@ -86,7 +91,7 @@ async function main() {
       deps: {
         async preflightBrain() { return true; },
         async opening() { return { text: "Hello" }; },
-        async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
+    async speakToBuffer() { await new Promise(r => setTimeout(r, 50)); return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
         createLocalRingCentralEngine() {
           engineCreated = true;
           return { ...engine, async connect() { throw new Error("403 Forbidden"); } };
