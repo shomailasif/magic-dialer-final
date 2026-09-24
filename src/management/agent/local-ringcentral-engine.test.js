@@ -38,7 +38,12 @@ assert(engine.includes("Buffer.alloc(FRAME_BYTES - rem, SILENCE)"), "partial PCM
 assert(controller.includes("await engine.connect()"), "local fallback call must connect/answer before conversation starts");
 assert(controller.includes("await engine.sendAudio"), "complete TTS utterance must be awaited before listening");
 assert(controller.includes("createVad"), "inbound speech must pass through VAD");
-assert(controller.includes("state.playing && event.speaking") && controller.includes("engine.interrupt()"), "controller must listen while outbound speech is playing and interrupt on barge-in");
+assert(controller.includes("engine.interrupt()") && controller.includes("openingProtected"), "controller must listen while outbound speech is playing and protect the opening from false barge-in");
+assert(controller.includes("waitForInboundMedia"), "opening must wait for inbound RTP (or a short cap) before speaking");
+assert(engine.includes("waitForInboundMedia"), "engine must expose inbound-media gate");
+assert(engine.includes("watchdog") && engine.includes("outbound watchdog"), "playback must have a watchdog so a hung streamAudio cannot freeze the call");
+assert(controller.includes("isJunkUtterance"), "STT junk (beep/tone) must not become a lead turn");
+assert(runner.includes("isJunkLead") || controller.includes("isJunkUtterance"), "call path must ignore junk lead utterances");
 assert(controller.includes("state && state.ended"), "listen phase must reuse speech captured during playback");
 assert(controller.includes("transcribeAuto"), "captured telephone audio must reach multilingual transcription");
 assert(!controller.includes("mediaConnect("), "local fallback must not route live audio through Suga WSS");

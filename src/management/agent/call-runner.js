@@ -4,6 +4,12 @@ const { normalizeLanguage } = require("./language");
 
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
+const JUNK_LEAD_RE = /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|click\.?|noise\.?|static\.?|\[.*\]|\(beep\))$/i;
+
+function isJunkLead(text) {
+  const s = String(text || "").trim();
+  return !s || (s.length <= 40 && JUNK_LEAD_RE.test(s));
+}
 
 // Explicit switch-language requests (e.g. speak spanish) so language changes
 // work even when the speech recognizer is unsure of the detected language.
@@ -110,7 +116,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "detected" });
     }
 
-    if (!heard || String(heard).startsWith("(silence)")) {
+    if (!heard || String(heard).startsWith("(silence)") || isJunkLead(heard)) {
       lead("(silence)");
       consecutiveSilence++;
       // Two quiet windows in a row = dead line. One window only prompts a check-in.

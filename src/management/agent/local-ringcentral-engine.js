@@ -13,6 +13,7 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   let bridge, session, streamer, activePlayback, closed = false, bytesIn = 0, bytesOut = 0;
   let sendChain = Promise.resolve();
   let generation = 0;
+  let firstInboundAt = 0;
   async function connect() {
     bridge = await bridgeFactory({ ...sip, number });
     if (!bridge || !bridge.ok || !bridge.callSession) throw new Error((bridge && bridge.last) || "RingCentral call bridge failed");
@@ -20,10 +21,24 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     session.on("audioPacket", packet => {
       const payload = packet && packet.payload;
       if (!payload || !payload.length || closed) return;
+      if (!firstInboundAt) firstInboundAt = Date.now();
       const b = Buffer.from(payload);
       bytesIn += b.length;
       onAudio(b);
     });
+    const onGone = () => {
+      if (closed) return;
+      const p = activePlayback;
+      if (p && typeof p.finish === "function") p.finish();
+      streamer = null;
+      sendChain = Promise.resolve();
+      onLog("[local-media-v2] call session ended remotely");
+    };
+    try {
+      session.on("disposed", onGone);
+      session.on("ended", onGone);
+      session.on("bye", onGone);
+    } catch { /* older SDK sessions */ }
     // Punch the RTP path with mu-law silence before the first spoken frame so
     // the SBC learns our media source and the callee does not hear dead air.
     try {
@@ -42,12 +57,36 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     onLog("[local-media-v2] RingCentral answered; local media active");
     return status();
   }
+  /** Wait until the callee path has produced RTP (or a short cap), so we do
+   * not start the opening before media is actually flowing both ways. */
+  async function waitForInboundMedia(maxWaitMs = 1200) {
+    const start = Date.now();
+    while (!closed && !firstInboundAt && Date.now() - start < maxWaitMs) {
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    return { gotInbound: !!firstInboundAt, waitedMs: Date.now() - start };
+  }
   function play(audio) {
     return new Promise((resolve, reject) => {
       if (!session || closed) return reject(new Error("local media is not connected"));
       let settled = false;
-      const finish = () => { if (!settled) { settled = true; if (activePlayback && activePlayback.finish === finish) activePlayback = null; resolve(audio.length); } };
-      const fail = err => { if (!settled) { settled = true; if (activePlayback && activePlayback.finish === finish) activePlayback = null; reject(err instanceof Error ? err : new Error(String(err || "audio stream failed"))); } };
+      const audioMs = Math.ceil(audio.length / 8);
+      const watchdogMs = Math.min(Math.max(audioMs + 2500, 4000), 45000);
+      let watchdog = 0;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        if (activePlayback && activePlayback.finish === finish) activePlayback = null;
+        resolve(audio.length);
+      };
+      const fail = err => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(watchdog);
+        if (activePlayback && activePlayback.finish === finish) activePlayback = null;
+        reject(err instanceof Error ? err : new Error(String(err || "audio stream failed")));
+      };
       try {
         streamer = session.streamAudio(audio);
         activePlayback = { finish };
@@ -55,6 +94,14 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
         if (!streamer || typeof streamer.once !== "function") return finish();
         streamer.once("finished", finish);
         streamer.once("error", fail);
+        // streamAudio() can silently never finish after interrupt/remote hangup;
+        // a hung promise left the live call stuck with no further turns.
+        watchdog = setTimeout(() => {
+          if (settled) return;
+          try { if (streamer && typeof streamer.stop === "function") streamer.stop(); } catch {}
+          onLog(`[local-media-v2] outbound watchdog after ${watchdogMs}ms; releasing turn`);
+          finish();
+        }, watchdogMs);
       } catch (err) { fail(err); }
     });
   }
@@ -82,6 +129,6 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     try { if (bridge && bridge.cleanup) bridge.cleanup(); } catch {}
     session = null;
   }
-  return { connect, sendAudio, interrupt, status, close };
+  return { connect, waitForInboundMedia, sendAudio, interrupt, status, close };
 }
 module.exports = { createLocalRingCentralEngine, normalizePcmu, FRAME_BYTES };

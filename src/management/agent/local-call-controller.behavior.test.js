@@ -17,14 +17,22 @@ async function main() {
   const deps = {
     async preflightBrain() { return true; },
     async opening() { return { text: "Hello" }; },
-    createLocalRingCentralEngine(opts) { sipSeen = opts.sip; onAudio = opts.onAudio; return engine; },
+    createLocalRingCentralEngine(opts) {
+      sipSeen = opts.sip;
+      onAudio = opts.onAudio;
+      return {
+        ...engine,
+        async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; },
+      };
+    },
     createVad() {
       return { push() {
         pushes++;
-        // Stay silent during the 1s barge-in guard, then sustained speech.
-        if (pushes <= 50) return { voiced: false, speaking: false, ended: false };
-        if (pushes <= 80) return { voiced: true, speaking: pushes >= 58, ended: false };
-        return { voiced: false, speaking: true, ended: pushes >= 84 };
+        // 1s opening guard (50 frames), then loud sustained speech so the
+        // protected-opening barge-in path (level>=500, 700ms) can fire.
+        if (pushes <= 50) return { voiced: false, speaking: false, ended: false, level: 0 };
+        if (pushes <= 85) return { voiced: true, speaking: pushes >= 58, ended: false, level: 600 };
+        return { voiced: false, speaking: true, ended: pushes >= 89, level: 0 };
       }};
     },
     async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
@@ -32,8 +40,8 @@ async function main() {
     async voiceCall({ speakFn, listenFn }) {
       const speaking = speakFn("Hello");
       await new Promise(r => setImmediate(r));
-      // 1s of silence (guard) + 600ms sustained speech + end = 85 frames
-      for (let i = 0; i < 85; i++) onAudio(Buffer.alloc(160, 0x7f));
+      // 1s guard + 700ms protected-opening barge-in + end frames
+      for (let i = 0; i < 89; i++) onAudio(Buffer.alloc(160, 0x7f));
       await speaking;
       const heard = await listenFn({ locale: "en" });
       assert.equal(heard.text, "please wait");
@@ -46,7 +54,7 @@ async function main() {
     number: "2", deps
   });
   assert.equal(interrupted, 1, "sustained prospect speech must interrupt playback exactly once");
-  assert.equal(pushes, 85, "inbound audio must continue through playback and listening without dropping frames");
+  assert.equal(pushes, 89, "inbound audio must continue through playback and listening without dropping frames");
   assert.ok(sttBytes >= 160, "prospect audio must reach STT");
   assert.equal(result.heard, "please wait");
   assert.ok(sttBytes >= 160 * 30, "captured turn must retain speech frames through barge-in");
