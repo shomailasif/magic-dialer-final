@@ -44,10 +44,23 @@ assert(engine.includes("waitForInboundMedia"), "engine must expose inbound-media
 assert(engine.includes("watchdog") && engine.includes("outbound watchdog"), "playback must have a watchdog so a hung streamAudio cannot freeze the call");
 assert(engine.includes("keepAlive") && engine.includes("FRAME_BYTES * 5"), "engine must expose RTP keep-alive for synthesis gaps");
 assert(controller.includes("engine.keepAlive"), "controller must keep RTP warm while non-opening TTS synthesizes");
-assert(voice.includes("edgeWsToBuffer") && voice.includes("riff-16khz-16bit-mono-pcm"), "primary TTS must be single-shot Edge websocket (no chunk seams)");
+assert(voice.includes("edgeWsToBuffer") && voice.includes("audio-24khz-48kbitrate-mono-mp3"), "primary TTS must be single-shot Edge websocket mp3 (no chunk seams; riff/raw formats are rejected close 1007)");
+assert(!voice.includes("riff-16khz-16bit-mono-pcm"), "unsupported Edge format would be rejected with close 1007 and silently fall back to slow Python TTS");
+assert(voice.includes("decodeMp3") && voice.includes("mulawEncode"), "Edge WS mp3 must decode in-process (mpg123) to PCMU without Python/ffmpeg");
 assert(!voice.includes("padPcmu"), "must not inject artificial lead/trail silence that adds turn pauses");
 assert(controller.includes("isJunkUtterance"), "STT junk (beep/tone) must not become a lead turn");
+assert(controller.includes("phone ringing") && controller.includes("voicemail"), "ringback/voicemail STT junk must be filtered");
 assert(runner.includes("isJunkLead") || controller.includes("isJunkUtterance"), "call path must ignore junk lead utterances");
+// Steady carrier tones (ringback/voicemail) hold a flat level; human speech
+// swings. The opening was being chopped by the callee's ringtone in live logs.
+assert(controller.includes("steadyToneBarge") && controller.includes("trackBargeLevel"), "steady-tone barge-in guard missing");
+assert(controller.includes("steady carrier tone"), "steady-tone suppression must be logged for live verification");
+assert(engine.includes("gone = true"), "engine must flag remote session end");
+assert(engine.includes("onSessionGone"), "engine must notify controller on remote BYE");
+assert(controller.includes("onSessionGone: endSession"), "controller must stop the turn loop on remote BYE");
+assert(runner.includes("heardResult.ended"), "call runner must break the turn loop on remote hangup");
+assert(engine.includes("if (gone) return Promise.resolve(0)"), "post-BYE sends must not reject and crash the child");
+assert(engine.includes("!closed && !gone"), "keep-alive/status must not touch a dead session");
 assert(controller.includes("state && state.ended"), "listen phase must reuse speech captured during playback");
 assert(controller.includes("transcribeAuto"), "captured telephone audio must reach multilingual transcription");
 assert(!controller.includes("mediaConnect("), "local fallback must not route live audio through Suga WSS");

@@ -580,7 +580,9 @@ function edgeWsClean(text) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** One Edge WS synthesis of the FULL utterance → PCM WAV or null. */
+/** One Edge WS synthesis of the FULL utterance → MP3 or null.
+ * Edge rejects riff-16khz/other raw formats with close 1007; only the
+ * audio-* compressed formats (mp3) are accepted. */
 function edgeWsSynth(text, voice, ratePct) {
   return new Promise((resolve) => {
     let WS;
@@ -606,7 +608,7 @@ function edgeWsSynth(text, voice, ratePct) {
     const chunks = [];
     ws.on("open", () => {
       ws.send(
-        `X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"riff-16khz-16bit-mono-pcm"}}}}\r\n`,
+        `X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`,
         (err) => {
           if (err) { finish(null); return; }
           ws.send(
@@ -638,10 +640,12 @@ function edgeWsSynth(text, voice, ratePct) {
 }
 
 /**
- * Tier 1: Edge websocket → riff PCM → pure-JS PCMU as ONE buffer.
+ * Tier 1: Edge websocket → MP3 → WASM mpg123 decode → pure-JS PCMU as ONE
+ * buffer. Edge only accepts compressed audio-* formats (raw/riff close 1007),
+ * so the mp3 stream is decoded in-process (no Python, no ffmpeg) in ~1.8s.
  * Single continuous synthesis avoids the sentence-chunk seams that broke
- * the voice in 1.4.6, and skips the multi-second Python/ffmpeg gap that
- * sounded like a dead line between turns.
+ * the voice in 1.4.6, and skips the multi-second Python gap that sounded
+ * like a dead line between turns.
  */
 async function edgeWsToBuffer(text, { locale, style, rate }) {
   if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return null;
@@ -651,10 +655,14 @@ async function edgeWsToBuffer(text, { locale, style, rate }) {
     const voice = edgeVoiceFor(locale, style);
     const effRate = styleRate(style, rate);
     const ratePct = Math.round((effRate - 1) * 100);
-    const wav = await edgeWsSynth(body, voice, ratePct);
-    if (!wav || wav.length < 100) return null;
-    const mulaw = wavToMulaw(wav);
-    return mulaw && mulaw.length >= 160 ? { buffer: mulaw, engine: "edge-ws" } : null;
+    const mp3 = await edgeWsSynth(body, voice, ratePct);
+    if (!mp3 || mp3.length < 100) return null;
+    const { decodeMp3 } = require("../portal/audio");
+    const pcm = await decodeMp3(mp3);
+    if (!pcm || !pcm.length) return null;
+    const mulaw = Buffer.allocUnsafe(pcm.length);
+    for (let i = 0; i < pcm.length; i++) mulaw[i] = mulawEncode(pcm[i]);
+    return mulaw.length >= 160 ? { buffer: mulaw, engine: "edge-ws" } : null;
   } catch {
     return null;
   }

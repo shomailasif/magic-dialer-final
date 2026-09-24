@@ -3,17 +3,28 @@
 const assert = require("node:assert/strict");
 const { runLocalCall } = require("./local-call-controller");
 
-async function main() {
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const frame = () => Buffer.alloc(160, 0x7f);
+const collector = logs => line => logs.push(String(line));
+
+/** Opening: 1s protected guard, then sustained *speech-like* levels must
+ *  barge in exactly once; then a normal turn with RTP keep-alive. */
+async function scenarioSpeechBargeIn(logs) {
   let onAudio, interrupted = 0, sttBytes = 0, closed = 0, sipSeen = null, sttOpts = null;
-  let finishPlayback;
+  let finishPlayback = null, sends = 0, keepAlives = 0, ttsCalls = 0;
   const engine = {
     async connect() {},
-    sendAudio() { return new Promise(resolve => { finishPlayback = () => resolve(3200); }); },
+    sendAudio() {
+      sends++;
+      // First utterance (opening) plays until the barge-in interrupt lands;
+      // later utterances complete on their own like real playback.
+      if (sends === 1) return new Promise(resolve => { finishPlayback = () => resolve(3200); });
+      return new Promise(resolve => setTimeout(() => resolve(3200), 20));
+    },
     interrupt() { interrupted++; if (finishPlayback) finishPlayback(); },
     keepAlive() { keepAlives++; return Promise.resolve(0); },
-    close() { closed++; }
+    close() { closed++; },
   };
-  let keepAlives = 0;
 
   let pushes = 0;
   const deps = {
@@ -22,40 +33,47 @@ async function main() {
     createLocalRingCentralEngine(opts) {
       sipSeen = opts.sip;
       onAudio = opts.onAudio;
-      return {
-        ...engine,
-        async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; },
-      };
+      assert.equal(typeof opts.onSessionGone, "function", "engine must receive onSessionGone for remote BYE");
+      return { ...engine, async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; } };
     },
     createVad() {
       return { push() {
         pushes++;
-        // 1s opening guard (50 frames), then loud sustained speech so the
-        // protected-opening barge-in path (level>=500, 700ms) can fire.
+        // Frames 1-50 cover the protected-opening 1s guard. 51-85 are loud
+        // speech whose level swings (never flat like a ringback carrier) so
+        // the steady-tone barge-in guard must still let real speech through.
         if (pushes <= 50) return { voiced: false, speaking: false, ended: false, level: 0 };
-        if (pushes <= 85) return { voiced: true, speaking: pushes >= 58, ended: false, level: 600 };
+        if (pushes <= 85) return { voiced: true, speaking: pushes >= 58, ended: false, level: 500 + ((pushes % 5) * 120) };
         return { voiced: false, speaking: true, ended: pushes >= 89, level: 0 };
       }};
     },
-    async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
+    async speakToBuffer() {
+      ttsCalls++;
+      // Non-opening synthesis is slow in reality; the keep-alive interval
+      // (1200ms) must fire inside that window.
+      if (ttsCalls >= 2) await sleep(1250);
+      return { buffer: Buffer.alloc(3200, 0xff), engine: "test" };
+    },
     async transcribeAuto(audio, opts) { sttBytes = audio.length; sttOpts = opts; return { text: "please wait", language: "en" }; },
     async voiceCall({ speakFn, listenFn }) {
       const speaking = speakFn("Hello");
-      await new Promise(r => setImmediate(r));
-      // 1s guard + 700ms protected-opening barge-in + end frames
-      for (let i = 0; i < 89; i++) onAudio(Buffer.alloc(160, 0x7f));
+      await sleep(0);
+      // 1s guard must elapse in real time before speech is allowed to barge.
+      for (let i = 0; i < 50; i++) onAudio(frame());
+      await sleep(1030);
+      for (let i = 51; i <= 85; i++) onAudio(frame());
+      for (let i = 86; i <= 89; i++) onAudio(frame());
       await speaking;
       const heard = await listenFn({ locale: "en" });
       assert.equal(heard.text, "please wait");
-      // Non-opening turn exercises RTP keep-alive during TTS synthesis.
       await speakFn("Thanks - one quick question.");
       return { heard: heard.text };
-    }
+    },
   };
 
   const result = await runLocalCall({
     config: { voip: { ready: true, username: "u", sipPassword: "p", authId: "auth-7", domain: "sip.example.test", server: "proxy.example.test", port: 5096, number: "1" }, product: "test", portalUrl: "https://portal.example.test", deviceToken: "device-secret" },
-    number: "2", deps
+    number: "2", deps, onLog: collector(logs)
   });
   assert.equal(interrupted, 1, "sustained prospect speech must interrupt playback exactly once");
   assert.equal(pushes, 89, "inbound audio must continue through playback and listening without dropping frames");
@@ -66,6 +84,101 @@ async function main() {
   assert.ok(keepAlives >= 1, "RTP keep-alive must run while non-opening TTS synthesizes");
   assert.equal(sipSeen.authId, "auth-7"); assert.equal(sipSeen.domain, "sip.example.test"); assert.equal(sipSeen.proxy, "proxy.example.test");
   assert.equal(sttOpts.portal, "https://portal.example.test"); assert.equal(sttOpts.deviceToken, "device-secret");
+  assert.ok(!logs.some(l => l.includes("steady carrier tone")), "real speech must not be mistaken for a carrier tone");
+}
+
+/** A flat ringback/voicemail carrier must NOT barge in, and the STT junk it
+ *  produces ("phone ringing.") must not become a lead turn. */
+async function scenarioSteadyTone(logs) {
+  let onAudio, interrupted = 0, heard = "unset";
+  const engine = {
+    async connect() {},
+    sendAudio() { return new Promise(resolve => setTimeout(() => resolve(3200), 1400)); },
+    interrupt() { interrupted++; },
+    keepAlive() { return Promise.resolve(0); },
+    close() {},
+  };
+  let pushes = 0;
+  const deps = {
+    async preflightBrain() { return true; },
+    async opening() { return { text: "Hello" }; },
+    createLocalRingCentralEngine(opts) { onAudio = opts.onAudio; return { ...engine, async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; } }; },
+    createVad() {
+      return { push() {
+        pushes++;
+        if (pushes <= 50) return { voiced: false, speaking: false, ended: false, level: 0 };
+        if (pushes <= 110) return { voiced: true, speaking: true, ended: pushes >= 110, level: 600 };
+        return { voiced: false, speaking: false, ended: true, level: 0 };
+      }};
+    },
+    async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
+    async transcribeAuto() { return { text: "phone ringing.", language: "en" }; },
+    async voiceCall({ speakFn, listenFn }) {
+      const speaking = speakFn("Hello");
+      await sleep(0);
+      for (let i = 0; i < 50; i++) onAudio(frame());
+      await sleep(1030);
+      for (let i = 51; i <= 110; i++) onAudio(frame());
+      await speaking;
+      heard = await listenFn({ locale: "en" });
+      return { heard };
+    },
+  };
+  await runLocalCall({
+    config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
+    number: "2", deps, onLog: collector(logs)
+  });
+  assert.equal(interrupted, 0, "flat carrier tone must not barge into the opening");
+  assert.equal(heard, null, "ringback STT junk must not become a lead turn");
+  assert.ok(logs.some(l => l.includes("steady carrier tone")), "steady-tone guard must be logged once");
+  assert.ok(logs.some(l => l.includes("STT junk ignored")), "junk STT must be logged as ignored");
+}
+
+/** Remote BYE: listen reports ended, and no further outbound audio is sent. */
+async function scenarioRemoteHangup(logs) {
+  let onGone = null, sends = 0, ttsCalls = 0;
+  const engine = {
+    async connect() {},
+    sendAudio() { sends++; return new Promise(resolve => setTimeout(() => resolve(3200), 100)); },
+    interrupt() {},
+    keepAlive() { return Promise.resolve(0); },
+    close() {},
+  };
+  const deps = {
+    async preflightBrain() { return true; },
+    async opening() { return { text: "Hello" }; },
+    createLocalRingCentralEngine(opts) {
+      onGone = opts.onSessionGone;
+      return { ...engine, async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; } };
+    },
+    createVad() { return { push: () => ({ voiced: false, speaking: false, ended: false, level: 0 }) }; },
+    async speakToBuffer() { ttsCalls++; return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
+    async transcribeAuto() { throw new Error("must not run STT after remote hangup"); },
+    async voiceCall({ speakFn, listenFn }) {
+      const speaking = speakFn("Hello");
+      await sleep(0);
+      await speaking;
+      onGone();  // remote BYE
+      const heard = await listenFn({ locale: "en" });
+      const sendsBefore = sends, ttsBefore = ttsCalls;
+      await speakFn("this must never reach the network");
+      return { heard, sends: sends - sendsBefore, tts: ttsCalls - ttsBefore };
+    },
+  };
+  const out = await runLocalCall({
+    config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
+    number: "2", deps, onLog: collector(logs)
+  });
+  assert.equal(out.heard.ended, true, "listen must report ended after remote hangup");
+  assert.equal(out.heard.text, null, "no transcript after remote hangup");
+  assert.equal(out.sends, 0, "no outbound audio after remote hangup");
+  assert.equal(out.tts, 0, "no TTS synthesis after remote hangup");
+  assert.ok(logs.some(l => l.includes("remote hangup")), "remote hangup must be logged");
+}
+
+async function main() {
+  const logs = [];
+  await scenarioSpeechBargeIn(logs);
 
   let engineAttempted = false;
   await assert.rejects(
@@ -76,7 +189,7 @@ async function main() {
         async preflightBrain() { return true; },
         async opening() { return { text: "Hello" }; },
         async speakToBuffer() { return null; },
-        createLocalRingCentralEngine() { engineAttempted = true; return engine; },
+        createLocalRingCentralEngine() { engineAttempted = true; return {}; },
       },
     }),
     /TTS preflight failed/
@@ -91,16 +204,22 @@ async function main() {
       deps: {
         async preflightBrain() { return true; },
         async opening() { return { text: "Hello" }; },
-    async speakToBuffer() { await new Promise(r => setTimeout(r, 50)); return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
+        async speakToBuffer() { await sleep(50); return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
         createLocalRingCentralEngine() {
           engineCreated = true;
-          return { ...engine, async connect() { throw new Error("403 Forbidden"); } };
+          return { async connect() { throw new Error("403 Forbidden"); } };
         },
       },
     }),
     /403 Forbidden/
   );
   assert.equal(engineCreated, true, "live engine must own SIP registration attempt");
-  console.log("PASS: controller single SIP engine + barge-in -> capture -> STT");
+
+  const toneLogs = [];
+  await scenarioSteadyTone(toneLogs);
+  const byeLogs = [];
+  await scenarioRemoteHangup(byeLogs);
+
+  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup");
 }
 main().catch(e => { console.error(e); process.exit(1); });

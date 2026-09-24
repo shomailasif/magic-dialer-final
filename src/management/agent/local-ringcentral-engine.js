@@ -9,8 +9,8 @@ function normalizePcmu(input) {
   const rem = b.length % FRAME_BYTES;
   return rem ? Buffer.concat([b, Buffer.alloc(FRAME_BYTES - rem, SILENCE)]) : b;
 }
-function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {}, bridgeFactory = sipCallBridge }) {
-  let bridge, session, streamer, activePlayback, closed = false, bytesIn = 0, bytesOut = 0;
+function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {}, onSessionGone = null, bridgeFactory = sipCallBridge }) {
+  let bridge, session, streamer, activePlayback, closed = false, gone = false, bytesIn = 0, bytesOut = 0;
   let sendChain = Promise.resolve();
   let generation = 0;
   let firstInboundAt = 0;
@@ -28,12 +28,16 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
       onAudio(b);
     });
     const onGone = () => {
-      if (closed) return;
+      if (closed || gone) return;
+      gone = true;
       const p = activePlayback;
       if (p && typeof p.finish === "function") p.finish();
       streamer = null;
       sendChain = Promise.resolve();
       onLog("[local-media-v2] call session ended remotely");
+      // The conversation loop must stop on BYE: without this the controller
+      // kept speaking/listening for ~35s after hangup (watchdogs fired).
+      if (typeof onSessionGone === "function") { try { onSessionGone(); } catch {} }
     };
     try {
       session.on("disposed", onGone);
@@ -62,14 +66,14 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
    * not start the opening before media is actually flowing both ways. */
   async function waitForInboundMedia(maxWaitMs = 1200) {
     const start = Date.now();
-    while (!closed && !firstInboundAt && Date.now() - start < maxWaitMs) {
+    while (!closed && !gone && !firstInboundAt && Date.now() - start < maxWaitMs) {
       await new Promise((r) => setTimeout(r, 40));
     }
     return { gotInbound: !!firstInboundAt, waitedMs: Date.now() - start };
   }
   function play(audio) {
     return new Promise((resolve, reject) => {
-      if (!session || closed) return reject(new Error("local media is not connected"));
+      if (!session || closed || gone) return reject(new Error(gone ? "call session ended remotely" : "local media is not connected"));
       let settled = false;
       const audioMs = Math.ceil(audio.length / 8);
       const watchdogMs = Math.min(Math.max(audioMs + 2500, 4000), 45000);
@@ -92,7 +96,7 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
         reject(err instanceof Error ? err : new Error(String(err || "audio stream failed")));
       };
       const startStream = () => {
-        if (settled || closed || !session) { if (!settled) fail(new Error("local media is not connected")); return; }
+        if (settled || closed || gone || !session) { if (!settled) fail(new Error(gone ? "call session ended remotely" : "local media is not connected")); return; }
         try {
           streamer = session.streamAudio(audio);
           activePlayback = { finish };
@@ -124,6 +128,9 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   function sendAudio(input) {
     const audio = normalizePcmu(input);
     if (!audio.length) return Promise.resolve(0);
+    // Remote BYE: resolve quietly so callers/keep-alive never see a
+    // late rejection after the leg is already gone.
+    if (gone) return Promise.resolve(0);
     const mine = generation;
     sendChain = sendChain.catch(() => 0).then(() => mine === generation ? play(audio) : 0);
     return sendChain;
@@ -141,10 +148,11 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   }
   /** Idle μ-law silence so RTP stays warm while TTS/STT/brain think. */
   function keepAlive() {
-    if (closed || !session || activePlayback) return Promise.resolve(0);
-    return sendAudio(Buffer.alloc(FRAME_BYTES * 5, SILENCE));
+    if (closed || gone || !session || activePlayback) return Promise.resolve(0);
+    // never reject: an unhandled keep-alive promise would crash the child
+    return sendAudio(Buffer.alloc(FRAME_BYTES * 5, SILENCE)).catch(() => 0);
   }
-  function status() { return { connected: !!session && !closed, bytesIn, bytesOut, frameBytes: FRAME_BYTES, codec: "PCMU/8000" }; }
+  function status() { return { connected: !!session && !closed && !gone, bytesIn, bytesOut, frameBytes: FRAME_BYTES, codec: "PCMU/8000" }; }
   function close() {
     if (closed) return;
     closed = true;

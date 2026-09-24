@@ -4,7 +4,7 @@ const { normalizeLanguage } = require("./language");
 
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
-const JUNK_LEAD_RE = /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|click\.?|noise\.?|static\.?|\[.*\]|\(beep\))$/i;
+const JUNK_LEAD_RE = /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ringing\.?|phone ringing\.?|the phone is ringing\.?|voicemail\.?|voice mail\.?|please leave a message.*|leave a message.*|at the tone.*|click\.?|noise\.?|static\.?|\[.*\]|\(beep\))$/i;
 
 function isJunkLead(text) {
   const s = String(text || "").trim();
@@ -103,6 +103,9 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     // Always let the recognizer auto-detect the spoken language; the configured
     // locale is only the starting language, never a permanent pin.
     const heardResult = await listen({ locale: activeLocale, autoLanguage: true });
+    // Remote hangup: the controller reports ended so we stop turning instead
+    // of burning check-in TTS/LLM calls against a dead leg.
+    if (heardResult && typeof heardResult === "object" && heardResult.ended) break;
     const heard = typeof heardResult === "string" ? heardResult : (heardResult && heardResult.text);
     const detected = typeof heardResult === "object" && heardResult && heardResult.language
       ? normalizeLanguage(heardResult.language, activeLocale || "en")
