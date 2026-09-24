@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.4.1
+AppVersion=1.4.2
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -51,6 +51,9 @@ begin
   { Upgrades must stop the watchdog/agent before replacing agent.exe. }
   Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM MagicDialer.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM agent.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { A source-tree or orphaned node agent can hold 18787/48787 and block the
+    replacement engine. Kill any node process running agent.js. }
+  Exec(ExpandConstant('{cmd}'), '/d /c powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \"Name=''node.exe''\" | Where-Object { $_.CommandLine -match ''agent\.js'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   { Forced termination cannot run watchdog cleanup. Once agent.exe is gone,
     its PID-only lock is stale and must not block the replacement watchdog. }
   DeleteFile(ExpandConstant('{localappdata}\Magic Dialer\watchdog.lock'));
@@ -66,7 +69,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.1.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.2.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;

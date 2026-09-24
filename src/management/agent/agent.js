@@ -171,7 +171,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.1";
+const VERSION = "1.4.2";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
@@ -519,10 +519,14 @@ async function runAgent(opts = {}) {
 
   // A pending release becomes known-good only after BOTH fixed local services
   // have successfully bound: 18787 call-control health and 48771 customer UI/enrollment.
-  if (isPacked()) {
-    const finalized = await validatePendingUpdate(VERSION, { ready: !!engineHealthServer && !!uiServer }).catch((e) => ({ error: e.message }));
-    if (finalized && finalized.rollback) { log("Pending update failed complete local readiness; known-good rollback launched."); setTimeout(() => process.exit(0), 1500); return; }
-    if (finalized && finalized.error) throw new Error("Pending update finalization failed: " + finalized.error);
+  // Auto-update must also run for non-packed (source-tree) agents so a stale
+  // node process cannot pin an old VERSION forever without ever checking releases.
+  {
+    if (isPacked()) {
+      const finalized = await validatePendingUpdate(VERSION, { ready: !!engineHealthServer && !!uiServer }).catch((e) => ({ error: e.message }));
+      if (finalized && finalized.rollback) { log("Pending update failed complete local readiness; known-good rollback launched."); setTimeout(() => process.exit(0), 1500); return; }
+      if (finalized && finalized.error) throw new Error("Pending update finalization failed: " + finalized.error);
+    }
     scheduleAutoUpdate();
   }
 
