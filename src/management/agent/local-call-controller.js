@@ -75,8 +75,15 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
         const frame = b.subarray(i, i + 160);
         if (frame.length < 160) continue;
         const event = state.vad.push(frame, 20);
+        // Ignore the first second of playback: RTP/NAT warm-up and line noise
+        // must not chop the opening before the callee can hear it.
+        if (state.playing && state.playbackStartedAt && Date.now() - state.playbackStartedAt < 1000) {
+          state.speechDuringPlaybackMs = 0;
+          continue;
+        }
         state.speechDuringPlaybackMs = state.playing && event.voiced ? (state.speechDuringPlaybackMs || 0) + 20 : 0;
-        if (state.playing && event.speaking && state.speechDuringPlaybackMs >= 220 && !state.interrupted) {
+        // Require ~400ms of sustained voiced energy to barge-in, not a 220ms blip.
+        if (state.playing && event.speaking && state.speechDuringPlaybackMs >= 400 && !state.interrupted) {
           state.interrupted = true;
           engine.interrupt();
           onLog("[local-media-v2] barge-in detected; outbound playback stopped");
@@ -98,15 +105,17 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
   const speakFn = async (text, turn = {}) => {
     const locale = normalizeLanguage(turn.locale || activeLocale);
     activeLocale = locale;
+    const line = String(text || "").trim();
+    if (line) onLog("AGENT: " + line);
     // Create capture state BEFORE awaiting TTS so inbound audio is never
     // dropped while state is null during synthesis.
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, ended };
     }
     let out;
-    if (preparedOpening && String(text || "").trim() === preparedOpening.text) {
+    if (preparedOpening && line === preparedOpening.text) {
       out = preparedOpening.audio;
       preparedOpening = null;
     } else {
@@ -116,11 +125,12 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), ended };
     } else {
       state.playing = true;
       state.interrupted = false;
       state.speechDuringPlaybackMs = 0;
+      state.playbackStartedAt = Date.now();
     }
     const n = await engine.sendAudio(out.buffer);
     if (state) state.playing = false;
@@ -135,14 +145,17 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 420 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, ended };
     }
     const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, 15000);
     await ended;
     clearTimeout(timer);
     const captured = state;
     state = null;
-    if (!captured.started || !captured.chunks.length) return null;
+    if (!captured.started || !captured.chunks.length) {
+      onLog("[local-media-v2] listen: no speech in window");
+      return null;
+    }
     const audio = Buffer.concat(captured.chunks);
     onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
     const stt = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale), portal: config.portalUrl, deviceToken: config.deviceToken });
@@ -150,7 +163,20 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     // guards); here we only report what the recognizer saw.
     if (stt.language) onLog(`[local-media-v2] STT detected language ${stt.language}`);
     if (stt.error) onLog(`[local-media-v2] STT ${stt.error}`);
-    return stt.text ? { text: stt.text, language: stt.language || activeLocale } : null;
+    if (stt.text) {
+      onLog("LEAD:  " + stt.text);
+      return { text: stt.text, language: stt.language || activeLocale };
+    }
+    // Speech reached the VAD but the recognizer returned nothing — do not let
+    // call-runner treat this as a quiet line and hang up on the prospect.
+    onLog("[local-media-v2] STT returned empty for captured speech; retrying once");
+    const retry = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale), portal: config.portalUrl, deviceToken: config.deviceToken });
+    if (retry.text) {
+      onLog("LEAD:  " + retry.text);
+      return { text: retry.text, language: retry.language || activeLocale };
+    }
+    onLog("[local-media-v2] STT still empty after retry");
+    return null;
   };
 
   try {

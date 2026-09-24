@@ -63,6 +63,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   const timeline = [];
   let heardSomething = false;
   let llmFailures = 0;
+  let consecutiveSilence = 0;
   let stopRequested = false;
   let humanRequested = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
@@ -111,14 +112,15 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
     if (!heard || String(heard).startsWith("(silence)")) {
       lead("(silence)");
-      if (turn === 0) {
-        const hello = await nextTurn({ transcript: [...transcript, { role: "lead", text: "The line is quiet. Briefly check whether the prospect can hear you." }], ...config() }).catch(() => ({ text: null }));
-        if (!hello.text) llmFailures++;
-        await agent(hello.text || (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?"));
-        continue;
-      }
-      break;
+      consecutiveSilence++;
+      // Two quiet windows in a row = dead line. One window only prompts a check-in.
+      if (consecutiveSilence >= 2) break;
+      const hello = await nextTurn({ transcript: [...transcript, { role: "lead", text: "The line is quiet. Briefly check whether the prospect can hear you." }], ...config() }).catch(() => ({ text: null }));
+      if (!hello.text) llmFailures++;
+      await agent(hello.text || (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?"));
+      continue;
     }
+    consecutiveSilence = 0;
 
     lead(heard, detected);
     stopRequested = STOP_RE.test(heard);

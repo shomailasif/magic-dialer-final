@@ -24,6 +24,21 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
       bytesIn += b.length;
       onAudio(b);
     });
+    // Punch the RTP path with mu-law silence before the first spoken frame so
+    // the SBC learns our media source and the callee does not hear dead air.
+    try {
+      const warm = Buffer.alloc(160 * 25, SILENCE);
+      streamer = session.streamAudio(warm);
+      if (streamer && typeof streamer.once === "function") {
+        await new Promise((resolve) => {
+          const done = () => resolve();
+          streamer.once("finished", done);
+          streamer.once("error", done);
+          setTimeout(done, 400);
+        });
+      }
+    } catch { /* warm-up is best-effort */ }
+    streamer = null;
     onLog("[local-media-v2] RingCentral answered; local media active");
     return status();
   }

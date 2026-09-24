@@ -86,7 +86,14 @@ async function nextTurn({ transcript, ...config }) {
 }
 
 async function opening(config) {
-  return complete({ history: [{ role: "user", content: "Start the call now with a brief natural introduction in the active conversation language. Do not begin with a questionnaire or force a question; give the prospect room to respond naturally." }], config });
+  return complete({
+    history: [{
+      role: "user",
+      content: "Start this OUTBOUND sales call now with one brief natural spoken sentence in the active conversation language. Introduce yourself and the company, then stop — do not ask how you can help, do not say this is a sales call, do not use inbound/receptionist wording, do not list questions, and do not mention AI or automation.",
+    }],
+    config,
+    maxTokens: 80,
+  });
 }
 
 async function preflightBrain(config) {
