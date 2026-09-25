@@ -7,7 +7,18 @@ function clean(text) {
   return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^([\"'`]+)|([\"'`]+)$/g, "").trim();
 }
 
-function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn }) {
+/** The learned playbook, ranked from this customer's own past call outcomes.
+ *  Without this the brain learns nothing: scores were recorded and reported but
+ *  never reached the prompt, so a call felt identical to the first one. */
+function playbookBlock(playbook) {
+  if (!Array.isArray(playbook) || !playbook.length) return "";
+  return [
+    `LEARNED PLAYBOOK (ranked from this customer's own past call outcomes, best first): ${playbook.join(", ").replace(/_/g, " ")}.`,
+    "Apply the top one naturally. It must still sound like a person having a conversation, never like a technique being executed.",
+  ].join("\n");
+}
+
+function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn, playbook }) {
   const fields = (Array.isArray(leadFields) ? leadFields : []).map((f) => typeof f === "string" ? f : (f && (f.label || f.key)) || "").filter(Boolean);
   const activeLocale = String(locale || "en").trim() || "en";
   // The model invents a first name when it is not told one, so the same agent
@@ -20,6 +31,7 @@ Customer-defined qualification goals: ${fields.join(", ") || "none supplied"}.
 Persona: ${persona || "energetic, friendly, polite female sales representative"}.
 ACTIVE CONVERSATION LANGUAGE: ${activeLocale} (${languageName(activeLocale)}).
 ${callbackNumber ? `Callback number: ${callbackNumber}.` : ""}${callbackIn ? ` Callback timing/instructions: ${callbackIn}.` : ""}
+${playbookBlock(playbook)}
 
 Rules:
 - This is an OUTBOUND call you placed. Never behave like an inbound receptionist.

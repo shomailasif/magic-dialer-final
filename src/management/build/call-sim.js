@@ -141,6 +141,22 @@ function grade(name, script, out, spoken) {
   // 8. must not end by itself mid-flow without the prospect being done
   if (spoken.length > 20) problems.push(`ran ${spoken.length} turns, hit the runaway bound`);
 
+  // 9. must never sound like an inbound receptionist on a call we placed
+  const inbound = agentLines.filter(l => /how can i (help|assist) you|what can i (help|assist) you with|thanks for reaching out|how may i direct your call/i.test(l));
+  if (inbound.length) problems.push(`${inbound.length} inbound-receptionist turn(s): ${JSON.stringify(inbound[0].slice(0, 60))}`);
+
+  // 0. The brain must actually be reachable. A canned fallback turn means the
+  //    gateway failed, and a 3-turn canned call must never read as a pass.
+  const canned = agentLines.filter(l => /rather than guess|I will note it for (the team )?follow-up|Hello\? I just want to make sure/i.test(l));
+  if (canned.length) {
+    problems.push(`AI brain unavailable: ${canned.length} canned fallback turn(s) - this run proves nothing`);
+    return { name, problems, agentLines, locale: out.locale };
+  }
+  if (agentLines.length < 5) {
+    problems.push(`call ended after only ${agentLines.length} turns - the conversation never got going`);
+    return { name, problems, agentLines, locale: out.locale };
+  }
+
   return { name, problems, agentLines, locale: out.locale };
 }
 
@@ -177,6 +193,10 @@ async function main() {
     } else {
       console.log(`  PASS (${r.agentLines.length} turns, locale=${r.locale})`);
     }
+    // The AI gateway rate-limits bursts. A live call makes one brain call every
+    // few seconds; the simulator would otherwise fire them back to back and get
+    // throttled, which looks exactly like a broken brain.
+    if (n !== names[names.length - 1]) await new Promise((r2) => setTimeout(r2, Number(process.env.SIM_GAP_MS) || 45000));
   }
   console.log(failed ? `\n${failed} scenario(s) FAILED` : "\nall simulated calls PASS");
   process.exit(failed ? 1 : 0);

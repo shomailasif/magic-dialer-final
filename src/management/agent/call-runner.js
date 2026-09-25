@@ -85,34 +85,47 @@ const ASK_TOPICS = [
   ["truckSize", /\bhow many trucks\b|\bfleet size\b|\bwhat size\b|\bsize of your (?:fleet|trucks)\b/i],
 ];
 
+/** Sentences that must never come out of a live outbound call:
+ *  - a repeat introduction, after the opening has already been said
+ *  - inbound-receptionist phrasing, which is the single most reliable way an
+ *    outbound caller sounds broken. The 21:05Z call and a later simulated call
+ *    both produced "How can I help you today?" / "What can I help you with
+ *    today?" on a call we placed. The prompt forbids it and the model does it
+ *    anyway, so it is enforced here.
+ *  - a bare re-ask for something already asked. */
+function isForbiddenTurnSentence(sentence, isOpening) {
+  if (/\bthis is (?:atlas|autumn|alex|[a-z]+) (?:from|with|calling)\b|\bcalling (?:you )?from\b|\bcalling about\b/i.test(sentence)) return true;
+  if (/\bhow can i (?:help|assist) you\b|\bwhat can i (?:help|assist) you with\b|\bhow may i (?:help|direct) you\b|\bthanks for reaching out\b|\bhow can i direct your call\b/i.test(sentence)) return true;
+  const topic = ASK_TOPICS.find(([, re]) => re.test(sentence));
+  return !!(topic && askedForCache.has(topic[0]));
+}
+
+// The set of topics already asked, rebound per call by bindAskedFor().
+let askedForCache = new Set();
+function bindAskedFor(set) { askedForCache = set; }
+
 /** Sentences that only re-ask for something already asked, plus a repeat intro.
  *  Everything that is actually spoken gets recorded, so the same request can
  *  never slip through twice - recording only the multi-sentence path let a
  *  one-line "May I get your name?" be asked again on the next turn. */
 function stripRepeatedAsks(text, askedFor) {
+  bindAskedFor(askedFor);
   const record = (t) => { for (const [k, re] of ASK_TOPICS) if (re.test(t)) askedFor.add(k); };
   const sentences = splitSentences(String(text || ""));
   if (sentences.length < 2) {
-    // A single-sentence turn that is nothing but a repeat ask carries no
-    // information; drop it so the prospect hears a pause, not a question again.
-    const only = ASK_TOPICS.find(([, re]) => re.test(text));
-    if (only && askedFor.has(only[0])) return "";
+    // A single-sentence turn that is entirely forbidden carries no information;
+    // drop it so the prospect hears a pause, not the same question again.
+    if (isForbiddenTurnSentence(sentences[0] || text)) return "";
     record(text);
     return text;
   }
   const kept = [];
   for (const s of sentences) {
-    const topic = ASK_TOPICS.find(([, re]) => re.test(s));
-    if (topic && askedFor.has(topic[0])) continue;
-    if (isRepeatIntroduction(s)) continue;
+    if (isForbiddenTurnSentence(s)) continue;
     kept.push(s);
     record(s);
   }
   return kept.join(" ").trim();
-}
-
-function isRepeatIntroduction(sentence) {
-  return /\bthis is (?:atlas|autumn|alex|[a-z]+) from\b|\bcalling (?:you )?from\b|\bcalling about\b/i.test(sentence);
 }
 
 async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null, callId = null }) {
@@ -120,6 +133,20 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   const timeline = [];
   let heardSomething = false;
   let llmFailures = 0;
+  let consecutiveLlmFailures = 0;
+  /* The brain is a network call. A gateway hiccup used to end a live call after
+   * two bad turns, which is indistinguishable from the product breaking in the
+   * prospect's ear. Retry once, and only end the call after sustained failure. */
+  const askBrain = async (payload) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let r = null;
+      try { r = await nextTurn(payload); } catch { r = null; }
+      if (r && r.text) { consecutiveLlmFailures = 0; return r; }
+      consecutiveLlmFailures++;
+      llmFailures++;
+    }
+    return { text: null };
+  };
   let consecutiveSilence = 0;
   let consecutiveJunk = 0;
   // The listen window dropped from 15s to 5s so the agent answers a prospect the
@@ -135,8 +162,17 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let closingSpoken = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
-  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId };
-  const config = () => ({ ...baseConfig, locale: activeLocale });
+  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId, learning: learning || {} };
+  // The learned playbook has to reach the live brain, or learning only records
+  // scores and never changes a call. The highest-scoring strategies, and the
+  // objection-handling ones this vertical actually hits, are named in the prompt.
+  const config = () => {
+    const l = learning || {};
+    const scores = l.strategyScores || {};
+    const ranked = Object.keys(scores).sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
+    const playbook = ranked.filter((k) => (scores[k] || 0) > -1).slice(0, 4);
+    return { ...baseConfig, locale: activeLocale, playbook };
+  };
   const askedFor = new Set();
   let openingSpoken = false;
   const agent = async (text, opts = {}) => {
@@ -262,8 +298,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       } else {
         ask = { role: "lead", text: "The prospect went quiet. Continue the conversation naturally from what was just discussed, or ask one simple question to invite a reply. Do not comment on the line, the connection, or whether they can hear you." };
       }
-      const hello = await nextTurn({ transcript: [...transcript, ask], ...config() }).catch(() => ({ text: null }));
-      if (!hello.text) llmFailures++;
+      const hello = await askBrain({ transcript: [...transcript, ask], ...config() });
       await agent(hello.text || (neverHeard && firstQuiet
         ? (activeLocale === "en" ? "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick call?" : "Hello.")
         : (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?")));
@@ -279,7 +314,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     humanRequested = HUMAN_RE.test(heard) && /\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
 
     if (stopRequested) {
-      const stopLine = await nextTurn({ transcript: [...transcript, { role: "lead", text: "Acknowledge the do-not-call request immediately and end the call." }], ...config() }).catch(() => ({ text: null }));
+      const stopLine = await askBrain({ transcript: [...transcript, { role: "lead", text: "Acknowledge the do-not-call request immediately and end the call." }], ...config() });
       closingSpoken = true;
       await agent(stopLine.text || fallbackReply(heard, config()));
       break;
@@ -290,13 +325,12 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       break;
     }
 
-    const ai = await nextTurn({ transcript, ...config() }).catch(() => ({ text: null }));
-    if (!ai.text) llmFailures++;
+    const ai = await askBrain({ transcript, ...config() });
     await agent(ai.text || fallbackReply(heard, config()));
 
     // Repeated AI failure must not silently turn the universal agent back into
     // a rigid industry script. End safely and leave a human-follow-up result.
-    if (llmFailures >= 2) break;
+    if (consecutiveLlmFailures >= 4) break;
   }
 
   // A sales call must not just stop. When the loop ends for a reason that is not

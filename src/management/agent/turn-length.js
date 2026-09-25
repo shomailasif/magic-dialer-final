@@ -43,7 +43,9 @@ function splitSentences(s) {
  * dangling clause behind when a sentence boundary was available. */
 function capTurnLength(line) {
   const s = String(line || "").trim();
-  if (s.length <= MAX_TURN_CHARS) return s;
+  // Even a short turn must end as a finished sentence: the model sometimes
+  // emits "We help trucking companies streamline" with no terminator at all.
+  if (s.length <= MAX_TURN_CHARS) return terminate(s);
 
   const parts = splitSentences(s);
   // A trailing fragment with no terminator ("...where we can") is a truncated
@@ -60,26 +62,35 @@ function capTurnLength(line) {
     acc = next;
     if (acc.length >= MAX_TURN_CHARS) break;
   }
-  if (acc.length >= budget * 0.55) return acc.trim();
+  if (acc.length >= budget * 0.55) return terminate(acc.trim());
   // What fits is mostly filler ("Sure!", "Thanks, Raj."). Prefer the most
   // substantial whole sentence that still fits the budget.
   const fits = parts.filter(p => p.length <= budget && p.length >= 30);
-  if (fits.length) return fits.reduce((a, b) => (b.length > a.length ? b : a)).trim();
+  if (fits.length) return terminate(fits.reduce((a, b) => (b.length > a.length ? b : a)).trim());
   // Every sentence is either tiny or over budget. Take the most substantial
-  // one whole; if even that is over budget, clip it at a word boundary rather
-  // than letting a ten-second turn through.
+  // one whole; if even that is over budget, clip it at a clause or word
+  // boundary rather than letting a ten-second turn through.
   const best = parts.reduce((a, b) => (b.length > a.length ? b : a), parts[0] || "").trim();
-  if (best.length <= budget) return best;
+  if (best.length <= budget) return terminate(best);
   const clipped = best.slice(0, budget);
   // Prefer a clause boundary, so the turn still ends on a complete thought
   // ("I hear you - those empty legs can really hurt.") instead of mid-phrase.
   const clause = Math.max(clipped.lastIndexOf(", "), clipped.lastIndexOf("; "), clipped.lastIndexOf(" - "), clipped.lastIndexOf(" — "));
-  if (clause > budget * 0.5) return clipped.slice(0, clause).replace(/[\s,;:–—-]+$/, "").trim();
+  if (clause > budget * 0.5) return terminate(clipped.slice(0, clause).replace(/[\s,;:–—-]+$/, "").trim());
   const lastSpace = clipped.lastIndexOf(" ");
-  return (lastSpace > budget * 0.4 ? clipped.slice(0, lastSpace) : clipped)
+  return terminate((lastSpace > budget * 0.4 ? clipped.slice(0, lastSpace) : clipped)
     .replace(/[\s,;:–—-]+$/, "")
     .replace(/\b(and|but|or|so|because|which|that|to|for|with|if|when)$/i, "")
-    .trim();
+    .trim());
+}
+
+/** A clipped turn must still be a finished sentence. Stripping the trailing
+ *  comma off a clause boundary leaves "Thanks for letting me know" with no
+ *  terminator, which is exactly what a dropped line sounds like. */
+function terminate(s) {
+  const t = String(s || "").trim();
+  if (!t) return t;
+  return /[.!?]["')\u2019]?$/.test(t) ? t : t + ".";
 }
 
 module.exports = { MAX_TURN_CHARS, MAX_TURN_OVERSHOOT, splitSentences, capTurnLength };
