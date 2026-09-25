@@ -137,8 +137,10 @@ async function scenarioSteadyTone(logs) {
 
 /** Drive one listen window against a stub recognizer and hand back exactly what
  *  call-runner would receive. Shared by the greeting / empty-STT cases. */
-async function driveListenWindow({ stt, tts }) {
+async function driveListenWindow({ stt, tts, opening }) {
   let onAudio, heard = "unset", sends = 0, threw = null, ttsTurns = 0;
+  const spoken = [];
+  const ttsTexts = [];
   const logs = [];
   const engine = {
     async connect() {},
@@ -160,15 +162,16 @@ async function driveListenWindow({ stt, tts }) {
         return { voiced: false, speaking: false, ended: true, level: 0 };
       }};
     },
-    async speakToBuffer() {
+    async speakToBuffer(text) {
       // Preflight + opening must succeed; only the later turn is unspeakable.
       ttsTurns++;
+      ttsTexts.push(String(text));
       return tts === undefined || ttsTurns <= 1 ? { buffer: Buffer.alloc(3200, 0xff), engine: "test" } : tts;
     },
     async transcribeAuto() { return stt; },
     async voiceCall({ speakFn, listenFn }) {
       try {
-        const speaking = speakFn("Hello");
+        const speaking = speakFn(opening || "Hello");
         await sleep(0);
         for (let i = 0; i < 50; i++) onAudio(frame());
         await sleep(1030);
@@ -188,7 +191,7 @@ async function driveListenWindow({ stt, tts }) {
     config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
     number: "2", deps, onLog: collector(logs),
   });
-  return { heard, logs, sends, threw };
+  return { heard, logs, sends, threw, spoken, ttsTexts };
 }
 
 /** Remote BYE: listen reports ended, and no further outbound audio is sent. */
@@ -212,7 +215,7 @@ async function scenarioRemoteHangup(logs) {
     async speakToBuffer() { ttsCalls++; return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
     async transcribeAuto() { throw new Error("must not run STT after remote hangup"); },
     async voiceCall({ speakFn, listenFn }) {
-      const speaking = speakFn("Hello");
+        const speaking = speakFn("Hello");
       await sleep(0);
       await speaking;
       onGone();  // remote BYE
@@ -301,6 +304,18 @@ async function main() {
   );
   assert.equal(dead.sends, 1, "only the opening may reach the wire; the unspeakable turn must send nothing");
 
-  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT, unspeakable turn");
+  // A turn longer than a person would listen to must be trimmed to whole words
+  // and whole sentences. The 20:44Z call ran a 229-character / 14.1-second
+  // monologue over a prospect who was trying to reply.
+  const capped = await driveListenWindow({
+    stt: { text: "Yes, I can hear you.", language: "en" },
+    opening: "Sure! Zaz Logistics offers dispatch services that help you find loads, handle paperwork, and keep your routes efficient-all coordinated by our team so you can focus on the road. Would you like me to send a brief overview by text?",
+  });
+  const long = capped.ttsTexts.find(l => /Zaz Logistics offers dispatch/.test(l));
+  assert.ok(long, `the over-long turn must still be synthesized, got ${JSON.stringify(capped.ttsTexts)}`);
+  assert.ok(long.length <= 115, `an over-long turn must be capped, got ${long.length} chars`);
+  assert.ok(!/\bveh$|\btyp$|\bfor$/.test(long.trim()), `the cap must not cut mid-word, got: ${JSON.stringify(long)}`);
+
+  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT, unspeakable turn, turn cap");
 }
 main().catch(e => { console.error(e); process.exit(1); });

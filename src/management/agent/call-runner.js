@@ -101,6 +101,9 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let stopRequested = false;
   let humanRequested = false;
   let pendingDetected = null;
+  // Set when the agent has already said goodbye, so we never talk over a
+  // farewell with a second one.
+  let closingSpoken = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
   const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId };
@@ -128,7 +131,12 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
   // Turn count is only a runaway-call safety bound. Turn endings themselves are
   // controlled by the speech/VAD listener in call.js, never by a conversation timer.
-  for (let turn = 0; turn < 12; turn++) {
+  // 12 was low enough to end a real conversation: the 20:44Z call hit exactly
+  // 12 turns and was cut off mid-sentence ("...a load from Gujarawala to Kar")
+  // immediately after the prospect asked for a load. Real endings - a do-not-call
+  // request, a human request, two quiet windows, three junk windows, repeated
+  // brain failure - all still fire long before this backstop.
+  for (let turn = 0; turn < 20; turn++) {
     // Always let the recognizer auto-detect the spoken language; the configured
     // locale is only the starting language, never a permanent pin.
     const heardResult = await listen({ locale: activeLocale, autoLanguage: true });
@@ -221,10 +229,12 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
     if (stopRequested) {
       const stopLine = await nextTurn({ transcript: [...transcript, { role: "lead", text: "Acknowledge the do-not-call request immediately and end the call." }], ...config() }).catch(() => ({ text: null }));
+      closingSpoken = true;
       await agent(stopLine.text || fallbackReply(heard, config()));
       break;
     }
     if (humanRequested) {
+      closingSpoken = true;
       await agent(fallbackReply(heard, config()));
       break;
     }
@@ -236,6 +246,23 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     // Repeated AI failure must not silently turn the universal agent back into
     // a rigid industry script. End safely and leave a human-follow-up result.
     if (llmFailures >= 2) break;
+  }
+
+  // A sales call must not just stop. When the loop ends for a reason that is not
+  // already a spoken farewell (turn backstop, dead line, junk line) the prospect
+  // currently never hears a closing - the 20:44Z call was cut off mid-sentence
+  // on "...a load from Gujarawala to Kar" with no sign-off at all. Close it out
+  // properly: thank them, say what happens next, then hang up.
+  if (!closingSpoken) {
+    closingSpoken = true;
+    const closing = await nextTurn({
+      transcript: [...transcript, { role: "lead", text: "The conversation is over. Speak a short, warm professional closing: thank them for their time, state the single next step, and say goodbye. One or two sentences only. Do not ask any new questions." }],
+      ...config(),
+    }).catch(() => ({ text: null }));
+    if (closing.text) await agent(closing.text);
+    else await agent(activeLocale === "en"
+      ? "Thanks for your time today. We'll follow up shortly. Have a great day."
+      : "Thank you for your time. Goodbye.");
   }
 
   const verdict = scoreLead({ transcript, fields: leadFields, locale: activeLocale });

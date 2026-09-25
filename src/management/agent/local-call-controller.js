@@ -33,6 +33,31 @@ function isJunkUtterance(text) {
 }
 
 /** Push one voiced level into the barge-in tone-detection window. */
+// How long the prospect must keep talking before the agent stops. 700ms meant the// agent kept talking over them for most of a second after they started to
+// respond, which is what a prospect experiences as being interrupted.
+// Longest agent turn we will actually put on the wire. Measured on the 20:44Z
+// call, edge-ws PCMU runs 428-623 bytes per character, so ~110 characters is
+// about 6 seconds of speech. The 14.1s monologue that prompted this was 229
+// characters. Anything past the cap is trimmed to whole sentences, so the
+// prospect always gets a gap to speak in.
+const MAX_TURN_CHARS = 110;
+
+/** Trim an over-long agent turn to whole sentences, so it stays natural speech. */
+function capTurnLength(line) {
+  const s = String(line || "").trim();
+  if (s.length <= MAX_TURN_CHARS) return s;
+  const cut = s.slice(0, MAX_TURN_CHARS);
+  const lastStop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf(".\""));
+  if (lastStop > MAX_TURN_CHARS * 0.4) return cut.slice(0, lastStop + 1).trim();
+  // No sentence end in range: back off to a word boundary rather than slicing
+  // mid-word. "...a different type of veh" is exactly the clipped delivery the
+  // 20:44Z call was criticised for.
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > MAX_TURN_CHARS * 0.4 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:–—-]+$/, "").trim();
+}
+
+const BARGE_YIELD_MS = 300;
+
 function trackBargeLevel(state, level) {
   const w = state.bargeLevels || (state.bargeLevels = []);
   w.push(level);
@@ -121,9 +146,16 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     portal: config.portalUrl,
     deviceToken: config.deviceToken,
   };
-  await brainCheck(brainConfig);
+  // These three ran back to back and the caller heard nothing for 3.3s before
+  // the phone even started ringing (measured 20:44:41.736 call control ->
+  // 20:44:44.998 pre-render done). The brain check and the opening line are
+  // independent, so overlap them; the pre-render is the long pole either way.
+  const [brainOk, first] = await Promise.all([
+    brainCheck(brainConfig).then(() => true),
+    openingFn(brainConfig),
+  ]);
+  if (!brainOk) throw new Error("AI brain preflight failed");
   onLog("[local-media-v2] AI brain preflight passed");
-  const first = await openingFn(brainConfig);
   if (!first || !String(first.text || "").trim()) throw new Error("AI opening preflight failed; refusing to place call");
   const openingText = String(first.text).trim();
   const openingAudio = await tts(openingText, { locale: activeLocale, style: config.voiceStyle || "friendly" });
@@ -158,7 +190,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
               else state.speechDuringPlaybackMs += 20;
             }
             else if (!event.voiced) { state.speechDuringPlaybackMs = 0; state.bargeLevels = []; }
-            if (state.speechDuringPlaybackMs >= 700 && !state.interrupted) {
+            if (state.speechDuringPlaybackMs >= BARGE_YIELD_MS && !state.interrupted) {
               state.interrupted = true;
               engine.interrupt();
               onLog("[local-media-v2] barge-in detected; outbound playback stopped");
@@ -177,7 +209,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
             if (steadyToneBarge(state)) noteSteadyTone(state, onLog);
             // Same bar as the opening: soft/room noise must not cut our own
             // sentence off. Speech captured before the interrupt is still kept.
-            if (state.speechDuringPlaybackMs >= 700 && !state.interrupted) {
+            if (state.speechDuringPlaybackMs >= BARGE_YIELD_MS && !state.interrupted) {
               state.interrupted = true;
               engine.interrupt();
               onLog(`[local-media-v2] barge-in detected; outbound playback stopped (sustained ${state.speechDuringPlaybackMs}ms at level ${event.level})`);
@@ -218,13 +250,19 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     const locale = normalizeLanguage(turn.locale || activeLocale);
     activeLocale = locale;
     const line = String(text || "").trim();
-    if (line) onLog("AGENT: " + line);
     const isOpening = !!(preparedOpening && line === preparedOpening.text);
+    // A prospect answers a person, not a broadcast. The 20:44Z call ran agent
+    // turns of 6.6s, 7.4s, 8.7s and 14.1s - a 14-second monologue over someone
+    // who was trying to reply is exactly "it interrupts". Cap the turn and say
+    // only the leading sentences when it is over the line, so the prospect
+    // always gets a gap to speak in.
+    const spoken = isOpening ? line : capTurnLength(line);
+    if (line) onLog("AGENT: " + line);
     // Create capture state BEFORE awaiting TTS so inbound audio is never
     // dropped while state is null during synthesis.
     if (!state) {
       let release;
-      const ended = new Promise((resolve) => { release = resolve; });
+      const ended = new Promise((r) => { release = r; });
       state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     let out;
@@ -238,7 +276,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
         ? setInterval(() => { try { engine.keepAlive(); } catch {} }, 1200)
         : 0;
       try {
-        out = await tts(text, { locale, style: config.voiceStyle || "friendly" });
+        out = await tts(spoken, { locale, style: config.voiceStyle || "friendly" });
       } finally {
         if (ka) clearInterval(ka);
       }

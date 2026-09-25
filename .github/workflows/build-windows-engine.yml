@@ -210,7 +210,7 @@ jobs:
                 if ($health.ok -eq $true -and $health.service -eq "magic-dialer-engine" -and $customerHealth.ok -eq $true) { $healthy = $true; break }
               } catch {}
             }
-            if ($healthy -and $health.version -ne "1.4.20") { throw "Installed engine health reported wrong version: $($health.version)" }
+            if ($healthy -and $health.version -ne "1.4.21") { throw "Installed engine health reported wrong version: $($health.version)" }
           if (-not $healthy) {
               if ($proc.HasExited) { Write-Host "LAUNCHER EXIT CODE: $($proc.ExitCode)" }
               Write-Host "AGENT PROCESSES:"
@@ -234,7 +234,7 @@ jobs:
           Write-Host "SMOKE MARKER E: starting silent uninstaller"
           Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
           Write-Host "SMOKE MARKER F: silent uninstaller returned"
-          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\\updates\\known-good-1.4.20.exe"
+          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\\updates\\known-good-1.4.21.exe"
           if (-not (Test-Path $seed)) { throw "Missing seeded known-good rollback installer" }
           if ((Get-Item $seed).Length -lt 1000000) { throw "Seeded rollback installer is unexpectedly small" }
           $seedHash = (Get-FileHash -Algorithm SHA256 $seed).Hash
@@ -438,7 +438,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
-          $version = "1.4.20"
+          $version = "1.4.21"
           $tag = "engine-v$version"
           $assetUrl = "https://github.com/shomailasif/magic-dialer-final/releases/download/$tag/magic-dialer-engine-windows.exe"
           $sha = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()

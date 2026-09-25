@@ -149,6 +149,42 @@ async function main() {
       REMOTE_BYE,
     ]);
     assert.equal(bogusUrdu.out.locale, "en", "Latin text must never be routed to a non-Latin locale");
+
+    // A genuinely engaged prospect must not be cut off by the runaway backstop.
+    // The 20:44Z call hit exactly 12 turns and was truncated mid-sentence right
+    // after the prospect asked for a load. Sixteen real turns must survive.
+    const engaged = [];
+    for (let i = 0; i < 16; i++) engaged.push({ text: `Tell me more about option ${i + 1}.`, language: "en" });
+    const longTalk = await run(engaged);
+    const heardAll = engaged.every(t => longTalk.out.transcript.some(x => x.role === "lead" && x.text === t.text));
+    assert.ok(heardAll, `every one of the 16 real turns must reach the transcript, heard ${longTalk.out.transcript.filter(x => x.role === "lead").length}`);
+    assert.ok(
+      longTalk.listenCalls.length >= engaged.length,
+      "a real conversation must not be cut off by the runaway turn bound"
+    );
+
+    // Every ending must be a spoken closing. The 20:44Z call was cut off
+    // mid-sentence with no sign-off, which is not how a sales call ends.
+    const ends = {
+      "dead line": [null, null, { text: "too late", language: "en" }],
+      "beep-only line": [JUNK, JUNK, JUNK, JUNK],
+      "turn backstop": engaged,
+    };
+    for (const [label, script] of Object.entries(ends)) {
+      brainPrompts.length = 0;
+      const finished = await run(script);
+      const last = finished.spoken[finished.spoken.length - 1] || "";
+      const askedClose = brainPrompts.some(p => /professional closing/i.test(JSON.stringify(p)));
+      assert.ok(
+        askedClose || /thank|goodbye|have a great day|bye/i.test(last),
+        `a call ending by "${label}" must speak a closing, got: ${JSON.stringify(finished.spoken.slice(-2))}`
+      );
+    }
+
+    // A farewell that was already spoken must not be doubled up.
+    const stopCall = await run([{ text: "Please stop calling me.", language: "en" }, { text: "too late", language: "en" }]);
+    const goodbyes = stopCall.spoken.filter(l => /thank you for your time|have a great day/i.test(l));
+    assert.ok(goodbyes.length <= 1, `a do-not-call ending must not be followed by a second closing, got ${goodbyes.length}`);
   } finally {
     restore();
   }

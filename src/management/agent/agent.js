@@ -263,7 +263,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.20";
+const VERSION = "1.4.21";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
