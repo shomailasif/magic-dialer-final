@@ -154,6 +154,9 @@ function takeWatchdogLock() {
 }
 
 async function runWatchdog(args) {
+  // Before anything else: a supervisor that never reaches the lock write is
+  // indistinguishable from one that never started. Record the boot first.
+  supervisorNote(`watchdog boot pid=${process.pid} ver=${VERSION} packed=${isPacked()}`);
   if (!takeWatchdogLock()) return;
   const childArgs = args.filter((a) => a !== "--watchdog");
   childArgs.push("--no-browser");
@@ -228,7 +231,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.11";
+const VERSION = "1.4.12";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
@@ -715,6 +718,10 @@ module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPor
 
 // Allow running directly: agent.exe [token] [portalUrl] [--setup] [--open] [--watchdog] [--no-browser] [--call]
 if (require.main === module) {
+  // First durable line of the process, whatever mode it ends up in.
+  try {
+    supervisorNote(`process boot pid=${process.pid} ver=${VERSION} packed=${isPacked()} argv=${JSON.stringify(process.argv.slice(1))}`);
+  } catch {}
   const argv = process.argv.slice(2);
   const setup = argv.includes("--setup");
   const open = argv.includes("--open") || argv.includes("--launch") || argv.includes("--show");
@@ -723,9 +730,14 @@ if (require.main === module) {
   const noBrowser = argv.includes("--no-browser") || argv.includes("--silent") || argv.includes("--startup");
    const rest = argv.filter((a) => !a.startsWith("--"));
   if (argv.includes("--watchdog")) {
-    runWatchdog(argv.filter((a) => a !== "--watchdog")).catch((e) => { console.error(safeLog(e)); process.exit(1); });
+    runWatchdog(argv.filter((a) => a !== "--watchdog")).catch((e) => {
+      supervisorNote(`watchdog supervisor crashed: ${safeLog(e)}`);
+      console.error(safeLog(e));
+      process.exit(1);
+    });
   } else {
     runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce, open, noBrowser }).catch((e) => {
+      supervisorNote(`agent crashed: ${safeLog(e)}`);
       console.error(safeLog(e));
       process.exit(1);
     });

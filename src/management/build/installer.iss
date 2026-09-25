@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.4.11
+AppVersion=1.4.12
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -84,11 +84,23 @@ var
   i: Integer;
   Attempts: Integer;
   LaunchResult: Integer;
+  StopResult: Integer;
 begin
+  if FileExists(ExpandConstant('{app}\agent.exe')) then
+    Log('setup: post-install supervision check; agent.exe present')
+  else
+    Log('setup: WARNING agent.exe is missing from {app}');
+
+  { StopRunningMagicDialer ran at ssInstall, but Inno's RestartManager pass
+    runs after the [Run] entry and revives the node process it found holding
+    our files. That revived process can own 18787/48771, so the freshly
+    spawned engine never becomes ready and the launcher walks away. }
+  Exec(ExpandConstant('{cmd}'), '/d /c powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \"Name=''node.exe''\" | Where-Object { $_.CommandLine -match ''agent\.js'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"', '', SW_HIDE, ewWaitUntilTerminated, StopResult);
+
   { StopRunningMagicDialer killed watchdog+agent at ssInstall, and the [Run]
-    entry is nowait: it hands MagicDialer control and moves straight on. Give
-    that launcher time to reach its first spawn before we conclude anything. }
-  for i := 1 to 12 do begin
+    entry is nowait: it hands MagicDialer control and moves straight on. The
+    launcher now retries for ~40s, so give it that long before concluding. }
+  for i := 1 to 25 do begin
     if AgentRunning() then exit;
     Sleep(1000);
   end;
@@ -103,11 +115,15 @@ begin
       what makes every relaunch start and immediately resign — clear it. }
     DeleteFile(ExpandConstant('{localappdata}\Magic Dialer\watchdog.lock'));
     if not Exec(ExpandConstant('{app}\MagicDialer.exe'), '--no-browser',
-                ExpandConstant('{app}'), SW_HIDE, ewNoWait, LaunchResult) then begin
+                ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, LaunchResult) then begin
       Log('setup: relaunch failed to start');
       break;
     end;
-    for i := 1 to 5 do begin
+    { 0 = engine ready, 1 = spawn threw, 2 = agent.exe missing, 3 = mutex busy,
+      4 = engine never became ready. Silent exit codes were the reason this
+      outage left no trace. }
+    Log('setup: launcher exited with code ' + IntToStr(LaunchResult));
+    for i := 1 to 4 do begin
       Sleep(1000);
       if AgentRunning() then exit;
     end;
@@ -124,7 +140,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.11.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.12.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;
