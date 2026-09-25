@@ -65,6 +65,98 @@ jobs:
       - name: Build installer
         shell: powershell
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\installer.iss'
+      - name: Poisoned-environment relaunch gate
+        timeout-minutes: 3
+        shell: powershell
+        run: |
+          # pkg stamps PKG_EXECPATH on every child of a pkg-built process. The
+          # installer chain hands that marker to the launcher, and without a strip
+          # the new agent resolves --watchdog as its entry script and dies with
+          # MODULE_NOT_FOUND before running a line of JS. That cost a real
+          # unattended PC ten minutes of downtime while every other gate stayed
+          # green, so reproduce the exact post-update spawn here.
+          $log = Join-Path $env:LOCALAPPDATA "Magic Dialer\launcher.log"
+          $mark = 0
+          if (Test-Path -LiteralPath $log) { $mark = (Get-Item -LiteralPath $log).Length }
+          function Read-After($path, $offset) {
+            try {
+              $fs = [System.IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+              $len = $fs.Length
+              if ($len -le $offset) { $fs.Close(); return "" }
+              $null = $fs.Seek($offset, 'Begin')
+              $buf = New-Object byte[] ($len - $offset)
+              $null = $fs.Read($buf, 0, $buf.Length)
+              $fs.Close()
+              return [System.Text.Encoding]::UTF8.GetString($buf)
+            } catch { return "" }
+          }
+          function Kill-Agent-Processes {
+            Stop-Process -Name agent -Force -ErrorAction SilentlyContinue
+            Stop-Process -Name MagicDialer -Force -ErrorAction SilentlyContinue
+            for ($i = 0; $i -lt 15; $i++) {
+              if (-not (Get-Process -Name agent,MagicDialer -ErrorAction SilentlyContinue)) { return }
+              Start-Sleep -Seconds 2
+            }
+          }
+          $runnerTemp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
+          $t = Join-Path $runnerTemp "poison-gate"
+          Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $t | Out-Null
+          Copy-Item "build\dist\agent.exe","build\dist\MagicDialer.exe" -Destination $t
+
+          # Negative control: a poisoned spawn must still die. If it does not,
+          # this gate is no longer testing anything and would pass a broken build.
+          $poison = New-Object System.Diagnostics.ProcessStartInfo
+          $poison.FileName = Join-Path $t "agent.exe"
+          $poison.Arguments = '--watchdog "--no-browser"'
+          $poison.WorkingDirectory = $t
+          $poison.UseShellExecute = $false
+          $poison.CreateNoWindow = $true
+          $poison.RedirectStandardError = $true
+          $poison.EnvironmentVariables["PKG_EXECPATH"] = Join-Path $t "agent.exe"
+          $bad = [System.Diagnostics.Process]::Start($poison)
+          $err = $bad.StandardError.ReadToEnd()
+          if (-not $bad.WaitForExit(20000)) {
+            Kill-Agent-Processes
+            throw "Negative control failed: agent booted with PKG_EXECPATH set, so this gate tests nothing"
+          }
+          if ($bad.ExitCode -eq 0 -or $err -notmatch 'MODULE_NOT_FOUND') {
+            Kill-Agent-Processes
+            throw "Negative control failed: expected MODULE_NOT_FOUND from a poisoned spawn, got exit $($bad.ExitCode)"
+          }
+          Write-Host "negative control ok: poisoned spawn dies with MODULE_NOT_FOUND"
+
+          # Positive gate: the launcher must strip the marker and boot first try.
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = Join-Path $t "MagicDialer.exe"
+          $psi.Arguments = "--no-browser"
+          $psi.WorkingDirectory = $t
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.EnvironmentVariables["PKG_EXECPATH"] = Join-Path $t "agent.exe"
+          $null = [System.Diagnostics.Process]::Start($psi)
+          $new = ""
+          for ($i = 0; $i -lt 45; $i++) {
+            Start-Sleep -Seconds 2
+            $new = Read-After $log $mark
+            if ($new -match 'exit=0 engine ready on attempt 1') { break }
+          }
+          Write-Host "=== POISON GATE: new launcher.log bytes ==="
+          Write-Host $new
+          if ($new -match 'MODULE_NOT_FOUND') {
+            Kill-Agent-Processes
+            throw "Poisoned relaunch logged MODULE_NOT_FOUND - the agent died before it could boot"
+          }
+          if ($new -notmatch 'exit=0 engine ready on attempt 1') {
+            Kill-Agent-Processes
+            throw "Poisoned relaunch never reached engine ready on attempt 1"
+          }
+          Kill-Agent-Processes
+          if (Get-Process -Name agent,MagicDialer -ErrorAction SilentlyContinue) {
+            throw "Poison gate left an agent process behind"
+          }
+          Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue
+          Write-Host "POISON GATE PASS: poisoned post-update relaunch reached engine ready on attempt 1"
       - name: Silent installer smoke test
         timeout-minutes: 3
         shell: powershell
