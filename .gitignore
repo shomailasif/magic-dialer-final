@@ -60,3 +60,7 @@ proton-recovery-phrase.pdf
 src/management/portal/rc-credentials.json  
 .env
 .env.local
+
+# stray copies of build outputs that land at the management root - never sources
+/src/management/agent.exe
+/src/management/MagicDialer.exe
