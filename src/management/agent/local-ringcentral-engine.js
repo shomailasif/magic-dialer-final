@@ -16,12 +16,27 @@ function normalizePcmu(input) {
  * timer granularity is ~15.6ms so a packet actually leaves every ~32ms: RTP
  * went out at 62% of real time, the callee's jitter buffer starved (99.3%
  * underrun in replay) and the opening took 1.6x its duration - the far end
- * never received the WAV it was built from. Re-drive sendPacket from a
+ * never received the WAV it was built from. Re-drive the packet sender from a
  * wall-clock due-count so lateness is caught up instead of accumulated.
- * Returns a stop() that silences any further scheduling.
+ *
+ * Two hardening rules, both learned from live calls:
+ *  - The SDK only emits "finished" from inside its own packet sender, which we
+ *    neutralise. If our loop ever stopped one frame short, playback hung and
+ *    only the watchdog (audioMs + 2500ms) released the turn, cutting the voice
+ *    mid-sentence. We now emit "finished" ourselves the moment the buffer
+ *    drains, so the watchdog is a last resort instead of the normal path.
+ *  - Catch-up used to be bounded only by a 500-iteration guard, so one stalled
+ *    event-loop tick dumped a whole utterance into the far-end jitter buffer at
+ *    once. Catch-up is capped at MAX_BURST_FRAMES and anything further behind
+ *    than MAX_BEHIND_FRAMES is skipped on the timeline (dropping <=160ms of
+ *    audio is inaudible; a burst is what breaks the voice up).
+ * Returns a stop() that silences any further scheduling; stop().stats() reports
+ * what actually went out so a live call can be verified instead of guessed at.
  */
+const MAX_BURST_FRAMES = 4;
+const MAX_BEHIND_FRAMES = 8;
 function paceStreamer(streamer, totalBytes) {
-  if (!streamer || typeof streamer.sendPacket !== "function" || !streamer.buffer) return () => {};
+  if (!streamer || typeof streamer.sendPacket !== "function" || !streamer.buffer) return Object.assign(() => {}, { stats: null });
   const origSend = streamer.sendPacket;
   // The SDK re-arms setTimeout(...,20) from inside its own packet loop, and
   // invoking it once per catch-up would multiply those chains into a burst that
@@ -31,19 +46,50 @@ function paceStreamer(streamer, totalBytes) {
   const startedAt = Date.now();
   let timer = 0;
   let stopped = false;
+  let lastSendAt = startedAt;
+  let maxGapMs = 0;
+  let maxBurstFrames = 0;
+  let droppedBytes = 0;
+  const stats = () => ({
+    sentBytes: Math.max(0, totalBytes - (streamer && streamer.buffer ? streamer.buffer.length : 0) - droppedBytes),
+    droppedBytes, maxGapMs, maxBurstFrames, elapsedMs: Date.now() - startedAt,
+  });
+  const declareFinished = () => {
+    try { streamer.emit("finished"); } catch { /* not an emitter */ }
+  };
   const driver = () => {
     timer = 0;
-    if (stopped || !streamer.buffer || streamer.finished) return;
-    // packets whose 20ms slot has already elapsed by wall-clock
+    if (stopped) return;
+    if (!streamer.buffer) return;
+    if (streamer.finished) { declareFinished(); return; }
     const due = Math.min(totalBytes, (Math.floor((Date.now() - startedAt) / PACKET_MS) + 1) * FRAME_BYTES);
-    let guard = 500;
-    while (!streamer.finished && totalBytes - streamer.buffer.length < due && guard-- > 0) {
-      origSend.call(streamer);
+    const sent = totalBytes - streamer.buffer.length;
+    const behind = due - sent;
+    if (behind > MAX_BEHIND_FRAMES * FRAME_BYTES) {
+      const raw = behind - MAX_BEHIND_FRAMES * FRAME_BYTES;
+      const aligned = Math.floor(Math.min(raw, streamer.buffer.length) / FRAME_BYTES) * FRAME_BYTES;
+      if (aligned > 0) {
+        streamer.buffer = streamer.buffer.subarray(aligned);
+        droppedBytes += aligned;
+      }
     }
-    if (!stopped && !streamer.finished) timer = setTimeout(driver, PACE_TICK_MS);
+    let burst = 0;
+    while (!streamer.finished && totalBytes - streamer.buffer.length < due && burst < MAX_BURST_FRAMES) {
+      origSend.call(streamer);
+      burst++;
+    }
+    if (burst > maxBurstFrames) maxBurstFrames = burst;
+    if (burst > 0) {
+      const now = Date.now();
+      const gap = now - lastSendAt;
+      if (gap > maxGapMs) maxGapMs = gap;
+      lastSendAt = now;
+    }
+    if (streamer.finished) { declareFinished(); return; }
+    timer = setTimeout(driver, PACE_TICK_MS);
   };
   timer = setTimeout(driver, PACE_TICK_MS);
-  return () => { stopped = true; clearTimeout(timer); timer = 0; };
+  return Object.assign(() => { stopped = true; clearTimeout(timer); timer = 0; }, { stats });
 }
 function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog = () => {}, onSessionGone = null, bridgeFactory = sipCallBridge }) {
   let bridge, session, streamer, activePlayback, closed = false, gone = false, bytesIn = 0, bytesOut = 0;
@@ -51,6 +97,8 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   let generation = 0;
   let firstInboundAt = 0;
   let settleUntil = 0;
+  let lastInboundAt = 0;
+  let maxInboundGapMs = 0;
   async function connect() {
     bridge = await bridgeFactory({ ...sip, number });
     if (!bridge || !bridge.ok || !bridge.callSession) throw new Error((bridge && bridge.last) || "RingCentral call bridge failed");
@@ -58,7 +106,10 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     session.on("audioPacket", packet => {
       const payload = packet && packet.payload;
       if (!payload || !payload.length || closed) return;
-      if (!firstInboundAt) firstInboundAt = Date.now();
+      const now = Date.now();
+      if (!firstInboundAt) firstInboundAt = now;
+      else if (now - lastInboundAt > maxInboundGapMs) maxInboundGapMs = now - lastInboundAt;
+      lastInboundAt = now;
       const b = Buffer.from(payload);
       bytesIn += b.length;
       onAudio(b);
@@ -129,6 +180,18 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
         settled = true;
         clearTimeout(watchdog);
         clearTimeout(settleTimer);
+        // Report what actually left this process before the pacer is torn down.
+        // A live call is only verifiable if the log shows the send timeline:
+        // gap = longest hole in the outbound RTP, burst = frames pushed in one
+        // tick (a burst is what the far-end jitter buffer drops as break-up).
+        const s = stopPace && stopPace.stats ? stopPace.stats() : null;
+        if (s) {
+          const audioMs = Math.ceil(audio.length / 8);
+          const complete = s.sentBytes >= audio.length * 0.95;
+          const detail = `outbound pacing: ${s.sentBytes}/${audio.length} bytes in ${s.elapsedMs}ms (audio ${audioMs}ms), maxGap ${s.maxGapMs}ms, maxBurst ${s.maxBurstFrames}f, dropped ${s.droppedBytes}b`;
+          const bad = s.maxGapMs > 60 || s.maxBurstFrames > MAX_BURST_FRAMES || s.droppedBytes > 0 || (complete && s.elapsedMs > audioMs + 300);
+          onLog(bad ? "[local-media-v2] pacing warning: " + detail : "[local-media-v2] " + detail);
+        }
         stopPace();
         if (activePlayback && activePlayback.finish === finish) activePlayback = null;
         resolve(audio.length);
@@ -149,6 +212,10 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
           activePlayback = { finish };
           bytesOut += audio.length;
           if (!streamer || typeof streamer.once !== "function") return finish();
+          // A streamer that is already drained/disposed never emits again; the
+          // listener below would wait forever and the watchdog would cut the
+          // turn. Resolve straight away instead.
+          if (streamer.finished) return finish();
           streamer.once("finished", finish);
           streamer.once("error", fail);
           stopPace = paceStreamer(streamer, audio.length);
@@ -204,6 +271,7 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   function close() {
     if (closed) return;
     closed = true;
+    onLog(`[local-media-v2] media stats: inbound ${bytesIn} bytes, outbound ${bytesOut} bytes, max inbound gap ${maxInboundGapMs}ms`);
     try { if (streamer) streamer.stop(); } catch {}
     try { if (bridge && bridge.cleanup) bridge.cleanup(); } catch {}
     session = null;

@@ -25,7 +25,10 @@ function isJunkUtterance(text) {
   const s = String(text || "").trim().toLowerCase();
   if (!s) return true;
   if (s.length > 40) return false;
-  return /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ringing\.?|phone ringing\.?|the phone is ringing\.?|voicemail\.?|voice mail\.?|please leave a message.*|leave a message.*|at the tone.*|click\.?|noise\.?|static\.?|hum\.?|zzz\.?|\[.*\]|\(beep\)|dtmf\.?|test\.?|hello\?)$/.test(s)
+  // Not a word: ".", ",", "...". A lone "." reached the brain as a real turn
+  // in a live call and made the agent answer silence.
+  if (s.replace(/[^\p{L}\p{N}]/gu, "").length < 2) return true;
+  return /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ringing\.?|phone ringing\.?|the phone is ringing\.?|voicemail\.?|voice mail\.?|please leave a message.*|leave a message.*|at the tone.*|click\.?|noise\.?|static\.?|hum\.?|zzz\.?|\[.*\]|\(beep\)|dtmf\.?|test\.?)$/.test(s)
     || /^(beep|tone|click|noise|static)[\s.!]*$/.test(s);
 }
 
@@ -155,14 +158,16 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
           if (playingMs < 1000) {
             state.speechDuringPlaybackMs = 0;
             state.bargeLevels = [];
-          } else if (event.voiced) {
+          } else if (event.voiced && event.level >= 500) {
             state.speechDuringPlaybackMs = (state.speechDuringPlaybackMs || 0) + 20;
             trackBargeLevel(state, event.level);
             if (steadyToneBarge(state)) noteSteadyTone(state, onLog);
-            if (state.speechDuringPlaybackMs >= 500 && !state.interrupted) {
+            // Same bar as the opening: soft/room noise must not cut our own
+            // sentence off. Speech captured before the interrupt is still kept.
+            if (state.speechDuringPlaybackMs >= 700 && !state.interrupted) {
               state.interrupted = true;
               engine.interrupt();
-              onLog("[local-media-v2] barge-in detected; outbound playback stopped");
+              onLog(`[local-media-v2] barge-in detected; outbound playback stopped (sustained ${state.speechDuringPlaybackMs}ms at level ${event.level})`);
             }
           } else {
             state.speechDuringPlaybackMs = 0;
@@ -287,9 +292,11 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     }
     if (stt.text) {
       // Carrier tones / voicemail beeps must not become a fake lead turn that
-      // flips the agent into inbound "How can I assist you?" mode.
+      // flips the agent into inbound "How can I assist you?" mode. They are
+      // still audio on the line, so report them as junk rather than as a quiet
+      // window — call-runner must not age them toward the dead-line hangup.
       onLog("[local-media-v2] STT junk ignored: " + stt.text);
-      return null;
+      return { text: null, junk: true };
     }
     // Speech reached the VAD but the recognizer returned nothing — do not let
     // call-runner treat this as a quiet line and hang up on the prospect.
@@ -301,7 +308,7 @@ async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {
     }
     if (retry.text) onLog("[local-media-v2] STT junk ignored: " + retry.text);
     else onLog("[local-media-v2] STT still empty after retry");
-    return null;
+    return { text: null, junk: !!retry.text, empty: !retry.text };
   };
 
   try {

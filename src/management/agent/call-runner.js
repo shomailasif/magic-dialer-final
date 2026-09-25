@@ -8,7 +8,11 @@ const JUNK_LEAD_RE = /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ring
 
 function isJunkLead(text) {
   const s = String(text || "").trim();
-  return !s || (s.length <= 40 && JUNK_LEAD_RE.test(s));
+  if (!s) return true;
+  // Punctuation-only recognizer noise is never a prospect turn: a live call
+  // logged "LEAD: ." and the agent answered it.
+  if (s.replace(/[^\p{L}\p{N}]/gu, "").length < 2) return true;
+  return s.length <= 40 && JUNK_LEAD_RE.test(s);
 }
 
 // Explicit switch-language requests (e.g. speak spanish) so language changes
@@ -70,6 +74,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let heardSomething = false;
   let llmFailures = 0;
   let consecutiveSilence = 0;
+  let consecutiveJunk = 0;
   let stopRequested = false;
   let humanRequested = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
@@ -119,17 +124,31 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "detected" });
     }
 
-    if (!heard || String(heard).startsWith("(silence)") || isJunkLead(heard)) {
+    // A window only counts as a *quiet* window when nothing arrived at all.
+    // Junk (carrier beep, voicemail tone) and speech the recognizer could not
+    // turn into words both prove the far end is transmitting, so they age
+    // their own bounded budget instead of the dead-line hangup. Otherwise a
+    // prospect who answers after one beep is hung up on as a silent line.
+    const reportedNoise = !!(heardResult && typeof heardResult === "object" && (heardResult.junk || heardResult.empty));
+    const junkLead = !!heard && isJunkLead(heard);
+    if (!heard || String(heard).startsWith("(silence)") || junkLead) {
       lead("(silence)");
-      consecutiveSilence++;
-      // Two quiet windows in a row = dead line. One window only prompts a check-in.
-      if (consecutiveSilence >= 2) break;
+      if (reportedNoise || junkLead) {
+        consecutiveJunk++;
+        // Bounded: a line that only ever beeps still ends the call.
+        if (consecutiveJunk >= 3) break;
+      } else {
+        consecutiveSilence++;
+        // Two quiet windows in a row = dead line. One window only prompts a check-in.
+        if (consecutiveSilence >= 2) break;
+      }
       const hello = await nextTurn({ transcript: [...transcript, { role: "lead", text: "The line is quiet. Briefly check whether the prospect can hear you." }], ...config() }).catch(() => ({ text: null }));
       if (!hello.text) llmFailures++;
       await agent(hello.text || (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?"));
       continue;
     }
     consecutiveSilence = 0;
+    consecutiveJunk = 0;
 
     lead(heard, detected);
     stopRequested = STOP_RE.test(heard);

@@ -129,9 +129,55 @@ async function scenarioSteadyTone(logs) {
     number: "2", deps, onLog: collector(logs)
   });
   assert.equal(interrupted, 0, "flat carrier tone must not barge into the opening");
-  assert.equal(heard, null, "ringback STT junk must not become a lead turn");
+  assert.ok(!heard || !heard.text, "ringback STT junk must not become a lead turn");
+  assert.equal(heard && heard.junk, true, "carrier junk must be reported as junk, not as a quiet window");
   assert.ok(logs.some(l => l.includes("steady carrier tone")), "steady-tone guard must be logged once");
   assert.ok(logs.some(l => l.includes("STT junk ignored")), "junk STT must be logged as ignored");
+}
+
+/** Drive one listen window against a stub recognizer and hand back exactly what
+ *  call-runner would receive. Shared by the greeting / empty-STT cases. */
+async function driveListenWindow({ stt }) {
+  let onAudio, heard = "unset";
+  const logs = [];
+  const engine = {
+    async connect() {},
+    sendAudio() { return new Promise(resolve => setTimeout(() => resolve(3200), 1400)); },
+    interrupt() {},
+    keepAlive() { return Promise.resolve(0); },
+    close() {},
+  };
+  let pushes = 0;
+  const deps = {
+    async preflightBrain() { return true; },
+    async opening() { return { text: "Hello" }; },
+    createLocalRingCentralEngine(opts) { onAudio = opts.onAudio; return { ...engine, async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; } }; },
+    createVad() {
+      return { push() {
+        pushes++;
+        if (pushes <= 50) return { voiced: false, speaking: false, ended: false, level: 0 };
+        if (pushes <= 110) return { voiced: true, speaking: true, ended: pushes >= 110, level: 600 };
+        return { voiced: false, speaking: false, ended: true, level: 0 };
+      }};
+    },
+    async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
+    async transcribeAuto() { return stt; },
+    async voiceCall({ speakFn, listenFn }) {
+      const speaking = speakFn("Hello");
+      await sleep(0);
+      for (let i = 0; i < 50; i++) onAudio(frame());
+      await sleep(1030);
+      for (let i = 51; i <= 110; i++) onAudio(frame());
+      await speaking;
+      heard = await listenFn({ locale: "en" });
+      return { heard };
+    },
+  };
+  await runLocalCall({
+    config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
+    number: "2", deps, onLog: collector(logs),
+  });
+  return { heard, logs };
 }
 
 /** Remote BYE: listen reports ended, and no further outbound audio is sent. */
@@ -220,6 +266,17 @@ async function main() {
   const byeLogs = [];
   await scenarioRemoteHangup(byeLogs);
 
-  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup");
+  // Regression: a prospect who answers with a greeting was being thrown away
+  // as junk and then counted as a silent window, so we hung up on them.
+  const greet = await driveListenWindow({ stt: { text: "Hello?", language: "en" } });
+  assert.equal(greet.heard && greet.heard.text, "Hello?", "a prospect greeting must become a real lead turn");
+  assert.ok(!greet.logs.some(l => l.includes("STT junk ignored")), "a greeting must never be dropped as junk");
+
+  const empty = await driveListenWindow({ stt: { text: "", language: "en" } });
+  assert.equal(empty.heard && empty.heard.text, null, "untranscribed speech must not become a lead turn");
+  assert.equal(empty.heard && empty.heard.empty, true, "untranscribed speech must report captured-but-empty, not a quiet window");
+  assert.ok(empty.logs.some(l => l.includes("STT returned empty for captured speech")), "empty-STT retry must be logged");
+
+  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT");
 }
 main().catch(e => { console.error(e); process.exit(1); });
