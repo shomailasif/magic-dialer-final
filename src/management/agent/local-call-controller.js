@@ -56,7 +56,21 @@ function capTurnLength(line) {
   return (lastSpace > MAX_TURN_CHARS * 0.4 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:–—-]+$/, "").trim();
 }
 
-const BARGE_YIELD_MS = 300;
+// How long the prospect must keep talking before the agent stops.
+// 300ms was tried and reverted: on the 21:05Z call it guillotined the agent five
+// times in two minutes (3610ms played of 6160ms intended, 1970ms of 4740ms),
+// which is exactly the rushed, half-finished-sentence delivery being complained
+// about. Not talking over the prospect is handled by capping our own turn
+// length, not by cutting ourselves off mid-word.
+/** True when the text is mostly written in a non-Latin script. */
+function isMostlyNonLatin(text) {
+  const letters = String(text || "").replace(/[^\p{L}\p{N}]/gu, "");
+  if (letters.length < 4) return false;
+  const nonLatin = (letters.match(/\p{Script=Arabic}|\p{Script=Cyrillic}|\p{Script=Devanagari}|\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}|\p{Script=Thai}|\p{Script=Hebrew}|\p{Script=Greek}/gu) || []).length;
+  return nonLatin / letters.length > 0.3;
+}
+
+const BARGE_YIELD_MS = 700;
 
 function trackBargeLevel(state, level) {
   const w = state.bargeLevels || (state.bargeLevels = []);
@@ -269,6 +283,16 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     if (isOpening) {
       out = preparedOpening.audio;
       preparedOpening = null;
+    } else if (isMostlyNonLatin(spoken)) {
+      // The brain sometimes mirrors the prospect's script even when the call is
+      // configured for another language. On the 21:05Z call that put Devanagari
+      // and Arabic text through an English voice, which is what made the prospect
+      // say "the dumb AI is not understanding what I'm saying". Refuse to put a
+      // script on the wire we have no voice for; the next turn is generated in
+      // the configured language.
+      onLog(`[local-media-v2] agent turn is mostly non-Latin for locale=${locale}; not speaking it`);
+      if (state) { state.playing = false; state.playbackStartedAt = 0; }
+      return;
     } else {
       // Keep RTP warm while Edge/python TTS synthesizes so the carrier does
       // not hear a dead/broken gap between turns.

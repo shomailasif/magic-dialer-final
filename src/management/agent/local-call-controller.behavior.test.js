@@ -7,6 +7,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const frame = () => Buffer.alloc(160, 0x7f);
 const collector = logs => line => logs.push(String(line));
 
+/* 300ms barge-in was tried and reverted: on the 21:05Z call it guillotined the
+ * agent five times in two minutes (3610ms played of 6160ms intended). Pin it so
+ * the "rushed, half-finished sentence" delivery cannot come back. */
+const controllerSrc = require("node:fs").readFileSync(require.resolve("./local-call-controller"), "utf8");
+const BARGE_YIELD_CONTRACT = { ok: /const BARGE_YIELD_MS = 700;/.test(controllerSrc) };
+
 /** Opening: 1s protected guard, then sustained *speech-like* levels must
  *  barge in exactly once; then a normal turn with RTP keep-alive. */
 async function scenarioSpeechBargeIn(logs) {
@@ -298,11 +304,20 @@ async function main() {
   const dead = await driveListenWindow({ stt: { text: "Yes, I can hear you.", language: "en" }, tts: null });
   assert.equal(dead.threw, null, "an unspeakable turn must not reject the call");
   assert.equal(dead.heard && dead.heard.text, "Yes, I can hear you.", "the call must keep going after a skipped turn");
+  assert.equal(dead.sends, 1, "only the opening may reach the wire; the unspeakable turn must send nothing");
   assert.ok(
-    dead.logs.some(l => l.includes("tts produced no audio") && l.includes("skipping turn")),
+    dead.logs.some(l => l.includes("not speaking it") || l.includes("skipping turn")),
     "the skipped turn must be logged"
   );
-  assert.equal(dead.sends, 1, "only the opening may reach the wire; the unspeakable turn must send nothing");
+
+  // Text the active voice genuinely cannot read must never reach the wire: the
+  // 21:05Z call put Devanagari and Arabic through an English voice, which is
+  // what produced "the dumb AI is not understanding what I'm saying".
+  assert.ok(
+    dead.logs.some(l => /mostly non-Latin/.test(l)),
+    `a non-Latin turn for an English call must be refused, logs: ${JSON.stringify(dead.logs.filter(l => /non-Latin|tts/.test(l)))}`
+  );
+  assert.equal(dead.ttsTexts.length, 1, `only the opening may be synthesized, got ${JSON.stringify(dead.ttsTexts)}`);
 
   // A turn longer than a person would listen to must be trimmed to whole words
   // and whole sentences. The 20:44Z call ran a 229-character / 14.1-second
@@ -316,6 +331,11 @@ async function main() {
   assert.ok(long.length <= 115, `an over-long turn must be capped, got ${long.length} chars`);
   assert.ok(!/\bveh$|\btyp$|\bfor$/.test(long.trim()), `the cap must not cut mid-word, got: ${JSON.stringify(long)}`);
 
-  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT, unspeakable turn, turn cap");
+  // Barge-in must not guillotine us. 300ms cut five sentences short on the
+  // 21:05Z call (3610ms played of 6160ms intended), which is the rushed
+  // half-finished delivery being complained about.
+  assert.ok(BARGE_YIELD_CONTRACT.ok, "barge-in yield must stay at 700ms");
+
+  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT, unspeakable turn, turn cap, non-Latin refusal");
 }
 main().catch(e => { console.error(e); process.exit(1); });
