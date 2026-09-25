@@ -7,6 +7,8 @@ const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
 const { registerSession } = require("../portal/softphone");
 const { transcribeAuto } = require("./multilingual-stt");
 const { normalizeLanguage } = require("./language");
+const { capTurnLength, MAX_TURN_CHARS } = require("./turn-length");
+const { isMostlyNonLatin } = require("./script-guard");
 const { preflightBrain, opening } = require("./intelligent-brain");
 
 function sipOptions(v) {
@@ -33,43 +35,12 @@ function isJunkUtterance(text) {
 }
 
 /** Push one voiced level into the barge-in tone-detection window. */
-// How long the prospect must keep talking before the agent stops. 700ms meant the// agent kept talking over them for most of a second after they started to
-// respond, which is what a prospect experiences as being interrupted.
-// Longest agent turn we will actually put on the wire. Measured on the 20:44Z
-// call, edge-ws PCMU runs 428-623 bytes per character, so ~110 characters is
-// about 6 seconds of speech. The 14.1s monologue that prompted this was 229
-// characters. Anything past the cap is trimmed to whole sentences, so the
-// prospect always gets a gap to speak in.
-const MAX_TURN_CHARS = 110;
-
-/** Trim an over-long agent turn to whole sentences, so it stays natural speech. */
-function capTurnLength(line) {
-  const s = String(line || "").trim();
-  if (s.length <= MAX_TURN_CHARS) return s;
-  const cut = s.slice(0, MAX_TURN_CHARS);
-  const lastStop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "), cut.lastIndexOf(".\""));
-  if (lastStop > MAX_TURN_CHARS * 0.4) return cut.slice(0, lastStop + 1).trim();
-  // No sentence end in range: back off to a word boundary rather than slicing
-  // mid-word. "...a different type of veh" is exactly the clipped delivery the
-  // 20:44Z call was criticised for.
-  const lastSpace = cut.lastIndexOf(" ");
-  return (lastSpace > MAX_TURN_CHARS * 0.4 ? cut.slice(0, lastSpace) : cut).replace(/[\s,;:–—-]+$/, "").trim();
-}
-
 // How long the prospect must keep talking before the agent stops.
-// 300ms was tried and reverted: on the 21:05Z call it guillotined the agent five
-// times in two minutes (3610ms played of 6160ms intended, 1970ms of 4740ms),
-// which is exactly the rushed, half-finished-sentence delivery being complained
-// about. Not talking over the prospect is handled by capping our own turn
-// length, not by cutting ourselves off mid-word.
-/** True when the text is mostly written in a non-Latin script. */
-function isMostlyNonLatin(text) {
-  const letters = String(text || "").replace(/[^\p{L}\p{N}]/gu, "");
-  if (letters.length < 4) return false;
-  const nonLatin = (letters.match(/\p{Script=Arabic}|\p{Script=Cyrillic}|\p{Script=Devanagari}|\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}|\p{Script=Thai}|\p{Script=Hebrew}|\p{Script=Greek}/gu) || []).length;
-  return nonLatin / letters.length > 0.3;
-}
-
+// 300ms was tried and reverted: on the 21:05Z call it guillotined the agent
+// five times in two minutes (3610ms played of 6160ms intended, 1970ms of
+// 4740ms), which is exactly the rushed, half-finished-sentence delivery being
+// complained about. Not talking over the prospect is handled by capping our own
+// turn length, not by cutting ourselves off mid-word.
 const BARGE_YIELD_MS = 700;
 
 function trackBargeLevel(state, level) {

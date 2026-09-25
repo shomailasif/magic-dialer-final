@@ -26,15 +26,15 @@ const PACKET = 160;
  * deterministically by scenarios 2 and 3 (dropped > 0 + a pacing warning), so
  * the healthy-path bound is derived from the host's own jitter floor instead of
  * a hardcoded number, with a hard ceiling that no real break-up can hide under. */
-async function hostTimerJitterFloor(samples = 40) {
-  let max = 0;
+async function hostTimerJitter(samples = 60) {
+  const d = [];
   for (let i = 0; i < samples; i++) {
     const want = Date.now() + 8;
     await new Promise((r) => setTimeout(r, 8));
-    const d = Date.now() - want;
-    if (d > max) max = d;
+    d.push(Date.now() - want);
   }
-  return max;
+  d.sort((a, b) => a - b);
+  return { p90: d[Math.floor(d.length * 0.9)], max: d[d.length - 1] };
 }
 
 function makeStream({ silentFinish = false } = {}) {
@@ -83,13 +83,16 @@ const stat = (logs, kind) => {
 
 async function main() {
   // 0. What this host can actually promise. Feeds the healthy-path bound below.
-  const jitterFloor = await hostTimerJitterFloor();
+  // p90, not max: a single worst sample understates how bad the window gets
+  // while 2.4s of playback is actually running.
+  const { p90, max } = await hostTimerJitter();
+  const jitterFloor = p90;
   const GAP_CEILING = 200; // a real break-up is hundreds of ms; never hide under this
-  const gapBound = Math.min(GAP_CEILING, Math.max(60, jitterFloor * 4));
-  // Observed slowGaps track the jitter floor almost linearly: floor 38-39ms gave
-  // slowGaps 12, floor 30ms gave 3, floor 17ms gave 0-1 over 120 frames.
-  const slowBound = Math.max(2, Math.ceil((19200 / PACKET) * (jitterFloor / 400)));
-  console.log(`host timer jitter floor ${jitterFloor}ms -> healthy-path bounds: maxGap<=${gapBound}ms slowGaps<=${slowBound}`);
+  const gapBound = Math.min(GAP_CEILING, Math.max(60, p90 * 3));
+  // Observed slowGaps track host jitter: a 38-44ms floor produced 12 slow gaps
+  // over 120 frames, a 15-20ms floor produced 0-5.
+  const slowBound = Math.max(3, Math.ceil((19200 / PACKET) * (p90 / 250)));
+  console.log(`host timer jitter p90=${p90}ms max=${max}ms -> healthy-path bounds: maxGap<=${gapBound}ms slowGaps<=${slowBound}`);
 
   // 1. Healthy playback: 2.4s of audio must leave in ~2.4s, in frame-sized
   //    pieces, and must finish on its own rather than on the watchdog.

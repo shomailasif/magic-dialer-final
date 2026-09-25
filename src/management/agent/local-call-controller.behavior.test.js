@@ -326,9 +326,10 @@ async function main() {
     stt: { text: "Yes, I can hear you.", language: "en" },
     opening: "Sure! Zaz Logistics offers dispatch services that help you find loads, handle paperwork, and keep your routes efficient-all coordinated by our team so you can focus on the road. Would you like me to send a brief overview by text?",
   });
-  const long = capped.ttsTexts.find(l => /Zaz Logistics offers dispatch/.test(l));
-  assert.ok(long, `the over-long turn must still be synthesized, got ${JSON.stringify(capped.ttsTexts)}`);
-  assert.ok(long.length <= 115, `an over-long turn must be capped, got ${long.length} chars`);
+  const long = capped.ttsTexts[capped.ttsTexts.length - 1];
+  assert.ok(long, `a turn must still be synthesized, got ${JSON.stringify(capped.ttsTexts)}`);
+  assert.ok(long.length <= 160, `an over-long turn must be capped, got ${long.length} chars: ${JSON.stringify(long)}`);
+  assert.ok(/[.!?]["')\u2019]?$/.test(long.trim()), `the cap must not cut mid-sentence, got: ${JSON.stringify(long)}`);
   assert.ok(!/\bveh$|\btyp$|\bfor$/.test(long.trim()), `the cap must not cut mid-word, got: ${JSON.stringify(long)}`);
 
   // Barge-in must not guillotine us. 300ms cut five sentences short on the

@@ -1,6 +1,8 @@
 const { scoreLead, shouldEscalate, learn } = require("./brain");
 const { nextTurn, opening } = require("./intelligent-brain");
 const { normalizeLanguage } = require("./language");
+const { capTurnLength, splitSentences } = require("./turn-length");
+const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("./script-guard");
 
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
@@ -51,24 +53,8 @@ function isSubstantialUtterance(text) {
   return s.split(/\s+/).length >= 3 || s.length >= 15;
 }
 
-// Script sanity for an automatic language switch. Whisper auto-detects on
-// 1-2s clips and is wrong constantly: the 20:25Z call ran en -> fr -> ur inside
-// one conversation, and the ur flip made the agent speak a language whose voice
-// cannot synthesize, which is what ended the call. Text written in Latin script
-// is never a ur/ar/hi/zh/ja/ko/th/he/el/ru/uk turn, and vice versa.
-const NON_LATIN_LOCALE = new Set(["ur", "ar", "hi", "zh", "ja", "ko", "th", "he", "el", "ru", "uk"]);
-function scriptAgreesWithLocale(text, locale) {
-  const s = String(text || "");
-  if (!s) return false;
-  const letters = s.replace(/[^\p{L}\p{N}]/gu, "");
-  if (letters.length < 2) return false;
-  const nonLatin = (letters.match(/\p{Script=Arabic}|\p{Script=Cyrillic}|\p{Script=Devanagari}|\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}|\p{Script=Thai}|\p{Script=Hebrew}|\p{Script=Greek}/gu) || []).length;
-  const isNonLatinText = nonLatin / letters.length > 0.3;
-  if (NON_LATIN_LOCALE.has(locale) && !isNonLatinText) return false;
-  if (!NON_LATIN_LOCALE.has(locale) && isNonLatinText) return false;
-  return true;
-}
-
+// Script sanity for an automatic language switch lives in script-guard.js.
+// One clip is never enough: the same language has to be seen twice in a row.
 function fallbackOpening({ companyName, product, locale }) {
   const company = String(companyName || "our team").trim();
   const offering = String(product || "what we offer").trim();
@@ -84,6 +70,49 @@ function fallbackReply(text, { callbackNumber, callbackIn, locale }) {
     return lang === "en" ? "Of course. I'll mark this for a human follow-up." : "Understood. I will request human follow-up.";
   }
   return lang === "en" ? "I want to answer that accurately rather than guess. Let me note it for the team to follow up." : "I do not have that detail, so I will not guess. I will note it for follow-up.";
+}
+
+/* Repetition is the loudest thing a prospect notices. The brain is told not to
+ * re-ask, and still did: on the simulated calls it asked for the MC number
+ * three times and re-introduced the company after the prospect had already
+ * greeted. A prompt rule is not enough, so the same rule is enforced where the
+ * words leave the agent. */
+const ASK_TOPICS = [
+  ["mcn", /\bmc\s*number\b|\bmc\s*#?\b/i],
+  ["phone", /\bphone number\b|\bbest (?:phone )?number\b|\bemail address\b|\breach you (?:at|on)\b/i],
+  ["name", /\byour name\b|\bwhat(?:'s| is) your name\b|\bmay i have your name\b|\bcan i get your name\b/i],
+  ["truckType", /\bwhat (?:type|kind) of (?:truck|vehicle)\b|\bwhich (?:type|kind) of (?:truck|vehicle)\b|\bdo you (?:drive|run|operate)\b/i],
+  ["truckSize", /\bhow many trucks\b|\bfleet size\b|\bwhat size\b|\bsize of your (?:fleet|trucks)\b/i],
+];
+
+/** Sentences that only re-ask for something already asked, plus a repeat intro.
+ *  Everything that is actually spoken gets recorded, so the same request can
+ *  never slip through twice - recording only the multi-sentence path let a
+ *  one-line "May I get your name?" be asked again on the next turn. */
+function stripRepeatedAsks(text, askedFor) {
+  const record = (t) => { for (const [k, re] of ASK_TOPICS) if (re.test(t)) askedFor.add(k); };
+  const sentences = splitSentences(String(text || ""));
+  if (sentences.length < 2) {
+    // A single-sentence turn that is nothing but a repeat ask carries no
+    // information; drop it so the prospect hears a pause, not a question again.
+    const only = ASK_TOPICS.find(([, re]) => re.test(text));
+    if (only && askedFor.has(only[0])) return "";
+    record(text);
+    return text;
+  }
+  const kept = [];
+  for (const s of sentences) {
+    const topic = ASK_TOPICS.find(([, re]) => re.test(s));
+    if (topic && askedFor.has(topic[0])) continue;
+    if (isRepeatIntroduction(s)) continue;
+    kept.push(s);
+    record(s);
+  }
+  return kept.join(" ").trim();
+}
+
+function isRepeatIntroduction(sentence) {
+  return /\bthis is (?:atlas|autumn|alex|[a-z]+) from\b|\bcalling (?:you )?from\b|\bcalling about\b/i.test(sentence);
 }
 
 async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null, callId = null }) {
@@ -108,8 +137,30 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
   const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId };
   const config = () => ({ ...baseConfig, locale: activeLocale });
-  const agent = async (text) => {
-    const line = String(text || "").trim();
+  const askedFor = new Set();
+  let openingSpoken = false;
+  const agent = async (text, opts = {}) => {
+    // Cap here, where the words are produced, so every consumer of a turn - a
+    // live call or an offline simulation - gets a speakable length. The
+    // controller caps again as a net before anything reaches the wire.
+    let line = capTurnLength(String(text || "").trim());
+    if (!line) return;
+    // Never re-introduce after the opening, and never re-ask for something
+    // already asked.
+    if (!openingSpoken) openingSpoken = true;
+    else {
+      const trimmed = stripRepeatedAsks(line, askedFor);
+      if (!trimmed) return; // nothing new to say; hold the line and let them talk
+      line = trimmed;
+    }
+    // The brain likes to mirror whatever script the prospect used, even on a
+    // call configured for another language. That put Devanagari and Arabic
+    // through an English voice on the 21:05Z call. Do not speak a script we
+    // have no voice for; RTP keep-alive holds the line and the next turn is
+    // generated in the configured language.
+    if (!NON_LATIN_LOCALE.has(String(activeLocale).toLowerCase()) && isMostlyNonLatin(line)) {
+      line = "";
+    }
     if (!line) return;
     transcript.push({ role: "agent", text: line, locale: activeLocale });
     await speak(line, { locale: activeLocale });
