@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.4.18
+AppVersion=1.4.19
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -147,7 +147,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.18.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.19.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;

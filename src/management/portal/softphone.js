@@ -232,6 +232,7 @@ function sipCallBridge(o) {
     let softphone = null;
     let callSession = null;
     let settled = false;
+    let phaseTimer = null;
 
     const cleanup = () => {
       try { if (callSession && !callSession.disposed) callSession.hangup(); } catch {}
@@ -241,8 +242,25 @@ function sipCallBridge(o) {
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      if (phaseTimer) { clearTimeout(phaseTimer); phaseTimer = null; }
       result.steps = steps;
       resolve(result);
+    };
+
+    // The SDK stays silent while it registers and while it builds the INVITE.
+    // A wedged socket there made connect() hang forever: the controller's busy
+    // lock never released, so every later dial failed with "busy" until the
+    // process was restarted. Bound each pre-answer phase and report the last
+    // SIP line we saw so the stall is diagnosable.
+    const armPhase = (ms, phase) => {
+      if (phaseTimer) clearTimeout(phaseTimer);
+      phaseTimer = setTimeout(() => {
+        if (settled) return;
+        const last = steps.length ? steps[steps.length - 1] : "no SIP traffic yet";
+        steps.push("timeout:" + phase);
+        cleanup();
+        finish({ ok: false, callSession: null, softphone, steps, last: "bridge timeout during " + phase + " (" + last + ")", media: null, cleanup });
+      }, ms);
     };
 
     (async () => {
@@ -261,10 +279,16 @@ function sipCallBridge(o) {
           if (steps.length < 60) steps.push("< " + String(m).trim().split("\r\n")[0]);
         });
 
+        armPhase(30000, "register");
         await softphone.register();
         steps.push("registered:" + softphone.sipInfo.username + "@" + softphone.sipInfo.domain);
 
+        armPhase(20000, "invite");
         callSession = await softphone.call(number);
+        // The invite phase can time out while this await is still pending, and
+        // cleanup() had no callSession to hang up yet. Drop the late session so
+        // a timed-out dial never leaves an orphaned call ringing at the carrier.
+        if (settled) { try { if (callSession && !callSession.disposed) callSession.hangup(); } catch {} return; }
         steps.push("invite:" + number);
 
         callSession.once("busy", () => {
@@ -275,6 +299,8 @@ function sipCallBridge(o) {
           if (!settled) finish({ ok: false, callSession: null, softphone, steps, last: "disposed", media: null, cleanup });
         });
 
+        // Backstop only: the 60s answer timer below is the real bound.
+        armPhase(65000, "answer");
         await new Promise((res, rej) => {
           const to = setTimeout(() => rej(new Error("answer timeout")), 60000);
           callSession.once("answered", () => { clearTimeout(to); res(); });

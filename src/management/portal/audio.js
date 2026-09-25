@@ -245,7 +245,13 @@ function edgeTts(text, voice) {
         const hl = buf.readUInt16BE(0);
         const head = buf.toString("ascii", 2, 2 + hl);
         if (!head.includes("Path:audio")) return;
-        chunks.push(buf.subarray(2 + hl + 2));
+        /* Edge binary audio frame = uint16 headerLen | headerLen header bytes |
+           mp3 payload to end of message. There is NO uint16 data-length field,
+           so skipping 2 more bytes here ate the first 2 bytes of every 720B
+           chunk (5x144B MPEG2 frames) and destroyed MP3 frame alignment:
+           ffmpeg recovered only 43.9% of frames and mpg123 emitted noise
+           ("your voice is breaking"). No extra skip. */
+        chunks.push(buf.subarray(2 + hl));
       } catch { finish(null); }
     });
     ws.on("error", () => finish(null));
