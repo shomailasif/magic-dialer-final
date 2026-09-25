@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.4.14
+AppVersion=1.4.15
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -48,9 +48,17 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 procedure StopRunningMagicDialer();
 var ResultCode: Integer;
 begin
-  { Upgrades must stop the watchdog/agent before replacing agent.exe. }
-  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM MagicDialer.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM agent.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  { Upgrades must stop the watchdog/agent before replacing agent.exe.
+    No /T on either taskkill: this setup process was spawned by the agent, so
+    killing the agent's child tree takes down the installer itself. The real
+    evidence: a self-update's setup log stopped dead between RestartManager
+    and the first file entry, left is-*.tmp behind, wrote no crash event, and
+    the agent processes were still alive at that instant - whereas an update
+    whose launching agent had already exited survived the same line. Both
+    agent.exe processes are matched by image name anyway, so /T bought
+    nothing and cost the whole install. }
+  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM MagicDialer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{cmd}'), '/d /c taskkill /F /IM agent.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   { A source-tree or orphaned node agent can hold 18787/48787 and block the
     replacement engine. Kill any node process running agent.js. }
   Exec(ExpandConstant('{cmd}'), '/d /c powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \"Name=''node.exe''\" | Where-Object { $_.CommandLine -match ''agent\.js'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -139,7 +147,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.14.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.15.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;

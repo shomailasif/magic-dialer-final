@@ -46,7 +46,7 @@ const { emailQualifiedLead } = require("./email");
 const { ensurePhoneSession } = require("./call-start");
 const { runLocalCall } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
-const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate } = require("./auto-update");
+const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate, _test: autoUpdateState } = require("./auto-update");
 const { safeLog } = require("./safe-diagnostic");
 
 /**
@@ -263,10 +263,35 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.14";
+const VERSION = "1.4.15";
+
+// Leaving is only correct while the installer we handed the update to is still
+// running: it is what stops the old engine and starts the new one. If it is
+// already gone the hand-off never happens, and exiting would leave the PC with
+// no agent at all until the next logon.
+function installerStillRunning() {
+  try {
+    const inst = autoUpdateState.readState().pendingInstaller;
+    if (!inst) return true;
+    const name = path.basename(inst);
+    const out = execSync(`tasklist /FI "IMAGENAME eq ${name}" /NH`, { encoding: "utf8", windowsHide: true, timeout: 4000, stdio: ["ignore", "pipe", "pipe"] });
+    return out.toLowerCase().includes(name.toLowerCase());
+  } catch { return true; }
+}
 
 function scheduleAutoUpdate() {
-  const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
+  const run = () => checkForUpdate(VERSION).then((r) => {
+    if (!r.updated) return;
+    log(`Verified update ${r.version} launched; checking the installer before restarting.`);
+    setTimeout(() => {
+      if (!installerStillRunning()) {
+        log(`Update ${r.version} installer exited before it took hold; staying on ${VERSION} so the PC is never left without an agent.`);
+        return;
+      }
+      log(`Installer for ${r.version} is running; exiting for supervised restart.`);
+      process.exit(0);
+    }, 1500);
+  }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
   setTimeout(run, 15000);
   const timer = setInterval(run, 6 * 60 * 60 * 1000);
   if (timer.unref) timer.unref();

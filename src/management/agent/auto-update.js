@@ -24,7 +24,21 @@ function readState(){const target=path.join(stateDir(),"state.json");try{return 
 function writeState(s){fs.mkdirSync(stateDir(),{recursive:true});const target=path.join(stateDir(),"state.json"),tmp=target+".tmp-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(s,null,2));if(fs.existsSync(target))fs.copyFileSync(target,target+".bak");fs.renameSync(tmp,target)}
 function seededInstaller(version){const p=path.join(stateDir(),"known-good-"+version+".exe");return fs.existsSync(p)?p:null}
 async function healthy(expectedVersion,timeoutMs=45000){const end=Date.now()+timeoutMs;while(Date.now()<end){try{const r=await fetch(HEALTH_URL,{cache:"no-store"});const j=await r.json();if(r.ok&&j.ok&&(!expectedVersion||j.version===expectedVersion))return true}catch{}await new Promise(r=>setTimeout(r,1000))}return false}
-function launchInstaller(file,logFile){const args=["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"];if(logFile)args.push("/LOG="+logFile);const c=spawn(file,args,{detached:true,stdio:"ignore",windowsHide:true});c.unref()}
+// The installer this agent spawns is a child of this agent, and the agent then
+// leaves. If the installer dies for any reason after that - it was killed by
+// its own StopRunningMagicDialer, crashed, was cut off - nothing is left to
+// restart the engine and the PC stays down until the next logon. Arm a
+// throwaway cmd.exe (deliberately NOT agent.exe, so the installer's taskkill
+// cannot take it down with us) that starts MagicDialer again if no agent is
+// running when it wakes up.
+function spawnRecoveryWatch(){
+ try{
+  const md=path.join(process.env.LOCALAPPDATA||os.homedir(),"Magic Dialer","MagicDialer.exe");
+  const cmd='ping -n 91 127.0.0.1 >nul & tasklist /FI "IMAGENAME eq agent.exe" 2>nul | findstr /I "agent.exe" >nul || start "" "'+md+'" --no-browser';
+  const c=spawn(process.env.ComSpec||"cmd.exe",["/d","/c",cmd],{detached:true,stdio:"ignore",windowsHide:true});c.unref();
+ }catch{}
+}
+function launchInstaller(file,logFile){const args=["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"];if(logFile)args.push("/LOG="+logFile);const c=spawn(file,args,{detached:true,stdio:"ignore",windowsHide:true});c.unref();spawnRecoveryWatch()}
 async function checkForUpdate(currentVersion){
  if(process.platform!=="win32")return{updated:false,reason:"not-windows"};
  const rr=await fetch(DISCOVERY_URL,{redirect:"follow",cache:"no-store",headers:{Accept:"application/vnd.github+json"}});if(!rr.ok)throw new Error("release discovery HTTP "+rr.status);
