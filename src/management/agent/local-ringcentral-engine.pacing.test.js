@@ -1,11 +1,14 @@
 "use strict";
 
-// Live calls showed three outbound failure modes that no other suite can see:
+// Live calls showed four outbound failure modes that no other suite can see:
 //   1. playback that only ever resolved via the watchdog (17080ms / 4000ms in
 //      watchdog-child.log) -> the voice was cut mid-sentence;
 //   2. a stalled event loop dumping a whole utterance into the far-end jitter
 //      buffer in one tick -> break-up on the callee's side;
-//   3. RTP leaving at the wrong wall-clock rate.
+//   3. RTP leaving at the wrong wall-clock rate;
+//   4. RTP stopping altogether between turns (15s with zero outbound packets
+//      on the 1.4.17 live call) -> the callee's jitter buffer drains and every
+//      reply starts cold, which is what the lead reported as voice breaking.
 // The fake Streamer below mirrors ringcentral-softphone's Streamer exactly:
 // 160-byte packets, `finished` = buffer < 160, "finished" emitted from inside
 // its own packet sender (which the pacer neutralises).
@@ -54,8 +57,9 @@ const stat = (logs, kind) => {
   const burst = Number((line.match(/maxBurst (\d+)f/) || [])[1]);
   const dropped = Number((line.match(/dropped (\d+)b/) || [])[1]);
   const gap = Number((line.match(/maxGap (\d+)ms/) || [])[1]);
+  const slow = Number((line.match(/slowGaps (\d+)f/) || [])[1]);
   const sent = Number((line.match(/outbound pacing: (\d+)\//) || [])[1]);
-  return { line, burst, dropped, gap, sent, warning: line.includes("pacing warning"), kind };
+  return { line, burst, dropped, gap, slow, sent, warning: line.includes("pacing warning"), kind };
 };
 
 async function main() {
@@ -73,6 +77,12 @@ async function main() {
     const s = stat(logs);
     assert.equal(s.sent, 19200, "every byte must have been sent");
     assert.ok(s.burst <= 4, `frames per tick must stay bounded, saw ${s.burst}`);
+    // The 1.4.17 live log showed maxGap 33-48ms against a 20ms frame grid:
+    // Windows wakes us every ~15.6ms, so the only defence is running ahead of
+    // the clock. The SDK's start() has already sent 1 frame, so a 480-byte
+    // due-count must push 2 more in that first tick.
+    assert.ok(s.burst >= 2, `the first tick must prime the callee buffer with send-ahead, saw ${s.burst} frames`);
+    assert.ok(s.gap < 60 && s.slow <= 2, `outbound gaps must stay bounded, saw maxGap ${s.gap}ms slowGaps ${s.slow}`);
     assert.ok(s.dropped === 0, "a healthy run must not drop audio");
     engine.close();
   }
@@ -108,7 +118,22 @@ async function main() {
     engine.close();
   }
 
-  console.log("PASS outbound pacing: wall clock, bounded catch-up, self-declared finish");
+  // 4. Between turns the engine must keep sending RTP. The 1.4.17 live call
+  //    logged 15s stretches with zero outbound packets while listening; the
+  //    callee's buffer drained and the next reply arrived cold.
+  {
+    const { engine, logs } = makeEngine();
+    await engine.connect();
+    const before = engine.status().bytesOut;
+    await new Promise(r => setTimeout(r, 450));
+    const after = engine.status().bytesOut;
+    assert.ok(after >= before + 800 * 2, `idle RTP must keep flowing (bytesOut ${before} -> ${after})`);
+    assert.ok(logs.some(l => l.includes("keep-alive silence")), "the first keep-alive must be reported in the log");
+    engine.close();
+    assert.ok(logs.some(l => l.includes("keep-alive sends")), "media stats must report keep-alive activity");
+  }
+
+  console.log("PASS outbound pacing: wall clock, bounded catch-up, self-declared finish, idle RTP");
 }
 
 main().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });

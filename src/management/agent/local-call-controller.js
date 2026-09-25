@@ -75,7 +75,20 @@ async function preflightLocalSip(config, deps = {}) {
   return { ok: true, host: result.host || null };
 }
 
-async function runLocalCall({ config, number, onLog = () => {}, onMode = () => {}, deps = {} }) {
+// Every control-path failure must reach watchdog-child.log: the first 1.4.17
+// test attempt failed with HTTP 500 after 64s and left no trace of why (it was
+// a SIP answer timeout - nobody picked up), which made the failure undiagnosable.
+async function runLocalCall(opts) {
+  try {
+    return await runLocalCallBody(opts);
+  } catch (e) {
+    const onLog = (opts && opts.onLog) || (() => {});
+    try { onLog("[local-media-v2] call control failed: " + ((e && e.message) || String(e))); } catch { /* logging must never mask the error */ }
+    throw e;
+  }
+}
+
+async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () => {}, deps = {} }) {
   const makeEngine = deps.createLocalRingCentralEngine || createLocalRingCentralEngine;
   const makeVad = deps.createVad || createVad;
   const tts = deps.speakToBuffer || speakToBuffer;

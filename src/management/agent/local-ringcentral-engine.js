@@ -4,6 +4,21 @@ const FRAME_BYTES = 160;
 const SILENCE = 0xff;
 const PACKET_MS = 20; // 160 bytes of PCMU = 20ms of speech at 8kHz
 const PACE_TICK_MS = 8;
+// Extra frames sent ahead of the wall clock (the "+1" below already gives the
+// first frame). Measured on this machine: setTimeout(_,8) wakes every ~15.6ms
+// (Windows system tick), so frames leave on a 16/32ms grid while speech is
+// 20ms/frame - a systematic 32ms hole in the outbound RTP, which is exactly
+// what starves the callee's jitter buffer ("your voice is breaking" on the
+// live 1.4.17 call). The receiver can only absorb that by holding a deeper
+// buffer, so we keep it primed: 60ms of send-ahead turns our holes into
+// buffered slack instead of underruns.
+const LEAD_FRAMES = 2;
+// With a 20ms grid and a 15.6ms wake tick a healthy run alternates 16ms and
+// 32ms gaps (measured: 30 of 120 frames above 25ms), so only gaps past two
+// frames are a real stall worth counting.
+const SLOW_GAP_MS = 40;
+const KEEPALIVE_MS = 120; // idle silence cadence: 100ms of audio every 120ms
+const KEEPALIVE_AUDIO = Buffer.alloc(FRAME_BYTES * 5, SILENCE);
 function normalizePcmu(input) {
   if (!input) return Buffer.alloc(0);
   const b = Buffer.isBuffer(input) ? input : Buffer.from(input);
@@ -48,11 +63,12 @@ function paceStreamer(streamer, totalBytes) {
   let stopped = false;
   let lastSendAt = startedAt;
   let maxGapMs = 0;
+  let slowGaps = 0;
   let maxBurstFrames = 0;
   let droppedBytes = 0;
   const stats = () => ({
     sentBytes: Math.max(0, totalBytes - (streamer && streamer.buffer ? streamer.buffer.length : 0) - droppedBytes),
-    droppedBytes, maxGapMs, maxBurstFrames, elapsedMs: Date.now() - startedAt,
+    droppedBytes, maxGapMs, slowGaps, maxBurstFrames, elapsedMs: Date.now() - startedAt,
   });
   const declareFinished = () => {
     try { streamer.emit("finished"); } catch { /* not an emitter */ }
@@ -62,7 +78,7 @@ function paceStreamer(streamer, totalBytes) {
     if (stopped) return;
     if (!streamer.buffer) return;
     if (streamer.finished) { declareFinished(); return; }
-    const due = Math.min(totalBytes, (Math.floor((Date.now() - startedAt) / PACKET_MS) + 1) * FRAME_BYTES);
+    const due = Math.min(totalBytes, (Math.floor((Date.now() - startedAt) / PACKET_MS) + 1 + LEAD_FRAMES) * FRAME_BYTES);
     const sent = totalBytes - streamer.buffer.length;
     const behind = due - sent;
     if (behind > MAX_BEHIND_FRAMES * FRAME_BYTES) {
@@ -83,6 +99,7 @@ function paceStreamer(streamer, totalBytes) {
       const now = Date.now();
       const gap = now - lastSendAt;
       if (gap > maxGapMs) maxGapMs = gap;
+      if (gap > SLOW_GAP_MS) slowGaps++;
       lastSendAt = now;
     }
     if (streamer.finished) { declareFinished(); return; }
@@ -99,6 +116,8 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   let settleUntil = 0;
   let lastInboundAt = 0;
   let maxInboundGapMs = 0;
+  let keepAliveSends = 0;
+  let keepAliveTimer = 0;
   async function connect() {
     bridge = await bridgeFactory({ ...sip, number });
     if (!bridge || !bridge.ok || !bridge.callSession) throw new Error((bridge && bridge.last) || "RingCentral call bridge failed");
@@ -117,6 +136,8 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     const onGone = () => {
       if (closed || gone) return;
       gone = true;
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = 0;
       const p = activePlayback;
       if (p && typeof p.finish === "function") p.finish();
       streamer = null;
@@ -154,6 +175,15 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     stopWarmPace();
     try { if (streamer && typeof streamer.stop === "function") streamer.stop(); } catch { /* best-effort */ }
     streamer = null;
+    // Keep RTP flowing for the whole call, not only while TTS synthesises.
+    // The 1.4.17 live log showed ~15s stretches with zero outbound packets
+    // during listen windows: the callee-side jitter buffer drains, so every
+    // reply starts cold and breaks up. 100ms of mu-law silence every 120ms
+    // keeps that buffer primed end to end. unref() so this timer can never be
+    // the reason a test process refuses to exit.
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = setInterval(() => { try { keepAlive(); } catch { /* never crash the call */ } }, KEEPALIVE_MS);
+    if (keepAliveTimer && typeof keepAliveTimer.unref === "function") keepAliveTimer.unref();
     onLog("[local-media-v2] RingCentral answered; local media active");
     return status();
   }
@@ -170,6 +200,7 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
     return new Promise((resolve, reject) => {
       if (!session || closed || gone) return reject(new Error(gone ? "call session ended remotely" : "local media is not connected"));
       let settled = false;
+      const isKeepAliveFeed = audio.length === KEEPALIVE_AUDIO.length && audio.equals(KEEPALIVE_AUDIO);
       const audioMs = Math.ceil(audio.length / 8);
       const watchdogMs = Math.min(Math.max(audioMs + 2500, 4000), 45000);
       let watchdog = 0;
@@ -188,9 +219,18 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
         if (s) {
           const audioMs = Math.ceil(audio.length / 8);
           const complete = s.sentBytes >= audio.length * 0.95;
-          const detail = `outbound pacing: ${s.sentBytes}/${audio.length} bytes in ${s.elapsedMs}ms (audio ${audioMs}ms), maxGap ${s.maxGapMs}ms, maxBurst ${s.maxBurstFrames}f, dropped ${s.droppedBytes}b`;
+          const detail = `outbound pacing: ${s.sentBytes}/${audio.length} bytes in ${s.elapsedMs}ms (audio ${audioMs}ms), maxGap ${s.maxGapMs}ms, slowGaps ${s.slowGaps}f, maxBurst ${s.maxBurstFrames}f, dropped ${s.droppedBytes}b`;
           const bad = s.maxGapMs > 60 || s.maxBurstFrames > MAX_BURST_FRAMES || s.droppedBytes > 0 || (complete && s.elapsedMs > audioMs + 300);
-          onLog(bad ? "[local-media-v2] pacing warning: " + detail : "[local-media-v2] " + detail);
+          // Idle keep-alive silence repeats ~8x/second for the whole call;
+          // logging every one would drown the turns. Log the first for proof
+          // and any that misbehave.
+          if (isKeepAliveFeed) {
+            keepAliveSends++;
+            if (bad) onLog("[local-media-v2] pacing warning (keep-alive): " + detail);
+            else if (keepAliveSends === 1) onLog("[local-media-v2] " + detail + " (keep-alive silence)");
+          } else {
+            onLog(bad ? "[local-media-v2] pacing warning: " + detail : "[local-media-v2] " + detail);
+          }
         }
         stopPace();
         if (activePlayback && activePlayback.finish === finish) activePlayback = null;
@@ -265,13 +305,15 @@ function createLocalRingCentralEngine({ sip, number, onAudio = () => {}, onLog =
   function keepAlive() {
     if (closed || gone || !session || activePlayback) return Promise.resolve(0);
     // never reject: an unhandled keep-alive promise would crash the child
-    return sendAudio(Buffer.alloc(FRAME_BYTES * 5, SILENCE)).catch(() => 0);
+    return sendAudio(KEEPALIVE_AUDIO).catch(() => 0);
   }
   function status() { return { connected: !!session && !closed && !gone, bytesIn, bytesOut, frameBytes: FRAME_BYTES, codec: "PCMU/8000" }; }
   function close() {
     if (closed) return;
     closed = true;
-    onLog(`[local-media-v2] media stats: inbound ${bytesIn} bytes, outbound ${bytesOut} bytes, max inbound gap ${maxInboundGapMs}ms`);
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = 0;
+    onLog(`[local-media-v2] media stats: inbound ${bytesIn} bytes, outbound ${bytesOut} bytes, max inbound gap ${maxInboundGapMs}ms, keep-alive sends ${keepAliveSends}`);
     try { if (streamer) streamer.stop(); } catch {}
     try { if (bridge && bridge.cleanup) bridge.cleanup(); } catch {}
     session = null;
