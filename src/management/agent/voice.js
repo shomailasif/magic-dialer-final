@@ -780,14 +780,25 @@ async function sapiToBuffer(text, { rate = 1 } = {}) {
  * Returns { buffer, engine } or null only when every tier fails.
  */
 async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } = {}) {
-  const edgeWs = await edgeWsToBuffer(text, { locale, style, rate });
-  if (edgeWs) return edgeWs;
-  const edge = await edgeToBuffer(text, { locale, style, rate });
-  if (edge) return edge;
-  const headtts = await headTtsToBuffer(text, { locale, style, rate });
-  if (headtts) return headtts;
-  const sapi = await sapiToBuffer(text, { locale, style, rate });
-  if (sapi) return sapi;
+  const chain = async (loc) => {
+    const edgeWs = await edgeWsToBuffer(text, { locale: loc, style, rate });
+    if (edgeWs) return edgeWs;
+    const edge = await edgeToBuffer(text, { locale: loc, style, rate });
+    if (edge) return edge;
+    const headtts = await headTtsToBuffer(text, { locale: loc, style, rate });
+    if (headtts) return headtts;
+    return await sapiToBuffer(text, { rate });
+  };
+  const first = await chain(locale);
+  if (first) return first;
+  // A locale whose voice cannot speak this script yields nothing: measured on
+  // the 20:25Z live call, Urdu script text returned null for locale=ur *and*
+  // locale=en, and the controller then killed the call mid-conversation. Retry
+  // the whole chain with the default voice so the phone still gets speech.
+  if (locale && String(locale).toLowerCase() !== "en") {
+    const fallback = await chain("en");
+    if (fallback) return fallback;
+  }
   return null;
 }
 

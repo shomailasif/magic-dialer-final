@@ -51,6 +51,24 @@ function isSubstantialUtterance(text) {
   return s.split(/\s+/).length >= 3 || s.length >= 15;
 }
 
+// Script sanity for an automatic language switch. Whisper auto-detects on
+// 1-2s clips and is wrong constantly: the 20:25Z call ran en -> fr -> ur inside
+// one conversation, and the ur flip made the agent speak a language whose voice
+// cannot synthesize, which is what ended the call. Text written in Latin script
+// is never a ur/ar/hi/zh/ja/ko/th/he/el/ru/uk turn, and vice versa.
+const NON_LATIN_LOCALE = new Set(["ur", "ar", "hi", "zh", "ja", "ko", "th", "he", "el", "ru", "uk"]);
+function scriptAgreesWithLocale(text, locale) {
+  const s = String(text || "");
+  if (!s) return false;
+  const letters = s.replace(/[^\p{L}\p{N}]/gu, "");
+  if (letters.length < 2) return false;
+  const nonLatin = (letters.match(/\p{Script=Arabic}|\p{Script=Cyrillic}|\p{Script=Devanagari}|\p{Script=Han}|\p{Script=Hiragana}|\p{Script=Katakana}|\p{Script=Hangul}|\p{Script=Thai}|\p{Script=Hebrew}|\p{Script=Greek}/gu) || []).length;
+  const isNonLatinText = nonLatin / letters.length > 0.3;
+  if (NON_LATIN_LOCALE.has(locale) && !isNonLatinText) return false;
+  if (!NON_LATIN_LOCALE.has(locale) && isNonLatinText) return false;
+  return true;
+}
+
 function fallbackOpening({ companyName, product, locale }) {
   const company = String(companyName || "our team").trim();
   const offering = String(product || "what we offer").trim();
@@ -75,8 +93,14 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let llmFailures = 0;
   let consecutiveSilence = 0;
   let consecutiveJunk = 0;
+  // The listen window dropped from 15s to 5s so the agent answers a prospect the
+  // way a human does. Hangup still needs two full quiet windows (a proven dead
+  // -line rule), so a dead line now costs ~10s of silence instead of ~30s, with
+  // a check-in spoken in between rather than 15s of nothing.
+  let quietMs = 0;
   let stopRequested = false;
   let humanRequested = false;
+  let pendingDetected = null;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
   const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId };
@@ -118,10 +142,27 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     const commanded = detectLanguageCommand(heard);
     if (commanded && commanded !== activeLocale) {
       activeLocale = commanded;
+      pendingDetected = null;
       timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "command" });
     } else if (detected && detected !== activeLocale && isSubstantialUtterance(heard)) {
-      activeLocale = detected;
-      timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "detected" });
+      // Two independent conditions before the recognizer may take the call over:
+      // the words must match the claimed script, and the same language has to be
+      // seen twice in a row. One clip is not enough - that is what turned an
+      // English call into French and then Urdu on the 20:25Z call.
+      if (scriptAgreesWithLocale(heard, detected)) {
+        if (pendingDetected === detected) {
+          activeLocale = detected;
+          pendingDetected = null;
+          timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "detected" });
+        } else {
+          pendingDetected = detected;
+          timeline.push({ at: Date.now(), event: "language-candidate", locale: detected, note: "awaiting a second confirming turn" });
+        }
+      } else {
+        pendingDetected = null;
+      }
+    } else {
+      pendingDetected = null;
     }
 
     // A window only counts as a *quiet* window when nothing arrived at all.
@@ -133,6 +174,11 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     const junkLead = !!heard && isJunkLead(heard);
     if (!heard || String(heard).startsWith("(silence)") || junkLead) {
       lead("(silence)");
+      // The listener reports how long the window actually ran, so a dead line
+      // still gets the same total patience as the old two 15s windows.
+      quietMs += Number(heardResult && typeof heardResult === "object" && Number(heardResult.waitedMs) > 0)
+        ? Number(heardResult.waitedMs)
+        : 5000;
       if (reportedNoise || junkLead) {
         consecutiveJunk++;
         // Bounded: a line that only ever beeps still ends the call.
@@ -142,13 +188,32 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         // Two quiet windows in a row = dead line. One window only prompts a check-in.
         if (consecutiveSilence >= 2) break;
       }
-      const hello = await nextTurn({ transcript: [...transcript, { role: "lead", text: "The line is quiet. Briefly check whether the prospect can hear you." }], ...config() }).catch(() => ({ text: null }));
+      // What to say into a quiet window. This used to always be a connectivity
+      // check, so a call that opened into dead air went straight to "Can you
+      // hear me okay?" (20:24Z and 20:25Z calls) and a live conversation that
+      // paused was told the line was quiet. Only escalate to a connectivity
+      // check, and only while the prospect has never spoken.
+      const neverHeard = !heardSomething;
+      const firstQuiet = consecutiveSilence + consecutiveJunk <= 1;
+      let ask;
+      if (neverHeard && firstQuiet) {
+        ask = { role: "lead", text: "The prospect has not answered yet. Restate who you are and your reason for calling in one short natural sentence, then ask whether this is a good time to talk. Do not ask if they can hear you." };
+      } else if (neverHeard) {
+        ask = { role: "lead", text: "Still no answer. Briefly check that the line is connected, in one short sentence." };
+      } else {
+        ask = { role: "lead", text: "The prospect went quiet. Continue the conversation naturally from what was just discussed, or ask one simple question to invite a reply. Do not comment on the line, the connection, or whether they can hear you." };
+      }
+      const hello = await nextTurn({ transcript: [...transcript, ask], ...config() }).catch(() => ({ text: null }));
       if (!hello.text) llmFailures++;
-      await agent(hello.text || (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?"));
+      await agent(hello.text || (neverHeard && firstQuiet
+        ? (activeLocale === "en" ? "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick call?" : "Hello.")
+        : (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?")));
       continue;
     }
     consecutiveSilence = 0;
     consecutiveJunk = 0;
+    quietMs = 0;
+    pendingDetected = null;
 
     lead(heard, detected);
     stopRequested = STOP_RE.test(heard);

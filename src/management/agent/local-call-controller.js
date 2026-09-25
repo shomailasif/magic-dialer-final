@@ -225,7 +225,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 350 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     let out;
     if (isOpening) {
@@ -243,11 +243,20 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
         if (ka) clearInterval(ka);
       }
     }
-    if (!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) throw new Error("TTS produced no valid PCMU/8000 telephone audio");
+    if (!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) {
+      // One unspeakable turn must not end a live call. On the 20:25Z call an
+      // Urdu reply synthesized to nothing and this threw, so the prospect got a
+      // dead line 105s in. Log it and keep the conversation open; the opening is
+      // still gated by the pre-dial TTS preflight, so a totally broken voice is
+      // caught before we ever dial.
+      onLog(`[local-media-v2] tts produced no audio for locale=${locale}; skipping turn instead of ending the call`);
+      if (state) { state.playing = false; state.playbackStartedAt = 0; }
+      return;
+    }
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 350 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -280,17 +289,27 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 350 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
-    const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, 15000);
+    // A prospect who has stopped talking is answered in well under a second by
+    // a human. The old 15s ceiling left 15s of dead air on the line before the
+    // agent said anything (measured: playback finished 20:26:07.098, "no speech
+    // in window" 20:26:22.109). The VAD still ends the window early the moment
+    // real speech stops, so this ceiling only governs "the far end said nothing
+    // at all" - and call-runner now budgets the hangup on cumulative quiet time
+    // so shortening it does not make the agent hang up sooner than before.
+    const windowMs = Number(turn.maxSilenceMs) > 0 ? Number(turn.maxSilenceMs) : 5000;
+    const windowStartedAt = Date.now();
+    const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, windowMs);
     await ended;
     clearTimeout(timer);
+    const waitedMs = Date.now() - windowStartedAt;
     const captured = state;
     state = null;
     if (sessionEnded) return { ended: true, text: null };
     if (!captured.started || !captured.chunks.length) {
-      onLog("[local-media-v2] listen: no speech in window");
-      return null;
+      onLog(`[local-media-v2] listen: no speech in window (${waitedMs}ms)`);
+      return { text: null, quiet: true, waitedMs };
     }
     const audio = Buffer.concat(captured.chunks);
     onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
@@ -309,7 +328,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
       // still audio on the line, so report them as junk rather than as a quiet
       // window — call-runner must not age them toward the dead-line hangup.
       onLog("[local-media-v2] STT junk ignored: " + stt.text);
-      return { text: null, junk: true };
+      return { text: null, junk: true, waitedMs };
     }
     // Speech reached the VAD but the recognizer returned nothing — do not let
     // call-runner treat this as a quiet line and hang up on the prospect.
@@ -321,7 +340,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     }
     if (retry.text) onLog("[local-media-v2] STT junk ignored: " + retry.text);
     else onLog("[local-media-v2] STT still empty after retry");
-    return { text: null, junk: !!retry.text, empty: !retry.text };
+    return { text: null, junk: !!retry.text, empty: !retry.text, waitedMs };
   };
 
   try {

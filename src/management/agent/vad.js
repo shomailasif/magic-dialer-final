@@ -24,7 +24,11 @@ function rmsPcmu(buf) {
 
 function createVad(opts = {}) {
   const minSpeechMs = Number(opts.minSpeechMs || 160);
-  const endSilenceMs = Number(opts.endSilenceMs || 350);
+  // 350ms cut prospects off mid-sentence: the 20:25Z call transcribed three
+  // fragments ("like this.", "of do.", "if I can.") off 0.8-1.1s clips while
+  // the agent kept asking for a name it had never actually heard. 700ms is the
+  // usual end-of-utterance guard and still answers faster than a human turn.
+  const endSilenceMs = Number(opts.endSilenceMs || 700);
   const floorFrames = Number(opts.floorFrames || 20);
   const absoluteFloor = Number(opts.absoluteFloor || 180);
   let noise = 0;

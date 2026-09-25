@@ -137,12 +137,12 @@ async function scenarioSteadyTone(logs) {
 
 /** Drive one listen window against a stub recognizer and hand back exactly what
  *  call-runner would receive. Shared by the greeting / empty-STT cases. */
-async function driveListenWindow({ stt }) {
-  let onAudio, heard = "unset";
+async function driveListenWindow({ stt, tts }) {
+  let onAudio, heard = "unset", sends = 0, threw = null, ttsTurns = 0;
   const logs = [];
   const engine = {
     async connect() {},
-    sendAudio() { return new Promise(resolve => setTimeout(() => resolve(3200), 1400)); },
+    sendAudio() { sends++; return new Promise(resolve => setTimeout(() => resolve(3200), 1400)); },
     interrupt() {},
     keepAlive() { return Promise.resolve(0); },
     close() {},
@@ -160,24 +160,35 @@ async function driveListenWindow({ stt }) {
         return { voiced: false, speaking: false, ended: true, level: 0 };
       }};
     },
-    async speakToBuffer() { return { buffer: Buffer.alloc(3200, 0xff), engine: "test" }; },
+    async speakToBuffer() {
+      // Preflight + opening must succeed; only the later turn is unspeakable.
+      ttsTurns++;
+      return tts === undefined || ttsTurns <= 1 ? { buffer: Buffer.alloc(3200, 0xff), engine: "test" } : tts;
+    },
     async transcribeAuto() { return stt; },
     async voiceCall({ speakFn, listenFn }) {
-      const speaking = speakFn("Hello");
-      await sleep(0);
-      for (let i = 0; i < 50; i++) onAudio(frame());
-      await sleep(1030);
-      for (let i = 51; i <= 110; i++) onAudio(frame());
-      await speaking;
-      heard = await listenFn({ locale: "en" });
-      return { heard };
+      try {
+        const speaking = speakFn("Hello");
+        await sleep(0);
+        for (let i = 0; i < 50; i++) onAudio(frame());
+        await sleep(1030);
+        for (let i = 51; i <= 110; i++) onAudio(frame());
+        await speaking;
+        // The second turn is the one that must survive an unspeakable script.
+        await speakFn("\u06a9\u06cc\u0627 \u0646\u0627\u0645 \u06c1\u06d2\u061f");
+        heard = await listenFn({ locale: "en" });
+        return { heard };
+      } catch (e) {
+        threw = e && e.message ? e.message : String(e);
+        return { heard };
+      }
     },
   };
   await runLocalCall({
     config: { voip: { ready: true, username: "u", sipPassword: "p", number: "1" }, product: "test" },
     number: "2", deps, onLog: collector(logs),
   });
-  return { heard, logs };
+  return { heard, logs, sends, threw };
 }
 
 /** Remote BYE: listen reports ended, and no further outbound audio is sent. */
@@ -277,6 +288,19 @@ async function main() {
   assert.equal(empty.heard && empty.heard.empty, true, "untranscribed speech must report captured-but-empty, not a quiet window");
   assert.ok(empty.logs.some(l => l.includes("STT returned empty for captured speech")), "empty-STT retry must be logged");
 
-  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT");
+  // A turn whose text cannot be synthesized must NOT end a live call. The
+  // 20:25Z call died 105s in with "TTS produced no valid PCMU/8000 telephone
+  // audio" because the agent had switched to a voice that cannot speak the
+  // prospect's script.
+  const dead = await driveListenWindow({ stt: { text: "Yes, I can hear you.", language: "en" }, tts: null });
+  assert.equal(dead.threw, null, "an unspeakable turn must not reject the call");
+  assert.equal(dead.heard && dead.heard.text, "Yes, I can hear you.", "the call must keep going after a skipped turn");
+  assert.ok(
+    dead.logs.some(l => l.includes("tts produced no audio") && l.includes("skipping turn")),
+    "the skipped turn must be logged"
+  );
+  assert.equal(dead.sends, 1, "only the opening may reach the wire; the unspeakable turn must send nothing");
+
+  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT, unspeakable turn");
 }
 main().catch(e => { console.error(e); process.exit(1); });
