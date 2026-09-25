@@ -19,11 +19,18 @@ const path = require("path");
 const assert = require("assert");
 
 const root = path.join(__dirname, "..");
+/* Tracked sites are mandatory. deploy/ is gitignored (.gitignore:43), so the
+   local mirror is checked only when it happens to exist. */
 const SITES = [
-  ["management/portal/audio.js", path.join(root, "portal/audio.js")],
-  ["agent/voice.js", path.join(root, "agent/voice.js")],
-  ["deploy/portal/audio.js", path.join(root, "../../deploy/portal/audio.js")],
-];
+  ["management/portal/audio.js", path.join(root, "portal/audio.js"), true],
+  ["agent/voice.js", path.join(root, "agent/voice.js"), true],
+  ["deploy/portal/audio.js", path.join(root, "../../deploy/portal/audio.js"), false],
+].filter(([, file, required]) => required || fs.existsSync(file));
+
+assert.ok(SITES.length >= 2, "the tracked Edge TTS framing sites must be present");
+for (const [name, file] of SITES) {
+  assert.ok(fs.existsSync(file), `${name} must exist`);
+}
 
 /* ---- 1. source contract: framing must not skip past the header ---- */
 for (const [name, file] of SITES) {
