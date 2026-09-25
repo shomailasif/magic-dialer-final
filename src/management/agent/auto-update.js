@@ -31,14 +31,22 @@ async function healthy(expectedVersion,timeoutMs=45000){const end=Date.now()+tim
 // throwaway cmd.exe (deliberately NOT agent.exe, so the installer's taskkill
 // cannot take it down with us) that starts MagicDialer again if no agent is
 // running when it wakes up.
+// pkg stamps every child of a pkg'd process with PKG_EXECPATH=<this exec path>.
+// Anything in that chain that starts agent.exe again - the installer's [Run],
+// the recovery cmd, a shell in between - then makes bootstrap.js take its
+// splice branch and treat --watchdog as the entry script, so the agent dies
+// with MODULE_NOT_FOUND before a line of JS runs. "" is never equal to
+// execPath, so the child's bootstrap takes the default-entrypoint branch and
+// the process boots normally.
+function pkgSafeEnv(){const e={};for(const k in process.env){if(/^PKG_EXECPATH$/i.test(k))continue;e[k]=process.env[k]}e.PKG_EXECPATH="";return e}
 function spawnRecoveryWatch(){
  try{
   const md=path.join(process.env.LOCALAPPDATA||os.homedir(),"Magic Dialer","MagicDialer.exe");
   const cmd='ping -n 91 127.0.0.1 >nul & tasklist /FI "IMAGENAME eq agent.exe" 2>nul | findstr /I "agent.exe" >nul || start "" "'+md+'" --no-browser';
-  const c=spawn(process.env.ComSpec||"cmd.exe",["/d","/c",cmd],{detached:true,stdio:"ignore",windowsHide:true});c.unref();
+  const c=spawn(process.env.ComSpec||"cmd.exe",["/d","/c",cmd],{detached:true,stdio:"ignore",windowsHide:true,env:pkgSafeEnv()});c.unref();
  }catch{}
 }
-function launchInstaller(file,logFile){const args=["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"];if(logFile)args.push("/LOG="+logFile);const c=spawn(file,args,{detached:true,stdio:"ignore",windowsHide:true});c.unref();spawnRecoveryWatch()}
+function launchInstaller(file,logFile){const args=["/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"];if(logFile)args.push("/LOG="+logFile);const c=spawn(file,args,{detached:true,stdio:"ignore",windowsHide:true,env:pkgSafeEnv()});c.unref();spawnRecoveryWatch()}
 async function checkForUpdate(currentVersion){
  if(process.platform!=="win32")return{updated:false,reason:"not-windows"};
  const rr=await fetch(DISCOVERY_URL,{redirect:"follow",cache:"no-store",headers:{Accept:"application/vnd.github+json"}});if(!rr.ok)throw new Error("release discovery HTTP "+rr.status);
@@ -83,4 +91,4 @@ async function rollbackPendingUpdate(currentVersion){
  if(prior&&fs.existsSync(prior)){launchInstaller(prior,path.join(stateDir(),"setup-rollback.log"));return{pending:true,healthy:false,rollback:true}}
  return{pending:true,healthy:false,rollback:false};
 }
-module.exports={DISCOVERY_URL,RELEASE_BASE,HEALTH_URL,CUSTOMER_HEALTH_URL,newer,validRelease,validManifest,sha256,healthy,customerHealthy,checkForUpdate,validatePendingUpdate,rollbackPendingUpdate,_test:{readState,writeState,stateDir,seededInstaller}};
+module.exports={DISCOVERY_URL,RELEASE_BASE,HEALTH_URL,CUSTOMER_HEALTH_URL,newer,validRelease,validManifest,sha256,healthy,customerHealthy,checkForUpdate,validatePendingUpdate,rollbackPendingUpdate,_test:{readState,writeState,stateDir,seededInstaller,pkgSafeEnv}};

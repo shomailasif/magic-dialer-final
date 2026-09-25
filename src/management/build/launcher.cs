@@ -11,9 +11,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Magic Dialer")]
 [assembly: AssemblyCompany("Magic Dialer")]
 [assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
-[assembly: AssemblyVersion("1.4.15.0")]
-[assembly: AssemblyFileVersion("1.4.15.0")]
-[assembly: AssemblyInformationalVersion("1.4.15")]
+[assembly: AssemblyVersion("1.4.16.0")]
+[assembly: AssemblyFileVersion("1.4.16.0")]
+[assembly: AssemblyInformationalVersion("1.4.16")]
 [assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
 
 static class MagicDialerLauncher
@@ -141,6 +141,14 @@ static class MagicDialerLauncher
                         var errTail = new StringBuilder();
                         try
                         {
+                            // The installer that launched us is a child of a pkg'd
+                            // agent.exe, so it carries pkg's PKG_EXECPATH marker and
+                            // passes it down. bootstrap.js:64 then splices argv and
+                            // resolves '--watchdog' as the entry script, killing the
+                            // agent with MODULE_NOT_FOUND before a line of JS runs -
+                            // which is how a self-update could leave a machine down.
+                            // Drop it so the agent always boots from its own bundle.
+                            psi.EnvironmentVariables.Remove("PKG_EXECPATH");
                             spawned = Process.Start(psi);
                             spawnedPid = spawned == null ? -1 : spawned.Id;
                             if (spawned != null)
