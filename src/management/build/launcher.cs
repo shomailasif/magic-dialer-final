@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -10,9 +11,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Magic Dialer")]
 [assembly: AssemblyCompany("Magic Dialer")]
 [assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
-[assembly: AssemblyVersion("1.4.13.0")]
-[assembly: AssemblyFileVersion("1.4.13.0")]
-[assembly: AssemblyInformationalVersion("1.4.13")]
+[assembly: AssemblyVersion("1.4.14.0")]
+[assembly: AssemblyFileVersion("1.4.14.0")]
+[assembly: AssemblyInformationalVersion("1.4.14")]
 [assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
 
 static class MagicDialerLauncher
@@ -105,7 +106,7 @@ static class MagicDialerLauncher
                     // trying long enough to outlive that window; an interactive
                     // one stays short so the user is never left staring.
                     bool headless = HasArg(args, "--no-browser");
-                    int maxAttempts = headless ? 15 : 3;
+                    int maxAttempts = headless ? 120 : 3;
                     int lastCode = 4;
                     for (int attempt = 1; attempt <= maxAttempts; attempt++)
                     {
@@ -128,14 +129,32 @@ static class MagicDialerLauncher
                             WorkingDirectory = dir,
                             UseShellExecute = false,
                             CreateNoWindow = true,
-                            WindowStyle = ProcessWindowStyle.Hidden
+                            WindowStyle = ProcessWindowStyle.Hidden,
+                            // The child dies ~1.2s after spawn with exit code 1 and
+                            // writes nothing durable anywhere; its stderr is the only
+                            // remaining witness. Drain it asynchronously so the pipe
+                            // can never fill and block the child.
+                            RedirectStandardError = true
                         };
                         int spawnedPid = -1;
                         Process spawned = null;
+                        var errTail = new StringBuilder();
                         try
                         {
                             spawned = Process.Start(psi);
                             spawnedPid = spawned == null ? -1 : spawned.Id;
+                            if (spawned != null)
+                            {
+                                spawned.ErrorDataReceived += (s, e) =>
+                                {
+                                    if (e.Data == null) return;
+                                    lock (errTail)
+                                    {
+                                        if (errTail.Length < 4000) errTail.AppendLine(e.Data);
+                                    }
+                                };
+                                spawned.BeginErrorReadLine();
+                            }
                             Note("attempt " + attempt + ": spawned agent pid=" + spawnedPid +
                                  " [" + ImageState(agent) + "]");
                         }
@@ -167,6 +186,13 @@ static class MagicDialerLauncher
                                     {
                                         verdict = "agent pid=" + spawnedPid + " exited code=" +
                                                   spawned.ExitCode + " after " + wait.ElapsedMilliseconds + "ms";
+                                        Thread.Sleep(150);
+                                        string tail;
+                                        lock (errTail) tail = errTail.ToString().Trim();
+                                        if (tail.Length > 0)
+                                            verdict += " stderr=\"" + tail.Replace("\r", " ").Replace("\n", " | ") + "\"";
+                                        else
+                                            verdict += " stderr=<empty>";
                                         break;
                                     }
                                 }

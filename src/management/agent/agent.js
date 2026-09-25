@@ -1,3 +1,35 @@
+// Bootstrap witness. This must stay the first executable code in the file: if
+// anything below it throws while the module is still loading, control never
+// reaches require.main and the process exits 1 with no trace anywhere. The
+// block below leaves a durable line before any other require runs, and turns
+// a silent load-time crash into a durable one.
+(function bootWitness() {
+  try {
+    const p = require("node:path").join(require("node:os").homedir(), "AppData", "Local", "Magic Dialer", "watchdog-supervisor.log");
+    const f = require("node:fs");
+    const rec = (tag, extra) => f.appendFileSync(p, `[${tag}] ${new Date().toISOString()} pid=${process.pid} ${extra}\n`);
+    if (require.main === module) rec("boot", `argv=${JSON.stringify(process.argv.slice(2))}`);
+    // Everything the process would print to stderr - Node's own "module failed
+    // to load" report included - also lands in the durable log, so a crash is
+    // never invisible just because nobody was holding the console.
+    try {
+      const realWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (chunk, ...rest) => {
+        try { rec("stderr", String(chunk).replace(/\s+$/, "")); } catch {}
+        return realWrite(chunk, ...rest);
+      };
+    } catch {}
+    process.on("uncaughtException", (e) => {
+      try { rec("fatal", `uncaught ${(e && e.stack) || e}`); } catch {}
+      process.exit(1);
+    });
+    process.on("unhandledRejection", (e) => {
+      try { rec("fatal", `unhandled ${(e && e.stack) || e}`); } catch {}
+      process.exit(1);
+    });
+  } catch {}
+})();
+
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -231,7 +263,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.13";
+const VERSION = "1.4.14";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
