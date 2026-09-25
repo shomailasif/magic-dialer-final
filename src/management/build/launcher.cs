@@ -10,9 +10,9 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Magic Dialer")]
 [assembly: AssemblyCompany("Magic Dialer")]
 [assembly: AssemblyDescription("Magic Dialer - Automated Voice Outreach Agent")]
-[assembly: AssemblyVersion("1.4.12.0")]
-[assembly: AssemblyFileVersion("1.4.12.0")]
-[assembly: AssemblyInformationalVersion("1.4.12")]
+[assembly: AssemblyVersion("1.4.13.0")]
+[assembly: AssemblyFileVersion("1.4.13.0")]
+[assembly: AssemblyInformationalVersion("1.4.13")]
 [assembly: Guid("8f40b2c9-7b0e-4c08-b3f6-9f6a2dfbd4a1")]
 
 static class MagicDialerLauncher
@@ -99,8 +99,15 @@ static class MagicDialerLauncher
                     // process RestartManager just revived — ended with the launcher
                     // walking away and nothing else on the machine restarting the
                     // agent until the next logon. Retry instead of giving up.
+                    // A real self-update outage lasted ~3 minutes: every spawn
+                    // died before it ran a line of JS for as long as the installer
+                    // was alive, then worked. A headless start therefore keeps
+                    // trying long enough to outlive that window; an interactive
+                    // one stays short so the user is never left staring.
+                    bool headless = HasArg(args, "--no-browser");
+                    int maxAttempts = headless ? 15 : 3;
                     int lastCode = 4;
-                    for (int attempt = 1; attempt <= 3; attempt++)
+                    for (int attempt = 1; attempt <= maxAttempts; attempt++)
                     {
                         if (!File.Exists(agent))
                         {
@@ -124,11 +131,13 @@ static class MagicDialerLauncher
                             WindowStyle = ProcessWindowStyle.Hidden
                         };
                         int spawnedPid = -1;
+                        Process spawned = null;
                         try
                         {
-                            var started = Process.Start(psi);
-                            spawnedPid = started == null ? -1 : started.Id;
-                            Note("attempt " + attempt + ": spawned agent pid=" + spawnedPid);
+                            spawned = Process.Start(psi);
+                            spawnedPid = spawned == null ? -1 : spawned.Id;
+                            Note("attempt " + attempt + ": spawned agent pid=" + spawnedPid +
+                                 " [" + ImageState(agent) + "]");
                         }
                         catch (Exception spawnEx)
                         {
@@ -139,17 +148,40 @@ static class MagicDialerLauncher
                             continue;
                         }
 
-                        if (WaitForEngine(12000))
+                        // The process can die before it runs a single line of JS.
+                        // Its exit code is the only witness to why.
+                        var wait = Stopwatch.StartNew();
+                        string verdict = null;
+                        while (wait.ElapsedMilliseconds < 12000)
                         {
-                            Note("exit=0 engine ready on attempt " + attempt + " (pid " + spawnedPid + ")");
-                            return 0;
+                            if (EngineIsReady())
+                            {
+                                Note("exit=0 engine ready on attempt " + attempt + " (pid " + spawnedPid + ")");
+                                return 0;
+                            }
+                            if (spawned != null)
+                            {
+                                try
+                                {
+                                    if (spawned.HasExited)
+                                    {
+                                        verdict = "agent pid=" + spawnedPid + " exited code=" +
+                                                  spawned.ExitCode + " after " + wait.ElapsedMilliseconds + "ms";
+                                        break;
+                                    }
+                                }
+                                catch { verdict = "agent pid=" + spawnedPid + " is gone"; break; }
+                            }
+                            Thread.Sleep(200);
                         }
-                        lastCode = 4;
-                        Note("attempt " + attempt + ": engine still not ready after 12000ms [" +
-                             EngineState() + "] pid=" + SpawnedStillAlive(spawnedPid));
+                        if (verdict == null)
+                            verdict = "agent pid=" + spawnedPid + " still alive after " + wait.ElapsedMilliseconds + "ms";
+                        lastCode = verdict.Contains("exited code=") ? 1 : 4;
+                        Note("attempt " + attempt + ": " + verdict + " [" + EngineState() + "] " +
+                             ImageState(agent));
                         Thread.Sleep(2000);
                     }
-                    Note("exit=" + lastCode + " giving up after 3 attempts [" + EngineState() + "]");
+                    Note("exit=" + lastCode + " giving up after " + maxAttempts + " attempts [" + EngineState() + "]");
                     return lastCode;
                 }
                 finally
@@ -166,15 +198,15 @@ static class MagicDialerLauncher
         }
     }
 
-    private static string SpawnedStillAlive(int pid)
+    private static string ImageState(string path)
     {
-        if (pid <= 0) return "pid=?";
         try
         {
-            var p = Process.GetProcessById(pid);
-            return "alive=" + (!p.HasExited);
+            var fi = new FileInfo(path);
+            return "agent.exe size=" + fi.Length + " mtime=" +
+                   fi.LastWriteTime.ToString("HH:mm:ss.fff");
         }
-        catch { return "alive=false"; }
+        catch (Exception ex) { return "agent.exe unreadable: " + ex.GetType().Name; }
     }
 
     // A headless start (--no-browser) runs unattended, at boot, and from the

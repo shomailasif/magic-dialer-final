@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.4.12
+AppVersion=1.4.13
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -99,8 +99,8 @@ begin
 
   { StopRunningMagicDialer killed watchdog+agent at ssInstall, and the [Run]
     entry is nowait: it hands MagicDialer control and moves straight on. The
-    launcher now retries for ~40s, so give it that long before concluding. }
-  for i := 1 to 25 do begin
+    launcher now retries for ~4 minutes, so give it that long before concluding. }
+  for i := 1 to 45 do begin
     if AgentRunning() then exit;
     Sleep(1000);
   end;
@@ -114,16 +114,15 @@ begin
       definition stale. A stale lock that names a recycled PID is precisely
       what makes every relaunch start and immediately resign — clear it. }
     DeleteFile(ExpandConstant('{localappdata}\Magic Dialer\watchdog.lock'));
+    { nowait on purpose: the observed outage outlived the installer, so the
+      relaunch must outlive it too. Its own launcher.log records the outcome. }
     if not Exec(ExpandConstant('{app}\MagicDialer.exe'), '--no-browser',
-                ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, LaunchResult) then begin
+                ExpandConstant('{app}'), SW_HIDE, ewNoWait, LaunchResult) then begin
       Log('setup: relaunch failed to start');
       break;
     end;
-    { 0 = engine ready, 1 = spawn threw, 2 = agent.exe missing, 3 = mutex busy,
-      4 = engine never became ready. Silent exit codes were the reason this
-      outage left no trace. }
-    Log('setup: launcher exited with code ' + IntToStr(LaunchResult));
-    for i := 1 to 4 do begin
+    Log('setup: relaunch started (runs beyond setup; see launcher.log)');
+    for i := 1 to 10 do begin
       Sleep(1000);
       if AgentRunning() then exit;
     end;
@@ -140,7 +139,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.12.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.13.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;
