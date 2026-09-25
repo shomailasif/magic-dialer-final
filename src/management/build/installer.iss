@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.4.10
+AppVersion=1.4.11
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -98,6 +98,10 @@ begin
   for Attempts := 1 to 3 do begin
     Log('setup: no agent process after install (attempt ' + IntToStr(Attempts) +
         '); relaunching supervisor');
+    { We only get here when no agent.exe exists, so any supervisor lock is by
+      definition stale. A stale lock that names a recycled PID is precisely
+      what makes every relaunch start and immediately resign — clear it. }
+    DeleteFile(ExpandConstant('{localappdata}\Magic Dialer\watchdog.lock'));
     if not Exec(ExpandConstant('{app}\MagicDialer.exe'), '--no-browser',
                 ExpandConstant('{app}'), SW_HIDE, ewNoWait, LaunchResult) then begin
       Log('setup: relaunch failed to start');
@@ -120,7 +124,7 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.10.exe';
+    CacheFile := CacheDir + '\\known-good-1.4.11.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;

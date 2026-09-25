@@ -100,19 +100,57 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+const WATCHDOG_LOG = path.join(path.dirname(WATCHDOG_LOCK), "watchdog-supervisor.log");
+
+/** Durable record of every lock decision; console output is discarded when the GUI launcher spawns us. */
+function supervisorNote(msg) {
+  try {
+    fs.appendFileSync(WATCHDOG_LOG, `[supervisor] ${new Date().toISOString()} ${msg}\n`);
+  } catch {}
+}
+
+/**
+ * Positive identification of a PID before we trust it as a rival supervisor.
+ * Windows recycles PIDs, so a stale lock can name a live but unrelated
+ * process — and refusing on a recycled PID means no supervisor ever starts
+ * again: no crash, no log line, no agent, until the next logon.
+ * Anything we cannot positively identify is treated as not-a-supervisor.
+ */
+function pidIsOurSupervisor(pid) {
+  const p = Number(pid);
+  try {
+    if (process.platform === "win32") {
+      const r = execSync(`tasklist /FI "PID eq ${p}" /NH`, { encoding: "utf8", windowsHide: true, timeout: 4000, stdio: ["ignore", "pipe", "pipe"] });
+      // \b keeps an unrelated "<something>agent.exe" from matching.
+      return /\bagent\.exe\b/i.test(String(r));
+    }
+    const r = execSync(`ps -p ${p} -o args=`, { encoding: "utf8", timeout: 4000, stdio: ["ignore", "pipe", "pipe"] });
+    return /\bagent(\.exe|\.js)?\b/i.test(String(r));
+  } catch (e) {
+    supervisorNote(`could not identify pid ${p}: ${safeLog(e)}`);
+    return false;
+  }
+}
+
 function takeWatchdogLock() {
   try {
     if (fs.existsSync(WATCHDOG_LOCK)) {
-      const old = Number(String(fs.readFileSync(WATCHDOG_LOCK, "utf8")).trim());
-      if (old && (process.platform === "win32" ? old !== process.pid && pidAlive(old) : pidAlive(old))) {
+      const raw = String(fs.readFileSync(WATCHDOG_LOCK, "utf8")).trim();
+      const old = Number(raw);
+      const foreign = old && old !== process.pid && pidAlive(old);
+      const rival = foreign && pidIsOurSupervisor(old);
+      if (rival) {
+        supervisorNote(`another supervisor (pid ${old}) is running - exiting.`);
         console.log(`[watchdog] another supervisor (pid ${old}) is already running — exiting.`);
         return false;
       }
+      supervisorNote(`taking over stale lock (raw=${JSON.stringify(raw)} alive=${!!foreign} ours=${rival})`);
     }
     fs.mkdirSync(path.dirname(WATCHDOG_LOCK), { recursive: true });
     fs.writeFileSync(WATCHDOG_LOCK, String(process.pid));
+    supervisorNote(`lock acquired (pid ${process.pid})`);
     return true;
-  } catch { return true; } // never block supervision over a lock file
+  } catch (e) { supervisorNote(`lock handling error: ${safeLog(e)} - proceeding`); return true; } // never block supervision over a lock file
 }
 
 async function runWatchdog(args) {
@@ -190,7 +228,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.10";
+const VERSION = "1.4.11";
 
 function scheduleAutoUpdate() {
   const run = () => checkForUpdate(VERSION).then((r) => { if (r.updated) { log(`Verified update ${r.version} launched; exiting for supervised restart.`); setTimeout(() => process.exit(0), 1500); } }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
@@ -673,7 +711,7 @@ async function runAgent(opts = {}) {
   await heartbeatTask;
 }
 
-module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity };
+module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity, _watchdog: { takeWatchdogLock, pidIsOurSupervisor, pidAlive, WATCHDOG_LOCK, WATCHDOG_LOG, supervisorNote } };
 
 // Allow running directly: agent.exe [token] [portalUrl] [--setup] [--open] [--watchdog] [--no-browser] [--call]
 if (require.main === module) {
