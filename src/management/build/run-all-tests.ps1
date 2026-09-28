@@ -15,6 +15,7 @@ $tests = @(
   "build\\groq-direct-probe-contract.test.js",
   "build\\engine-ai-stage-contract.test.js",
   "build\\engine-device-auth-contract.test.js",
+  "build\\engine-enrollment-multi-pc-contract.test.js",
   "build\\engine-device-auth.behavior.test.ts",
   "build\\ai-quota.behavior.test.ts",
   "build\\ai-quota-contract.test.js",

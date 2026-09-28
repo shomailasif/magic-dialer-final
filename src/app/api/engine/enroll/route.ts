@@ -21,7 +21,15 @@ export async function POST(req:Request){
     });
     if(claimed.count!==1) throw new Error("ENROLL");
    const token=randomBytes(32).toString("base64url");
-   await tx.engineDevice.updateMany({where:{userId:row.userId,machineId:{not:machineId}},data:{revokedAt:now,leaseUntil:null}});
+   // Do NOT revoke the customer's other machines here. `revokedAt` is set
+   // nowhere else in this codebase - there is no admin revoke and no "unlink
+   // this PC" - so enrolling on one machine permanently bricked every other
+   // one: their heartbeats returned 401 Unauthorized and every call they placed
+   // failed with "Call failed: Unauthorized", leaving a working machine running
+   // with no portal config (no introduction, no language handling, abrupt
+   // endings). The lease claimed above already guarantees a single active
+   // machine, and the heartbeat hands it over automatically two minutes after
+   // the previous machine stops, so switching machines needs no revocation.
    await tx.engineDevice.upsert({where:{userId_machineId:{userId:row.userId,machineId}},create:{userId:row.userId,machineId,tokenHash:hash(token),leaseUntil},update:{tokenHash:hash(token),revokedAt:null,leaseUntil}});
    return token;
   });
