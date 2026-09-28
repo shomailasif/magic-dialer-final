@@ -231,6 +231,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // it instead of moving to the next topic.
   let lastAgentAsked = null;
   const spokenLines = new Set();
+  let lastSpokenLine = null;
   // Everything the prospect actually said, so the closing can repeat their number.
   const leadSpeech = [];
   let openingSpoken = false;
@@ -244,9 +245,13 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     // already asked.
     if (!openingSpoken) openingSpoken = true;
     else {
-      const trimmed = stripRepeatedAsks(line, askedFor);
-      if (!trimmed) return; // nothing new to say; hold the line and let them talk
-      line = trimmed;
+      // A repeat introduction may only be dropped once the opening has actually
+      // been said. On the 19:09Z call the brain was asked to restate the opener,
+      // did exactly that, and the guard then deleted the whole line for being a
+      // restatement - the agent said nothing for 14 seconds. A guard that makes
+      // us go quiet is worse than the repetition it prevents.
+      const trimmed = lastSpokenLine ? stripRepeatedAsks(line, askedFor) : line;
+      if (trimmed) line = trimmed;
     }
     // The brain likes to mirror whatever script the prospect used, even on a
     // call configured for another language. That put Devanagari and Arabic
@@ -275,6 +280,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       line = subs.find((s) => !spokenLines.has(norm(s))) || subs[0];
     }
     spokenLines.add(norm(line));
+    lastSpokenLine = line;
     transcript.push({ role: "agent", text: line, locale: activeLocale });
     await speak(line, { locale: activeLocale, intent: opts.intent });
   };
@@ -458,26 +464,39 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         ...transcript,
         {
           role: "lead",
-          text: `The conversation is over. Speak a short, warm professional closing. You MUST state the callback number ${captured ? `as "${captured}"` : "you already have on file"} and say that a manager will call back within the next 30 minutes. Thank them once, say goodbye, and stop. One or two sentences, no new questions.`,
+          text: `The conversation is over. Speak a short, warm professional closing. ${captured ? `State the callback number exactly as "${captured}".` : "Never state or invent any phone number - you do not have one."} Say that a manager will call back within the next 30 minutes. Thank them once, say goodbye, and stop. One or two sentences, no new questions.`,
         },
       ],
       ...config(),
     });
-    if (closing.text) {
-      // The closing is the one line that must never be dropped: if the brain
-      // stalled we still owe the prospect the number and the callback promise.
-      let line = capTurnLength(closing.text);
-      if (captured && !line.includes(captured)) {
-        const digits = captured.replace(/\D/g, "");
-        if (digits.length >= 7 && !line.replace(/\D/g, "").includes(digits)) {
-          line = line.replace(/[.!]?\s*$/, `. We'll call you back on ${captured} within the next 30 minutes.`);
+      if (closing.text) {
+        /* Build the whole closing first, cap it LAST, and never let the model
+         * state a number nobody gave it. The 19:09Z call produced an 11.2-second
+         * closing that said the same thing twice and quoted a phone number the
+         * prospect never gave, because the brain was asked to state "the number
+         * you already have on file" and invented one. */
+        let line = closing.text;
+        // Strip any number the model produced that we did not capture.
+        if (captured) {
+          const wanted = captured.replace(/\D/g, "");
+          line = line.replace(/[\d][\d\s().`'\-]{5,}[\d]/g, (m) => (m.replace(/\D/g, "") === wanted ? m : ""));
+        } else {
+          line = line.replace(/[\d][\d\s().`'\-]{5,}[\d]/g, "");
         }
-      }
-      if (!/\b30 minutes\b/i.test(line)) {
-        line = line.replace(/[.!]?\s*$/, ". A manager will call you back within the next 30 minutes.");
-      }
-      await agent(line, { intent: "closing" });
-    } else {
+        const saysCallback = /\b(manager|call you back|callback|follow up|ring you|get back to you)\b/i.test(line);
+        if (!saysCallback) {
+          line = line.replace(/[.!]?\s*$/, captured
+            ? `. We'll call you back on ${captured} within the next 30 minutes.`
+            : ". A manager will call you back within the next 30 minutes.");
+        } else if (captured && !line.includes(captured)) {
+          // It promised a callback but never gave the number. Add just the number.
+          line = line.replace(/[.!]?\s*$/, ` on ${captured}.`);
+        }
+        if (!/\b30 minutes\b/i.test(line)) {
+          line = line.replace(/[.!]?\s*$/, ". We'll be in touch within 30 minutes.");
+        }
+        await agent(capTurnLength(line), { intent: "closing" });
+      } else {
       await agent(captured
         ? `Thanks for your time. A manager will call you back on ${captured} within the next 30 minutes. Goodbye.`
         : "Thanks for your time. A manager will call you back within the next 30 minutes. Goodbye.");

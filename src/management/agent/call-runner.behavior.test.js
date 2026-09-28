@@ -208,6 +208,31 @@ async function main() {
     );
     // And it must not have hung up: silence is not consent.
     assert.equal(unheard.listenCalls.length >= 4, true, "unheard windows must not age into the dead-line hangup");
+    // A guard must never make the agent go quiet. On the 19:09Z call the brain
+    // was asked to restate the opener, complied, and the repeat-introduction
+    // guard then deleted the whole line - 14 seconds of dead air.
+    const openerAgain = await run([{ text: null, quiet: true, waitedMs: 5000 }, { text: "too late", language: "en" }]);
+    assert.ok(openerAgain.spoken.length >= 2, `the agent must speak after a quiet window, got ${JSON.stringify(openerAgain.spoken)}`);
+    const gap = openerAgain.spoken.length;
+    assert.ok(gap >= 2, "silence after a quiet window is the worst possible failure");
+
+    // The closing must never state a number nobody gave, must not say the same
+    // thing twice, and must fit in a turn.
+    const closingRuns = [
+      [JUNK, JUNK, JUNK, JUNK],
+      [{ text: "My number is 555 123 4567.", language: "en" }, { text: "Yes, I can hear you.", language: "en" }, { text: "too late", language: "en" }],
+    ];
+    for (const script of closingRuns) {
+      const run2 = await run(script);
+      const last = run2.spoken[run2.spoken.length - 1] || "";
+      assert.ok(last.length <= 160, `the closing must be one turn, got ${last.length} chars`);
+      const numbers = (last.match(/[\d][\d\s().`'\-]{5,}[\d]/g) || []).map((m) => m.replace(/\D/g, ""));
+      const saidNumber = script.some((s) => s && s.text && /\d[\d\s().`'-]{7,}\d/.test(s.text));
+      if (!saidNumber) {
+        assert.equal(numbers.length, 0, `the agent must never invent a number, said: ${JSON.stringify(last)}`);
+      }
+      assert.ok(!/line is connected|ready\b/i.test(last), `the closing must not announce line status: ${JSON.stringify(last)}`);
+    }
   } finally {
     restore();
   }
