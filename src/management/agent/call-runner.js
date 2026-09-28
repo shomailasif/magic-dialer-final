@@ -230,6 +230,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // The question the agent is currently waiting on, so a quiet window re-asks
   // it instead of moving to the next topic.
   let lastAgentAsked = null;
+  const spokenLines = new Set();
   // Everything the prospect actually said, so the closing can repeat their number.
   const leadSpeech = [];
   let openingSpoken = false;
@@ -256,6 +257,24 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       line = "";
     }
     if (!line) return;
+    // Never repeat a line. The 18:51Z call said "The line is connected and
+    // ready" on two consecutive turns, and a stub brain here produced the same
+    // sentence three times in one call - the most machine-sounding thing a
+    // caller can do. Consecutive-only checking was not enough, so this tracks
+    // every line already spoken and rotates the substitute too.
+    const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+    if (spokenLines.has(norm(line))) {
+      const subs = activeLocale === "en"
+        ? ["Sorry, I did not quite catch that - could you tell me a bit more?",
+           "Sorry, you cut out for a second - what did you say?",
+           "Could you say that again, a little louder?",
+           "Sorry, I missed that. What would you like to ask about?"]
+        : ["Sorry, could you repeat that?",
+           "Sorry, you cut out for a second.",
+           "Could you say that again?"];
+      line = subs.find((s) => !spokenLines.has(norm(s))) || subs[0];
+    }
+    spokenLines.add(norm(line));
     transcript.push({ role: "agent", text: line, locale: activeLocale });
     await speak(line, { locale: activeLocale, intent: opts.intent });
   };
@@ -322,12 +341,11 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       pendingDetected = null;
     }
 
-    // A window only counts as a *quiet* window when nothing arrived at all.
-    // Junk (carrier beep, voicemail tone) and speech the recognizer could not
-    // turn into words both prove the far end is transmitting, so they age
-    // their own bounded budget instead of the dead-line hangup. Otherwise a
-    // prospect who answers after one beep is hung up on as a silent line.
-    const reportedNoise = !!(heardResult && typeof heardResult === "object" && (heardResult.junk || heardResult.empty));
+    // The reportedNoise branch also covers a window where the prospect clearly
+    // spoke but the recognizer could not hear them - a gateway blip, or a bad
+    // capture. That is NOT silence and NOT consent, so it must never advance the
+    // conversation or age toward the dead-line hangup.
+    const reportedNoise = !!(heardResult && typeof heardResult === "object" && (heardResult.junk || heardResult.empty || heardResult.unheard));
     const junkLead = !!heard && isJunkLead(heard);
     if (!heard || String(heard).startsWith("(silence)") || junkLead) {
       lead("(silence)");
@@ -336,6 +354,20 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       quietMs += Number(heardResult && typeof heardResult === "object" && Number(heardResult.waitedMs) > 0)
         ? Number(heardResult.waitedMs)
         : 5000;
+
+      /* We could not hear them, or they went quiet. Both are handled, and
+       * neither advances the conversation. */
+      if (heardResult && typeof heardResult === "object" && heardResult.unheard) {
+        const ask = {
+          role: "lead",
+          text: "The prospect was speaking but the call could not hear them clearly. Do NOT move on to a new topic and do NOT ask a new question. Apologise in one short sentence and ask them to say that again.",
+        };
+        const reply = await askBrain({ transcript: [...transcript, ask], ...config() });
+        await agent(reply.text || (activeLocale === "en"
+          ? "Sorry, I did not catch that clearly. Could you say that again?"
+          : "Sorry, could you repeat that?"), { intent: "reassurance" });
+        continue;
+      }
       if (reportedNoise || junkLead) {
         consecutiveJunk++;
         // Bounded: a line that only ever beeps still ends the call.
@@ -364,7 +396,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       if (neverHeard && firstQuiet) {
         ask = { role: "lead", text: "The prospect has not answered yet. Restate who you are and your reason for calling in one short natural sentence, then ask whether this is a good time to talk. Do not ask if they can hear you." };
       } else if (neverHeard) {
-        ask = { role: "lead", text: "Still no answer. Briefly check that the line is connected, in one short sentence." };
+        ask = { role: "lead", text: "Still no answer. Say hello and ask whether this is a good time to talk, in one short natural sentence. Never say the line is connected or that you are ready - that sounds like a machine." };
       } else if (pendingQuestion) {
         ask = { role: "lead", text: `You asked: "${pendingQuestion}". The prospect has not answered yet. Do NOT move on to a different topic and do NOT ask a new question. Politely invite them to answer, or repeat that one question in different words, in one short sentence.` };
       } else {
@@ -374,7 +406,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       if (hello.text) lastAgentAsked = extractQuestion(hello.text) || pendingQuestion;
       await agent(hello.text || (neverHeard && firstQuiet
         ? (activeLocale === "en" ? "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick call?" : "Hello.")
-        : (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?")), neverHeard && firstQuiet ? "opening" : "checkin");
+        : (activeLocale === "en" ? "Hello, is this a good time to talk?" : "Hello?")), neverHeard && firstQuiet ? "opening" : "checkin");
       continue;
     }
     consecutiveSilence = 0;

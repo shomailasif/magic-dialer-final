@@ -29,7 +29,7 @@ function restore() {
 const JUNK = { text: null, junk: true };
 const REMOTE_BYE = { ended: true, text: null };
 
-async function run(script) {
+async function run(script, onSpoken) {
   brainPrompts.length = 0;
   const listenCalls = [];
   const spoken = [];
@@ -41,7 +41,7 @@ async function run(script) {
     const r = idx < script.length ? script[idx] : REMOTE_BYE;
     return typeof r === "function" ? r() : r;
   };
-  const speak = async (line) => { spoken.push(String(line)); };
+  const speak = async (line) => { spoken.push(String(line)); if (onSpoken) onSpoken(String(line)); };
   const out = await runCall({
     product: "test product",
     leadFields: [],
@@ -185,6 +185,29 @@ async function main() {
     const stopCall = await run([{ text: "Please stop calling me.", language: "en" }, { text: "too late", language: "en" }]);
     const goodbyes = stopCall.spoken.filter(l => /thank you for your time|have a great day/i.test(l));
     assert.ok(goodbyes.length <= 1, `a do-not-call ending must not be followed by a second closing, got ${goodbyes.length}`);
+    // The prospect spoke but we could not hear them. That must never become
+    // silence or advance the conversation: the 18:51Z call lost the prospect's
+    // only utterance to a gateway 503, sat in dead air, then said "The line is
+    // connected and ready" twice.
+    let repeats = 0;
+    const unhearScript = [];
+    for (let i = 0; i < 4; i++) unhearScript.push({ text: null, unheard: true, empty: true, junk: false, gatewayFailed: true, waitedMs: 5000 });
+    const unheard = await run(unhearScript, (line) => { if (line) repeats++; });
+    assert.equal(
+      unheard.out.transcript.filter(t => t.role === "lead" && t.text === "(silence)").length > 0,
+      true,
+      "an unheard window is still reported to the transcript"
+    );
+    const unheardReplies = unheard.out.transcript.filter(t => t.role === "agent").map(t => t.text);
+    assert.ok(unheardReplies.length >= 1, "an unheard window must still get a spoken reply");
+    const uniqueReplies = new Set(unheardReplies.map((l) => l.toLowerCase().replace(/[^a-z ]/g, "").trim()));
+    assert.equal(uniqueReplies.size, unheardReplies.length, `the agent must never repeat itself, got ${JSON.stringify(unheardReplies)}`);
+    assert.ok(
+      !unheardReplies.some(l => /line is connected|ready/i.test(l)),
+      `the agent must not announce that the line is connected, got ${JSON.stringify(unheardReplies)}`
+    );
+    // And it must not have hung up: silence is not consent.
+    assert.equal(unheard.listenCalls.length >= 4, true, "unheard windows must not age into the dead-line hangup");
   } finally {
     restore();
   }

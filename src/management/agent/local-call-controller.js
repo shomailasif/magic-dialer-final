@@ -361,11 +361,35 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     }
     const audio = Buffer.concat(captured.chunks);
     onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
-    const stt = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale), portal: config.portalUrl, deviceToken: config.deviceToken });
+    const sttHint = turn.autoLanguage ? "auto" : (turn.locale || activeLocale);
+    /* This audio is the prospect's only utterance. If the STT gateway blips -
+     * measured live: "STT gateway HTTP 503" - the whole conversation goes blind,
+     * and the old two-attempt path sat on 15s of silence before giving up,
+     * which the prospect hears as dead air. So: more attempts, each bounded so
+     * the total wait stays short, and a distinct "could not hear you" outcome
+     * that makes the agent ask them to repeat rather than move on.
+     */
+    const STT_ATTEMPTS = 4;
+    const STT_ATTEMPT_BUDGET_MS = 6000;
+    let stt = null, lastErr = "";
+    for (let attempt = 1; attempt <= STT_ATTEMPTS; attempt++) {
+      const startedAt = Date.now();
+      let r = null;
+      try {
+        r = await Promise.race([
+          sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken }),
+          new Promise((res) => setTimeout(() => res({ error: `STT attempt exceeded ${STT_ATTEMPT_BUDGET_MS}ms` }), STT_ATTEMPT_BUDGET_MS)),
+        ]);
+      } catch (e) { r = { error: String((e && e.message) || e) }; }
+      if (r && r.error) { lastErr = r.error; onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} failed: ${r.error} (${Date.now() - startedAt}ms)`); }
+      if (r && r.text) { stt = r; break; }
+      if (r && !r.error) { stt = r; break; } // a real empty result, not a failure
+      if (attempt < STT_ATTEMPTS) await new Promise((res) => setTimeout(res, 300));
+    }
+    if (!stt) stt = { text: null, error: lastErr || "STT unavailable" };
     // Locale changes are owned by call-runner (it applies command/substantial
     // guards); here we only report what the recognizer saw.
     if (stt.language) onLog(`[local-media-v2] STT detected language ${stt.language}`);
-    if (stt.error) onLog(`[local-media-v2] STT ${stt.error}`);
     if (stt.text && !isJunkUtterance(stt.text)) {
       onLog("LEAD:  " + stt.text);
       return { text: stt.text, language: stt.language || activeLocale };
@@ -378,17 +402,14 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
       onLog("[local-media-v2] STT junk ignored: " + stt.text);
       return { text: null, junk: true, waitedMs };
     }
-    // Speech reached the VAD but the recognizer returned nothing — do not let
-    // call-runner treat this as a quiet line and hang up on the prospect.
-    onLog("[local-media-v2] STT returned empty for captured speech; retrying once");
-    const retry = await sttAuto(audio, { hint: turn.autoLanguage ? "auto" : (turn.locale || activeLocale), portal: config.portalUrl, deviceToken: config.deviceToken });
-    if (retry.text && !isJunkUtterance(retry.text)) {
-      onLog("LEAD:  " + retry.text);
-      return { text: retry.text, language: retry.language || activeLocale };
-    }
-    if (retry.text) onLog("[local-media-v2] STT junk ignored: " + retry.text);
-    else onLog("[local-media-v2] STT still empty after retry");
-    return { text: null, junk: !!retry.text, empty: !retry.text, waitedMs };
+    // Speech reached the VAD but the recognizer could not turn it into words.
+    // The prospect IS there, so this must not be treated as a quiet line: say so
+    // and ask them again, rather than hanging up or moving to a new question.
+    const gatewayFailed = !!stt.error;
+    onLog(gatewayFailed
+      ? `[local-media-v2] STT unavailable after ${STT_ATTEMPTS} attempts: ${stt.error}; asking the prospect to repeat`
+      : "[local-media-v2] STT returned empty for captured speech; asking the prospect to repeat");
+    return { text: null, unheard: true, empty: true, junk: false, gatewayFailed, waitedMs };
   };
 
   try {
