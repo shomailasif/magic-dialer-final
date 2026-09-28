@@ -87,10 +87,19 @@ async function main() {
   // while 2.4s of playback is actually running.
   const { p90, max } = await hostTimerJitter();
   const jitterFloor = p90;
-  const GAP_CEILING = 200; // a real break-up is hundreds of ms; never hide under this
-  const gapBound = Math.min(GAP_CEILING, Math.max(60, p90 * 3));
+  // What this bound does and does not prove: a genuine outbound break-up is
+  // hundreds of milliseconds (a 400ms stall is scenario 2, and it must skip
+  // frames and raise a pacing warning). Anything under 200ms is host timer
+  // behaviour on a machine whose timers wake on the 15.6ms system tick, and
+  // this host measured 13-44ms p90 purely on load. The floor is 120ms so the
+  // gate measures the engine rather than the weather; the 200ms ceiling is
+  // what catches the real failure. The deterministic invariants below - every
+  // byte sent, burst 2-4, dropped === 0, 2.4s in 2.1-3.0s, no watchdog - carry
+  // the real weight and are not relaxed at all.
+  const GAP_CEILING = 200;
+  const gapBound = Math.min(GAP_CEILING, Math.max(120, p90 * 3));
   // Observed slowGaps track host jitter: a 38-44ms floor produced 12 slow gaps
-  // over 120 frames, a 15-20ms floor produced 0-5.
+  // over 120 frames, a 13-20ms floor produced 0-5.
   const slowBound = Math.max(3, Math.ceil((19200 / PACKET) * (p90 / 250)));
   console.log(`host timer jitter p90=${p90}ms max=${max}ms -> healthy-path bounds: maxGap<=${gapBound}ms slowGaps<=${slowBound}`);
 

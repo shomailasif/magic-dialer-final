@@ -3,6 +3,7 @@ const { nextTurn, opening } = require("./intelligent-brain");
 const { normalizeLanguage } = require("./language");
 const { capTurnLength, splitSentences } = require("./turn-length");
 const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("./script-guard");
+const { getResearch: getCachedResearch, refresh: refreshResearch, researchBlock } = require("./sales-research");
 
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
@@ -93,6 +94,27 @@ const ASK_TOPICS = [
  *    today?" on a call we placed. The prompt forbids it and the model does it
  *    anyway, so it is enforced here.
  *  - a bare re-ask for something already asked. */
+/** A phone number the prospect actually said out loud, if any. Requires a real
+ *  country/trunk prefix or a plausible grouped form, so "one" or a house number
+ *  is not mistaken for a number. */
+function capturePhoneNumber(text) {
+  const s = String(text || "");
+  const spaced = s.match(/(?:\+?\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?)?\d{2,4}[\s.-]\d{3,4}[\s.-]?\d{3,4}\b/g) || [];
+  const plus = s.match(/\+\d{8,15}\b/g) || [];
+  const digitsOnly = s.match(/(?<![\d.])\d{9,12}(?![\d.])/g) || [];
+  const all = [...plus, ...spaced, ...digitsOnly].map((c) => c.replace(/[^\d+]/g, "")).filter(Boolean);
+  const uniq = [...new Set(all)];
+  return uniq.find((c) => c.replace(/\D/g, "").length >= 9) || null;
+}
+
+/** The question the agent just asked, if it asked one. */
+function extractQuestion(text) {
+  const s = String(text || "");
+  const m = s.match(/[^.!?]*\?/);
+  const q = m ? m[0].trim() : "";
+  return q.length >= 8 ? q : null;
+}
+
 function isForbiddenTurnSentence(sentence, isOpening) {
   if (/\bthis is (?:atlas|autumn|alex|[a-z]+) (?:from|with|calling)\b|\bcalling (?:you )?from\b|\bcalling about\b/i.test(sentence)) return true;
   if (/\bhow can i (?:help|assist) you\b|\bwhat can i (?:help|assist) you with\b|\bhow may i (?:help|direct) you\b|\bthanks for reaching out\b|\bhow can i direct your call\b/i.test(sentence)) return true;
@@ -134,16 +156,34 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let heardSomething = false;
   let llmFailures = 0;
   let consecutiveLlmFailures = 0;
-  /* The brain is a network call. A gateway hiccup used to end a live call after
-   * two bad turns, which is indistinguishable from the product breaking in the
-   * prospect's ear. Retry once, and only end the call after sustained failure. */
+  /* The brain is a network call and it is on the critical path of a live
+   * conversation. Measured on the 16:09Z call, one slow gateway produced 21s
+   * and 22s of dead air on two consecutive turns, because the gateway was given
+   * 12s to abort and then a second provider was given another 12s - and the
+   * prospect had long since moved on. A listener who waits more than a few
+   * seconds hears a dead line.
+   *
+   * So the whole turn gets one hard budget. If the brain misses it, the
+   * deterministic fallback line is spoken immediately, and we do not retry: a
+   * second attempt would only add another budget's worth of silence. */
+  const BRAIN_BUDGET_MS = 6000;
   const askBrain = async (payload) => {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      let r = null;
-      try { r = await nextTurn(payload); } catch { r = null; }
+    const startedAt = Date.now();
+    const attempt = async () => {
+      try { return await nextTurn(payload); } catch { return null; }
+    };
+    for (let attempt_ = 0; attempt_ < 2; attempt_++) {
+      const left = BRAIN_BUDGET_MS - (Date.now() - startedAt);
+      if (left <= 0) { consecutiveLlmFailures++; llmFailures++; return { text: null, timeout: true }; }
+      let timer = null;
+      const r = await Promise.race([
+        attempt(),
+        new Promise((res) => { timer = setTimeout(() => res(null), left); }),
+      ]).finally(() => { if (timer) clearTimeout(timer); });
       if (r && r.text) { consecutiveLlmFailures = 0; return r; }
       consecutiveLlmFailures++;
       llmFailures++;
+      if (Date.now() - startedAt >= BRAIN_BUDGET_MS) return { text: null, timeout: true };
     }
     return { text: null };
   };
@@ -171,9 +211,14 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     const scores = l.strategyScores || {};
     const ranked = Object.keys(scores).sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
     const playbook = ranked.filter((k) => (scores[k] || 0) > -1).slice(0, 4);
-    return { ...baseConfig, locale: activeLocale, playbook };
+    return { ...baseConfig, locale: activeLocale, playbook, research: getCachedResearch(product, companyName) };
   };
   const askedFor = new Set();
+  // The question the agent is currently waiting on, so a quiet window re-asks
+  // it instead of moving to the next topic.
+  let lastAgentAsked = null;
+  // Everything the prospect actually said, so the closing can repeat their number.
+  const leadSpeech = [];
   let openingSpoken = false;
   const agent = async (text, opts = {}) => {
     // Cap here, where the words are produced, so every consumer of a turn - a
@@ -207,6 +252,10 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     if (!line.startsWith("(silence)")) heardSomething = true;
     transcript.push({ role: "lead", text: line, locale: detected || activeLocale });
   };
+
+  // Research ahead of the call, never during it: the cache is read synchronously
+  // per turn and the fetch runs in the background.
+  refreshResearch({ portal, deviceToken, callId, product, vertical: companyName }).catch(() => {});
 
   if (preparedOpeningText) {
     await agent(preparedOpeningText);
@@ -290,15 +339,26 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       // check, and only while the prospect has never spoken.
       const neverHeard = !heardSomething;
       const firstQuiet = consecutiveSilence + consecutiveJunk <= 1;
+      /* If the agent just asked something and the prospect stayed quiet, the
+       * question is still unanswered. Asking the next question is the single
+       * most alien thing a caller can do - it was reported as "it moves to the
+       * next question like I answered it already", and the 16:09Z log shows it:
+       * 16:10:17 playback finished, 16:10:22 no speech, 16:10:44 the agent was
+       * asking a brand new question instead of waiting for the answer. So: never
+       * advance. Re-ask, or invite the answer to the question already asked. */
+      const pendingQuestion = lastAgentAsked;
       let ask;
       if (neverHeard && firstQuiet) {
         ask = { role: "lead", text: "The prospect has not answered yet. Restate who you are and your reason for calling in one short natural sentence, then ask whether this is a good time to talk. Do not ask if they can hear you." };
       } else if (neverHeard) {
         ask = { role: "lead", text: "Still no answer. Briefly check that the line is connected, in one short sentence." };
+      } else if (pendingQuestion) {
+        ask = { role: "lead", text: `You asked: "${pendingQuestion}". The prospect has not answered yet. Do NOT move on to a different topic and do NOT ask a new question. Politely invite them to answer, or repeat that one question in different words, in one short sentence.` };
       } else {
         ask = { role: "lead", text: "The prospect went quiet. Continue the conversation naturally from what was just discussed, or ask one simple question to invite a reply. Do not comment on the line, the connection, or whether they can hear you." };
       }
       const hello = await askBrain({ transcript: [...transcript, ask], ...config() });
+      if (hello.text) lastAgentAsked = extractQuestion(hello.text) || pendingQuestion;
       await agent(hello.text || (neverHeard && firstQuiet
         ? (activeLocale === "en" ? "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick call?" : "Hello.")
         : (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?")));
@@ -310,6 +370,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     pendingDetected = null;
 
     lead(heard, detected);
+    leadSpeech.push(heard);
     stopRequested = STOP_RE.test(heard);
     humanRequested = HUMAN_RE.test(heard) && /\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
 
@@ -326,6 +387,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     }
 
     const ai = await askBrain({ transcript, ...config() });
+    lastAgentAsked = extractQuestion(ai.text) || null;
     await agent(ai.text || fallbackReply(heard, config()));
 
     // Repeated AI failure must not silently turn the universal agent back into
@@ -340,14 +402,41 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // properly: thank them, say what happens next, then hang up.
   if (!closingSpoken) {
     closingSpoken = true;
-    const closing = await nextTurn({
-      transcript: [...transcript, { role: "lead", text: "The conversation is over. Speak a short, warm professional closing: thank them for their time, state the single next step, and say goodbye. One or two sentences only. Do not ask any new questions." }],
+    /* Close properly: repeat back the number the prospect actually gave and
+     * commit to a manager calling within 30 minutes. The 16:09Z call ended on
+     * "Thank you for your time; we'll follow up shortly with the requested
+     * information" - no number, no commitment, nothing for the prospect to
+     * hold on to. */
+    const captured = capturePhoneNumber(leadSpeech.join(" ")) || callbackNumber;
+    const closing = await askBrain({
+      transcript: [
+        ...transcript,
+        {
+          role: "lead",
+          text: `The conversation is over. Speak a short, warm professional closing. You MUST state the callback number ${captured ? `as "${captured}"` : "you already have on file"} and say that a manager will call back within the next 30 minutes. Thank them once, say goodbye, and stop. One or two sentences, no new questions.`,
+        },
+      ],
       ...config(),
-    }).catch(() => ({ text: null }));
-    if (closing.text) await agent(closing.text);
-    else await agent(activeLocale === "en"
-      ? "Thanks for your time today. We'll follow up shortly. Have a great day."
-      : "Thank you for your time. Goodbye.");
+    });
+    if (closing.text) {
+      // The closing is the one line that must never be dropped: if the brain
+      // stalled we still owe the prospect the number and the callback promise.
+      let line = capTurnLength(closing.text);
+      if (captured && !line.includes(captured)) {
+        const digits = captured.replace(/\D/g, "");
+        if (digits.length >= 7 && !line.replace(/\D/g, "").includes(digits)) {
+          line = line.replace(/[.!]?\s*$/, `. We'll call you back on ${captured} within the next 30 minutes.`);
+        }
+      }
+      if (!/\b30 minutes\b/i.test(line)) {
+        line = line.replace(/[.!]?\s*$/, ". A manager will call you back within the next 30 minutes.");
+      }
+      await agent(line);
+    } else {
+      await agent(captured
+        ? `Thanks for your time. A manager will call you back on ${captured} within the next 30 minutes. Goodbye.`
+        : "Thanks for your time. A manager will call you back within the next 30 minutes. Goodbye.");
+    }
   }
 
   const verdict = scoreLead({ transcript, fields: leadFields, locale: activeLocale });

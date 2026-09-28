@@ -18,7 +18,20 @@ function playbookBlock(playbook) {
   ].join("\n");
 }
 
-function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn, playbook }) {
+/** Researched tactics for this vertical, gathered from the open web. Used only
+ *  when the search actually returned something on-topic: a free engine served
+ *  ChatGPT results for a cold-call query from this host, and teaching an agent
+ *  from that would be worse than teaching it nothing. */
+function researchBlock(tactics) {
+  if (!Array.isArray(tactics) || !tactics.length) return "";
+  return [
+    "RESEARCH (proven techniques for this exact type of customer, gathered from the web; best first):",
+    ...tactics.slice(0, 6).map((t, i) => `${i + 1}. (${t.topic}) ${String(t.tactic).replace(/\s+/g, " ").trim()}`),
+    "Use at most one of these per call, and only when it genuinely fits. Never recite them, never name a tactic, and never let research override what the prospect just said.",
+  ].join("\n");
+}
+
+function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn, playbook, research }) {
   const fields = (Array.isArray(leadFields) ? leadFields : []).map((f) => typeof f === "string" ? f : (f && (f.label || f.key)) || "").filter(Boolean);
   const activeLocale = String(locale || "en").trim() || "en";
   // The model invents a first name when it is not told one, so the same agent
@@ -32,6 +45,7 @@ Persona: ${persona || "energetic, friendly, polite female sales representative"}
 ACTIVE CONVERSATION LANGUAGE: ${activeLocale} (${languageName(activeLocale)}).
 ${callbackNumber ? `Callback number: ${callbackNumber}.` : ""}${callbackIn ? ` Callback timing/instructions: ${callbackIn}.` : ""}
 ${playbookBlock(playbook)}
+${researchBlock(research)}
 
 Rules:
 - This is an OUTBOUND call you placed. Never behave like an inbound receptionist.
@@ -59,7 +73,7 @@ Rules:
 
 async function complete({ history, config, maxTokens = 220 }) {
   const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||""),callId=String(config&&config.callId||requestId());
-  if(portal&&deviceToken){const reqId=requestId(),c=new AbortController(),t=setTimeout(()=>c.abort(),12000);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-20)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok){return {text:"",error:safeError(d.error||("AI gateway HTTP "+r.status),[deviceToken]),requestId:d.requestId||reqId};}const text=clean(d.text);return text?{text}:{text:"",error:safeError(d.error||"empty AI response",[deviceToken]),requestId:d.requestId||reqId};}catch(e){console.log("[brain] AI gateway failed: "+e?.message+", falling back to direct Groq");}finally{clearTimeout(t);}}
+  if(portal&&deviceToken){const reqId=requestId(),c=new AbortController(),t=setTimeout(()=>c.abort(),4500);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-20)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok){return {text:"",error:safeError(d.error||("AI gateway HTTP "+r.status),[deviceToken]),requestId:d.requestId||reqId};}const text=clean(d.text);return text?{text}:{text:"",error:safeError(d.error||"empty AI response",[deviceToken]),requestId:d.requestId||reqId};}catch(e){console.log("[brain] AI gateway failed: "+e?.message+", falling back to direct Groq");}finally{clearTimeout(t);}}
   const key = process.env.GROQ_API_KEY || process.env.AUTODIAL_GROQ_KEY || "";
   if (!key) return { text: "", error: "Secure AI gateway unavailable" };
   const preferred = process.env.AUTODIAL_GROQ_MODEL || process.env.GROQ_MODEL || DEFAULT_MODEL;
@@ -68,7 +82,7 @@ async function complete({ history, config, maxTokens = 220 }) {
   let lastError = "";
   for (const model of models) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 12000);
+    const timer = setTimeout(() => controller.abort(), 4500);
     try {
       const res = await fetch(GROQ_URL, {
         method: "POST",
