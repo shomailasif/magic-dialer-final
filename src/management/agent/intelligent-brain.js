@@ -31,17 +31,38 @@ function researchBlock(tactics) {
   ].join("\n");
 }
 
-function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn, playbook, research }) {
-  const fields = (Array.isArray(leadFields) ? leadFields : []).map((f) => typeof f === "string" ? f : (f && (f.label || f.key)) || "").filter(Boolean);
-  const activeLocale = String(locale || "en").trim() || "en";
-  // The model invents a first name when it is not told one, so the same agent
-  // introduced itself as Atlas on the phone and as "Alex" in simulation. Pin it.
-  const agentName = String(persona || "Atlas").trim() || "Atlas";
-  return `You are ${agentName}, the live OUTBOUND phone sales representative for ${companyName || "the customer's company"}.
-Your name is ${agentName}. Always introduce yourself as ${agentName}. Never use any other first name for yourself.
-You sell or discuss exactly this customer's offering: ${product || "the offering described by the customer"}.
+  /** Pull a usable string out of config that may be a string or an object, and
+   *  never let an object reach the prompt. Anything that stringifies to
+   *  "[object Object]" is treated as absent rather than spoken. */
+  function asText(value, keys, fallback) {
+    let v = value;
+    if (v && typeof v === "object") {
+      for (const k of keys) {
+        if (typeof v[k] === "string" && v[k].trim()) { v = v[k]; break; }
+        if (typeof v[k] === "number") { v = String(v[k]); break; }
+      }
+      if (typeof v !== "string") v = "";
+    }
+    const s = String(v == null ? "" : v).trim();
+    if (!s || s === "[object Object]") return fallback;
+    return s;
+  }
+
+  function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn, playbook, research }) {
+    const fields = (Array.isArray(leadFields) ? leadFields : []).map((f) => typeof f === "string" ? f : (f && (f.label || f.key)) || "").filter(Boolean);
+    const activeLocale = String(locale || "en").trim() || "en";
+    // The model invents a first name when it is not told one, so the same agent
+    // introduced itself as Atlas on the phone and as "Alex" in simulation. Pin it.
+    // persona arrives as an object from the call config, and String({}) is
+    // "[object Object]" - so the prompt used to read "You are [object Object]...
+    // Always introduce yourself as [object Object]", and the model obeyed and
+    // said it out loud on the phone. Read the name out of the object.
+    const agentName = asText(persona, ["name", "agentName", "firstName", "displayName"], "Atlas");
+    return `You are ${agentName}, the live OUTBOUND phone sales representative for ${asText(companyName, ["name", "companyName", "company"], "the customer's company")}.
+  Your name is ${agentName}. Always introduce yourself as ${agentName}. Never use any other first name for yourself.
+  You sell or discuss exactly this customer's offering: ${asText(product, ["name", "title", "product", "description"], "the offering described by the customer")}.
 Customer-defined qualification goals: ${fields.join(", ") || "none supplied"}.
-Persona: ${persona || "energetic, friendly, polite female sales representative"}.
+  Persona: ${asText(persona, ["description", "style", "tone", "summary"], "energetic, friendly, polite female sales representative")}.
 ACTIVE CONVERSATION LANGUAGE: ${activeLocale} (${languageName(activeLocale)}).
 ${callbackNumber ? `Callback number: ${callbackNumber}.` : ""}${callbackIn ? ` Callback timing/instructions: ${callbackIn}.` : ""}
 ${playbookBlock(playbook)}

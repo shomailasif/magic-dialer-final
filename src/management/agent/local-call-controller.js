@@ -150,8 +150,29 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
   ]);
   if (!brainOk) throw new Error("AI brain preflight failed");
   onLog("[local-media-v2] AI brain preflight passed");
-  if (!first || !String(first.text || "").trim()) throw new Error("AI opening preflight failed; refusing to place call");
-  const openingText = String(first.text).trim();
+  let openingText = String(first && first.text || "").trim();
+  if (!openingText) {
+    /* A gateway blip must not stop the call being placed. The preflight exists
+     * to stop us ringing someone and saying nothing - refusing to dial is a
+     * worse failure than opening in a plain line, because the call can still
+     * recover once the brain comes back and a greeting still gets the prospect
+     * talking. The 20:10Z call was refused outright on one 502: the brain
+     * preflight and the opening run in parallel, the preflight got a clean
+     * READY and the opening got the 502, and the call never rang. */
+    const pick = (v, keys) => {
+      let x = v;
+      if (x && typeof x === "object") {
+        for (const k of keys) if (typeof x[k] === "string" && x[k].trim()) { x = x[k]; break; }
+        if (typeof x !== "string") x = "";
+      }
+      const s = String(x == null ? "" : x).trim();
+      return !s || s === "[object Object]" ? "" : s;
+    };
+    const agentName = pick(config.persona, ["name", "agentName", "firstName"]) || "Atlas";
+    const company = pick(config.companyName, ["name", "companyName", "company"]) || "Zaz Logistics";
+    openingText = `Hi, this is ${agentName} with ${company}. Is now a good time to talk?`;
+    onLog(`[local-media-v2] AI opening unavailable (${(first && first.error) || "no text"}); using the local fallback opening`);
+  }
   const openingAudio = await tts(openingText, { locale: activeLocale, style: config.voiceStyle || "friendly" });
   if (!openingAudio || !Buffer.isBuffer(openingAudio.buffer) || openingAudio.buffer.length < 160) {
     throw new Error("Opening TTS preflight failed; refusing to place call");

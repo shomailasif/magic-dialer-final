@@ -112,6 +112,11 @@ function stripSpokenArtifacts(text) {
   s = s.replace(/[*_`]{1,3}/g, "");
   // A label the model left in, e.g. "Agent:" or "Note -"
   s = s.replace(/^\s*(agent|assistant|note|stage direction|output)\s*[:\-]\s*/i, "");
+  /* A config object interpolated into the prompt used to reach the voice as
+   * "[object Object]" - the system prompt said "Always introduce yourself as
+   * [object Object]" and the model said it out loud. Fixed at the source, but a
+   * line that still contains it is never spoken. */
+  s = s.replace(/\[object [A-Za-z]+\]/g, " ");
   // Unbalanced quote left dangling mid-sentence, e.g. 'services." is now...'
   s = s.replace(/[“”"]\s+(?=(?:is|are|was|were|do|does|did|can|could|will|would|and|so|but)\b)/g, " ");
   s = s.replace(/\s{2,}/g, " ").trim();

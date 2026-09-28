@@ -282,6 +282,32 @@ async function main() {
   } finally {
     restore();
   }
+  // The system prompt used to read "You are [object Object]... Always introduce
+  // yourself as [object Object]", because persona arrives from the call config
+  // as an object and String({}) is "[object Object]". The model obeyed and the
+  // prospect heard it. The name has to be read out of the object.
+  const { systemPrompt } = require("./intelligent-brain");
+  const { capTurnLength } = require("./turn-length");
+  const prompt = systemPrompt({
+    product: { name: "Truck Dispatch Services" },
+    leadFields: [],
+    persona: { name: "Atlas", companyName: "Zaz Logistics", description: "an energetic rep" },
+    companyName: { name: "Zaz Logistics" },
+    locale: "en",
+  });
+  assert.ok(!/\[object Object\]/.test(prompt), "an object must never reach the model prompt");
+  assert.ok(/You are Atlas,/.test(prompt), "the agent name must be read out of the persona object");
+  assert.ok(/Zaz Logistics/.test(prompt), "the company name must be read out of the object");
+  // And even if it somehow reaches a line, it must never be spoken.
+  assert.ok(
+    !/\[object Object\]/.test(capTurnLength("Hi, this is [object Object] from Zaz Logistics.")),
+    "[object Object] must be stripped before synthesis"
+  );
+  assert.equal(
+    capTurnLength("Thanks for your time. [Awaiting prospect response] Goodbye.").includes("Awaiting"), false,
+    "model scaffolding must never be spoken"
+  );
+
   console.log("PASS: junk budget, quiet-line hangup, greeting turn");
 }
 

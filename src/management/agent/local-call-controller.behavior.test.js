@@ -260,7 +260,38 @@ async function main() {
     }),
     /TTS preflight failed/
   );
-  assert.equal(engineAttempted, false, "failed TTS preflight must block engine creation and dialing");
+    assert.equal(engineAttempted, false, "failed TTS preflight must block engine creation and dialing");
+
+    // A gateway blip must not refuse the call. The brain preflight and the
+    // opening run in parallel, so one can get a clean READY while the other gets
+    // a 502 - and on the 20:10Z call the whole call was refused instead of
+    // dialled. Refusing to dial is worse than opening in a plain line.
+    let blankOpeningDialed = false;
+    let spokenOpening = null;
+    try {
+      await runLocalCall({
+        config: {
+          voip: { ready: true, username: "u", sipPassword: "p", number: "1" },
+          product: "test",
+          persona: { name: "Atlas" },
+          companyName: { name: "Zaz Logistics" },
+        },
+        number: "2",
+        deps: {
+          async preflightBrain() { return true; },
+          async opening() { return { text: "", error: "AI gateway returned non-JSON (HTTP 502)" }; },
+          async speakToBuffer(text) { spokenOpening = String(text); return { engine: "test", buffer: Buffer.alloc(320) }; },
+          createLocalRingCentralEngine() { blankOpeningDialed = true; return { async connect() { return {}; }, async waitForInboundMedia() { return { gotInbound: false, waitedMs: 1 }; }, send() {}, close() {} }; },
+        },
+      });
+    } catch (e) {
+      // The stub does not run a real call; the preflight behaviour is what is
+      // under test, so anything past engine creation is acceptable here.
+    }
+    assert.equal(blankOpeningDialed, true, "an empty opening must not refuse the call");
+    assert.ok(/Atlas/.test(spokenOpening || ""), "the local fallback opening must be spoken, got: " + JSON.stringify(spokenOpening));
+    assert.ok(!/\[object Object\]/.test(spokenOpening || ""), "the fallback opening must never contain [object Object]");
+
 
   let engineCreated = false;
   await assert.rejects(
