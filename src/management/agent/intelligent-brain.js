@@ -1,5 +1,6 @@
 const { requestId, safeError } = require("./safe-diagnostic");
 const health = require("./gateway-health");
+const { withPortalSlot } = require("./portal-queue");
 const { languageName } = require("./language");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_MODEL = "openai/gpt-oss-120b";
@@ -102,7 +103,7 @@ Rules:
  * turned a slow-but-working brain into "Call failed" before the phone even
  * rang. It gets its own, much more generous budget, and its own failure reason.
  */
-const REQUEST_TIMEOUT_MS = 7000;
+  const REQUEST_TIMEOUT_MS = 7000;
 const PREFLIGHT_TIMEOUT_MS = 25000;
 
 async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_TIMEOUT_MS }) {
@@ -133,7 +134,7 @@ async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_
       const c = new AbortController();
       const t = setTimeout(() => c.abort(), timeoutMs);
       try {
-        const r = await fetch(portal + "/api/engine/ai/chat", {
+        const r = await withPortalSlot(() => fetch(portal + "/api/engine/ai/chat", {
           method: "POST",
           // Compact key style is deliberate and contract-pinned: safe-diagnostic
           // and call-diagnostic-correlation assert that the call id and request
@@ -142,7 +143,7 @@ async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_
           headers: {"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},
           body: JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-20)],maxTokens}),
           signal: c.signal,
-        });
+        }));
         // Read the body defensively. The platform sometimes answers with an HTML
         // error page, and r.json() then throws on the "<!DOCTYPE ..." - which is
         // how a transient blip used to look like "no AI at all". Some callers

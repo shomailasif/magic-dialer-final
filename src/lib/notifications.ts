@@ -134,8 +134,12 @@ export async function attemptDelivery(notificationId: string, htmlOverride?: str
     return true;
   } catch (err: unknown) {
     const msg = redactDiagnostic(err);
+    // A rejected credential is permanent. Re-queueing it five times just delays
+    // the discovery of a wrong password by a whole call cycle, and buries the
+    // reason. Fail it once, with the reason, so it is visible immediately.
+    const permanent = Boolean((err as { permanent?: boolean } | null)?.permanent);
     const attempts = notif.attempts + 1;
-    const status: NotificationStatus = attempts >= 5 ? "FAILED" : "QUEUED";
+    const status: NotificationStatus = permanent || attempts >= 5 ? "FAILED" : "QUEUED";
     await prisma.notification.update({
       where: { id: notificationId },
       data: { attempts, lastError: msg, status },

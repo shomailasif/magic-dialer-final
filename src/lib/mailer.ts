@@ -11,6 +11,36 @@ export interface MailPayload {
 
 let transporterCache: nodemailer.Transporter | null = null;
 
+/** Raised when the SMTP server refused the credentials. This is permanent: no
+ *  number of retries will fix a wrong password, and a ProtonMail account with
+ *  2FA rejects the account password with exactly "535 5.7.8 authentication
+ *  failed" and only accepts an app password. Retrying that five times hides the
+ *  real cause behind a generic error, so it is reported once, clearly. */
+export class PermanentMailError extends Error {
+  readonly permanent = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "PermanentMailError";
+  }
+}
+
+const AUTH_CODES = new Set(["EAUTH", "EENVELOPE"]);
+
+function isAuthFailure(err: unknown): boolean {
+  const e = err as { code?: string; responseCode?: number; message?: string } | null;
+  if (!e) return false;
+  if (e.code && AUTH_CODES.has(e.code)) return true;
+  if (e.responseCode === 535 || e.responseCode === 534 || e.responseCode === 530) return true;
+  return /535|authentication failed|invalid login|bad credentials/i.test(String(e.message || ""));
+}
+
+function authHint(): string {
+  const host = String(process.env.SMTP_HOST || "");
+  return /proton/i.test(host)
+    ? " SMTP_PASS must be a ProtonMail app password (Settings -> Access -> App password), not the account password."
+    : " Check SMTP_USER/SMTP_PASS, and whether the provider requires an app password.";
+}
+
 function isConfigured(): boolean {
   return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER);
 }
@@ -49,11 +79,23 @@ export async function sendNotification(payload: MailPayload): Promise<void> {
   }
 
   const from = process.env.SMTP_FROM || "AutoDial AI <no-reply@autodial.ai>";
-  await transporter.sendMail({
-    from,
-    to: payload.to,
-    subject: payload.subject,
-    text: payload.text,
-    html: payload.html,
-  });
+  try {
+    await transporter.sendMail({
+      from,
+      to: payload.to,
+      subject: payload.subject,
+      text: payload.text,
+      html: payload.html,
+    });
+  } catch (err) {
+    if (isAuthFailure(err)) {
+      // Do not let a rejected password masquerade as a transient outage.
+      console.error(`[mailer] SMTP authentication failed for ${process.env.SMTP_USER}@${process.env.SMTP_HOST}.${authHint()}`);
+      // Drop the cached transport so a corrected password takes effect without
+      // a redeploy, rather than reusing a known-bad session.
+      transporterCache = null;
+      throw new PermanentMailError(`SMTP authentication failed for ${process.env.SMTP_USER}@${process.env.SMTP_HOST}.${authHint()}`);
+    }
+    throw err;
+  }
 }

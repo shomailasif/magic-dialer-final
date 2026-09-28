@@ -37,6 +37,7 @@ const crypto = require("node:crypto");
 try { require("dotenv").config({ path: path.join(__dirname, "..", "..", "..", ".env") }); } catch {}
 const { spawn, execSync } = require("node:child_process");
 const { HEARTBEAT_INTERVAL_MS, HOSTED_VOIP_SERVERS } = require("../shared/protocol");
+const { withPortalSlot } = require("./portal-queue");
 const { setUi } = require("./ui");
 const { topStrategy } = require("./brain");
 const { startWebUi, writeDashboardUrl, dashboardUrlPath } = require("./webui");
@@ -263,7 +264,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.37";
+const VERSION = "1.4.38";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -682,11 +683,11 @@ async function runAgent(opts = {}) {
     try {
       const syncPayload = sync.buildSyncPayload();
       const heartbeatPortal = String(config.portalUrl || portal).replace(/\/+$/, "");
-      const res = await post(`${heartbeatPortal}/api/heartbeat`, {
-        deviceToken: config.deviceToken || config.token,
-        voipReady: !!(config.voip && config.voip.ready),
-        sync: syncPayload,
-      });
+        const res = await withPortalSlot(() => post(`${heartbeatPortal}/api/heartbeat`, {
+          deviceToken: config.deviceToken || config.token,
+          voipReady: !!(config.voip && config.voip.ready),
+          sync: syncPayload,
+        }));
       if (res.status === 200 && res.body) {
         if (res.body.disabled) {
           log("DISABLED by admin - stopping work. This PC will not run again until re-enabled.");
