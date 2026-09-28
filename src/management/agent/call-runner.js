@@ -107,6 +107,19 @@ function capturePhoneNumber(text) {
   return uniq.find((c) => c.replace(/\D/g, "").length >= 9) || null;
 }
 
+/** Which conversational moment is this turn, for the voice to sit in.
+ *  The lead's words are the better signal: an objection should be answered
+ *  calmly and slowly, and a "got it" should be acknowledged quietly, and the
+ *  only way to know which is to look at what the prospect actually said. */
+function turnIntent(heard, reply) {
+  const s = String(heard || "");
+  if (/\b(not interested|not right now|no thanks|no thank you|too busy|not now|remove me|stop calling|do not call|send me (some )?info|send me info|nevermind|never mind)\b/i.test(s)) return "objection";
+  if (/\b(i understand|that makes sense|no problem|of course|absolutely|glad to (help|assist)|sorry about that|to be clear|i can help)\b/i.test(s)) return "reassurance";
+  if (/\b(got it|understood|thanks for that|thank you for|i hear you|noted|okay|ok|sure)\b/i.test(s)) return "acknowledge";
+  if (/\?/.test(String(reply || ""))) return "question";
+  return "neutral";
+}
+
 /** The question the agent just asked, if it asked one. */
 function extractQuestion(text) {
   const s = String(text || "");
@@ -244,7 +257,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     }
     if (!line) return;
     transcript.push({ role: "agent", text: line, locale: activeLocale });
-    await speak(line, { locale: activeLocale });
+    await speak(line, { locale: activeLocale, intent: opts.intent });
   };
   const lead = (text, detected) => {
     const line = String(text || "").trim();
@@ -258,11 +271,11 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   refreshResearch({ portal, deviceToken, callId, product, vertical: companyName }).catch(() => {});
 
   if (preparedOpeningText) {
-    await agent(preparedOpeningText);
+    await agent(preparedOpeningText, { intent: "opening" });
   } else {
     const first = await opening(config()).catch(() => ({ text: null }));
-    if (!first || !first.text) { llmFailures++; await agent(fallbackOpening(config())); }
-    else await agent(first.text);
+    if (!first || !first.text) { llmFailures++; await agent(fallbackOpening(config()), { intent: "opening" }); }
+    else await agent(first.text, { intent: "opening" });
   }
 
   // Turn count is only a runaway-call safety bound. Turn endings themselves are
@@ -361,7 +374,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       if (hello.text) lastAgentAsked = extractQuestion(hello.text) || pendingQuestion;
       await agent(hello.text || (neverHeard && firstQuiet
         ? (activeLocale === "en" ? "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick call?" : "Hello.")
-        : (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?")));
+        : (activeLocale === "en" ? "Hello? I just want to make sure you can hear me." : "Hello?")), neverHeard && firstQuiet ? "opening" : "checkin");
       continue;
     }
     consecutiveSilence = 0;
@@ -388,7 +401,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
     const ai = await askBrain({ transcript, ...config() });
     lastAgentAsked = extractQuestion(ai.text) || null;
-    await agent(ai.text || fallbackReply(heard, config()));
+    await agent(ai.text || fallbackReply(heard, config()), { intent: turnIntent(heard, ai.text) });
 
     // Repeated AI failure must not silently turn the universal agent back into
     // a rigid industry script. End safely and leave a human-follow-up result.
@@ -431,7 +444,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       if (!/\b30 minutes\b/i.test(line)) {
         line = line.replace(/[.!]?\s*$/, ". A manager will call you back within the next 30 minutes.");
       }
-      await agent(line);
+      await agent(line, { intent: "closing" });
     } else {
       await agent(captured
         ? `Thanks for your time. A manager will call you back on ${captured} within the next 30 minutes. Goodbye.`

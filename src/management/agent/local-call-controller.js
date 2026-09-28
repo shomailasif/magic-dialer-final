@@ -286,7 +286,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
         ? setInterval(() => { try { engine.keepAlive(); } catch {} }, 1200)
         : 0;
       try {
-        out = await tts(spoken, { locale, style: config.voiceStyle || "friendly" });
+        out = await tts(spoken, { locale, style: config.voiceStyle || "friendly", intent: turn.intent });
       } finally {
         if (ka) clearInterval(ka);
       }

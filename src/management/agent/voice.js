@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { expressionFor } = require("./expression");
 
 /**
  * Hybrid neural voice for the agent — human-sounding, not the robotic Windows
@@ -583,7 +584,16 @@ function edgeWsClean(text) {
 /** One Edge WS synthesis of the FULL utterance → MP3 or null.
  * Edge rejects riff-16khz/other raw formats with close 1007; only the
  * audio-* compressed formats (mp3) are accepted. */
-function edgeWsSynth(text, voice, ratePct) {
+/** The SSML language tag that matches an Edge voice, e.g. "en-US-AvaNeural"
+ *  -> "en-US". Was hardcoded to en-US, so every non-English turn was
+ *  synthesised with an English language tag. */
+function voiceLangFor(voice) {
+  const v = String(voice || "");
+  const m = v.match(/^([a-z]{2,3}(?:-[A-Za-z]{2,4})?)-[A-Za-z]+Neural/);
+  return m ? m[1] : "";
+}
+
+function edgeWsSynth(text, voice, ratePct, opts = {}) {
   return new Promise((resolve) => {
     let WS;
     try { WS = require("ws"); } catch { resolve(null); return; }
@@ -598,7 +608,23 @@ function edgeWsSynth(text, voice, ratePct) {
     }
     let ws;
     const stamp = edgeWsDate();
-    const rateArg = ratePct === 0 ? "+0%" : `${ratePct > 0 ? "+" : ""}${ratePct}%`;
+    /* Expression: per-turn pitch and volume, and a style where the voice has
+     * one. Every turn used to be pitch +0Hz / volume +0%, which is why the voice
+     * sounded flat. Deltas are small and clamped on purpose. */
+    const ex = expressionFor({ intent: opts.intent, text, style: opts.style, baseRatePct: ratePct });
+    const rateArg = `${ex.ratePct > 0 ? "+" : ""}${ex.ratePct}%`;
+    const pitchArg = `${ex.pitchHz > 0 ? "+" : ""}${ex.pitchHz}Hz`;
+    const volArg = `${ex.volumePct > 0 ? "+" : ""}${ex.volumePct}%`;
+    /* The language tag was hardcoded to en-US, so a French, Hindi or Urdu turn
+     * was synthesised with an English language tag and mispronounced. It must
+     * follow the voice. */
+    const langTag = String(opts.lang || voiceLangFor(voice) || "en-US");
+    /* Prosody only. mstts:express-as was tried and rejected: the styled-version
+     * form Edge requires does not survive this websocket endpoint, and every
+     * turn fell off the fast path onto the Python fallback - 11.7s instead of
+     * ~1.3s. Pitch/rate/volume is the part that is reliably honoured, and it is
+     * what actually reads as expression on the phone. */
+    const styleAttr = "";
     try {
       ws = new WS(
         `${EDGE_WS_HOST}?TrustedClientToken=${EDGE_WS_TOKEN}&ConnectionId=${crypto.randomUUID().replace(/-/g, "")}&Sec-MS-GEC=${edgeWsGec()}&Sec-MS-GEC-Version=${EDGE_WS_GEC_VERSION}`,
@@ -613,8 +639,8 @@ function edgeWsSynth(text, voice, ratePct) {
           if (err) { finish(null); return; }
           ws.send(
             `X-RequestId:${crypto.randomUUID().replace(/-/g, "")}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
-            `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>` +
-            `<voice name='${voice}'><prosody pitch='+0Hz' rate='${rateArg}' volume='+0%'>${edgeWsClean(text)}</prosody></voice></speak>`,
+            `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${langTag}'>` +
+            `<voice name='${voice}'${styleAttr}><prosody pitch='${pitchArg}' rate='${rateArg}' volume='${volArg}'>${edgeWsClean(text)}</prosody></voice></speak>`,
             (e2) => { if (e2) finish(null); },
           );
         },
@@ -651,7 +677,7 @@ function edgeWsSynth(text, voice, ratePct) {
  * the voice in 1.4.6, and skips the multi-second Python gap that sounded
  * like a dead line between turns.
  */
-async function edgeWsToBuffer(text, { locale, style, rate }) {
+async function edgeWsToBuffer(text, { locale, style, rate, intent } = {}) {
   if (process.env.AUTODIAL_NO_EDGE_TTS === "1") return null;
   try {
     const body = String(text || "").trim();
@@ -659,7 +685,7 @@ async function edgeWsToBuffer(text, { locale, style, rate }) {
     const voice = edgeVoiceFor(locale, style);
     const effRate = styleRate(style, rate);
     const ratePct = Math.round((effRate - 1) * 100);
-    const mp3 = await edgeWsSynth(body, voice, ratePct);
+    const mp3 = await edgeWsSynth(body, voice, ratePct, { intent, style, lang: locale });
     if (!mp3 || mp3.length < 100) return null;
     const { decodeMp3 } = require("../portal/audio");
     const pcm = await decodeMp3(mp3);
@@ -779,9 +805,9 @@ async function sapiToBuffer(text, { rate = 1 } = {}) {
  * keep the phone fed even when Python / edge-tts / ffmpeg are unavailable.
  * Returns { buffer, engine } or null only when every tier fails.
  */
-async function speakToBuffer(text, { locale = "en", style = "human", rate = 1 } = {}) {
+async function speakToBuffer(text, { locale = "en", style = "human", rate = 1, intent } = {}) {
   const chain = async (loc) => {
-    const edgeWs = await edgeWsToBuffer(text, { locale: loc, style, rate });
+    const edgeWs = await edgeWsToBuffer(text, { locale: loc, style, rate, intent });
     if (edgeWs) return edgeWs;
     const edge = await edgeToBuffer(text, { locale: loc, style, rate });
     if (edge) return edge;
