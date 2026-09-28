@@ -75,9 +75,31 @@ async function main() {
       "the prospect turn must reach the transcript"
     );
 
-    // A genuinely quiet line still ends after two empty windows.
+    // A genuinely quiet line ends the call, but not on two 5s windows. "Two
+    // windows" meant 30s of silence when a window was 15s; at 5s it meant 10s,
+    // and on the 19:28Z call the agent hung up on a prospect who was still
+    // there and announced the manager callback in the middle of the call.
+    // Two quiet windows (5s each = 10s) must NOT end the call, so the prospect's
+    // third turn is still heard: 2 quiet + 1 real + 1 remote BYE = 4 listen calls.
     const quiet = await run([null, null, { text: "too late", language: "en" }]);
-    assert.equal(quiet.listenCalls.length, 2, "two empty windows must still end the call");
+    assert.equal(quiet.listenCalls.length, 4, "two 5s windows must not end a call that is still live");
+    assert.ok(
+      quiet.out.transcript.some(t => t.role === "lead" && t.text === "too late"),
+      "the prospect must still be heard after two quiet windows"
+    );
+    // Three quiet windows (15s) is still not enough: the prospect is checked on
+    // with a line rather than dropped. 3 quiet + 1 real + 1 remote BYE = 5.
+    const quiet3 = await run([null, null, null, { text: "too late", language: "en" }]);
+    assert.equal(quiet3.listenCalls.length, 5, "15s of quiet must not end a call that is still live");
+    // Four quiet windows clears the 20s budget and does end a dead line, before
+    // the next real turn is ever asked for.
+    const quiet4 = await run([null, null, null, null, { text: "too late", language: "en" }]);
+    assert.equal(quiet4.listenCalls.length, 4, "20s of quiet must end a dead line");
+    assert.equal(
+      quiet4.out.transcript.some(t => t.role === "lead" && t.text === "too late"),
+      false,
+      "a dead line must not keep asking for another turn"
+    );
     assert.equal(quiet.spoken.length >= 2, true, "one check-in line per quiet window");
 
     // A line that only ever beeps is still bounded.
@@ -89,9 +111,10 @@ async function main() {
     assert.equal(leadBeeps.listenCalls.length, 3, "a junk lead string must use the junk budget, not the quiet-line budget");
 
     // A greeting after a beep is a real turn and resets both counters, so only
-    // two *later* quiet windows may end the call.
-    const greet = await run([JUNK, { text: "Hello?", language: "en" }, null, null, { text: "too late", language: "en" }]);
-    assert.equal(greet.listenCalls.length, 4, "a greeting must reset the counters so only two later quiet windows end the call");
+      // A prospect who greets us resets the quiet budget, so the window count
+      // starts again from them. JUNK, greeting, 2 quiet, 1 real, 1 BYE = 6.
+      const greet = await run([JUNK, { text: "Hello?", language: "en" }, null, null, { text: "too late", language: "en" }]);
+      assert.equal(greet.listenCalls.length, 6, "a greeting must reset the quiet budget, not carry it over");
     assert.ok(
       greet.out.transcript.some(t => t.role === "lead" && t.text === "Hello?"),
       "the greeting must be kept as a lead turn"
@@ -136,10 +159,33 @@ async function main() {
       !flipFlop.out.timeline.some(t => t.event === "language-switch" && t.locale === "fr"),
       "a single unconfirmed detection must not emit a language switch"
     );
-    assert.ok(
-      flipFlop.out.timeline.some(t => t.event === "language-candidate" && t.locale === "fr"),
-      "the unconfirmed detection must still be recorded as a candidate"
-    );
+      assert.ok(
+        flipFlop.out.timeline.some(t => t.event === "language-candidate" && t.locale === "fr"),
+        "the unconfirmed detection must still be recorded as a candidate"
+      );
+
+      // Romanized speech is what the STT actually returns for Urdu, and the
+      // script guard used to refuse it - so a correctly detected Urdu opener left
+      // the agent talking English for the whole call. Two agreeing turns, same
+      // as any other language, and the call must move to Urdu.
+      const romanUrdu = await run([
+        { text: "assalam, kya aap Urdu mein baat kar sakte hain?", language: "ur" },
+        { text: "haan, mera naam Jaswinder hai.", language: "ur" },
+        REMOTE_BYE,
+      ]);
+      assert.equal(romanUrdu.out.locale, "ur", "romanized Urdu must be able to take the call over");
+      assert.ok(
+        romanUrdu.out.timeline.some(t => t.event === "language-switch" && t.locale === "ur"),
+        "the switch to Urdu must be recorded in the timeline"
+      );
+
+      // But English misdetected as Russian is still refused, both ways.
+      const mislabelled = await run([
+        { text: "yes of course that is fine", language: "ru" },
+        { text: "yes of course that is fine", language: "ru" },
+        REMOTE_BYE,
+      ]);
+      assert.equal(mislabelled.out.locale, "en", "English text labelled Russian must not take the call over");
 
     // A non-Latin locale claimed for Latin text is rejected outright: the Urdu
     // flip is what drove the agent into a voice that cannot synthesize.

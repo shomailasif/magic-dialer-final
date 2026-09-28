@@ -42,7 +42,7 @@ function splitSentences(s) {
  * the cap prefers a complete sentence over a short one, and never leaves a
  * dangling clause behind when a sentence boundary was available. */
 function capTurnLength(line) {
-  const s = String(line || "").trim();
+  const s = stripSpokenArtifacts(line);
   // Even a short turn must end as a finished sentence: the model sometimes
   // emits "We help trucking companies streamline" with no terminator at all.
   if (s.length <= MAX_TURN_CHARS) return terminate(s);
@@ -93,4 +93,29 @@ function terminate(s) {
   return /[.!?]["')\u2019]?$/.test(t) ? t : t + ".";
 }
 
-module.exports = { MAX_TURN_CHARS, MAX_TURN_OVERSHOOT, splitSentences, capTurnLength };
+/**
+ * Strip anything that is not speech before it reaches the voice.
+ *
+ * The model sometimes emits its own scaffolding into the reply, and on the
+ * 19:28Z call it was read aloud, verbatim, to a prospect:
+ *   "Got it - may I have your full name, please?[Awaiting prospect response][Awaiting]."
+ * Bracketed stage directions, stray markdown, and unbalanced quotes are not
+ * things a person says out loud, and a phone call is the one place where this
+ * is instantly obvious.
+ */
+function stripSpokenArtifacts(text) {
+  let s = String(text || "");
+  // [Awaiting ...], [Pause], [Beats], (stage direction), *emphasis*, #heading
+  s = s.replace(/\[[^\]]*\]/g, " ");
+  s = s.replace(/\([^)]*\)/g, " ");
+  s = s.replace(/^\s*[*_#]+\s*/gm, " ");
+  s = s.replace(/[*_`]{1,3}/g, "");
+  // A label the model left in, e.g. "Agent:" or "Note -"
+  s = s.replace(/^\s*(agent|assistant|note|stage direction|output)\s*[:\-]\s*/i, "");
+  // Unbalanced quote left dangling mid-sentence, e.g. 'services." is now...'
+  s = s.replace(/[“”"]\s+(?=(?:is|are|was|were|do|does|did|can|could|will|would|and|so|but)\b)/g, " ");
+  s = s.replace(/\s{2,}/g, " ").trim();
+  return s;
+}
+
+module.exports = { MAX_TURN_CHARS, MAX_TURN_OVERSHOOT, splitSentences, capTurnLength, stripSpokenArtifacts };

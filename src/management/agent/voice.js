@@ -39,7 +39,11 @@ const NEURAL_VOICES = {
   cs: "cs-CZ-VlastaNeural",
   da: "da-DK-ChristelNeural",
   nl: "nl-NL-ColetteNeural",
-  fi: "fi-FI-SelmaNeural",
+  // Was "fi-FI-SelmaNeural", which is not a real Edge voice - verified against the
+  // live Microsoft list, where Finnish is only Harri (M) and Noora (F). An unknown
+  // short name is not a wrong accent, it is a failed synthesis, so Finnish had
+  // no voice at all. Fixed here and pinned by the voice-manifest test.
+  fi: "fi-FI-NooraNeural",
   fr: "fr-FR-DeniseNeural",
   de: "de-DE-KatjaNeural",
   el: "el-GR-AthinaNeural",
@@ -68,6 +72,20 @@ const NEURAL_VOICES = {
   tr: "tr-TR-EmelNeural",
   uk: "uk-UA-PolinaNeural",
   vi: "vi-VN-HoaiMyNeural",
+  // Urdu had no entry at all, so edgeVoiceFor("ur") returned the English
+  // default and the agent read Urdu text in an American accent - which is what
+  // "the language failed" looked like on the 19:29Z call. ur-PK is the
+  // Pakistani voice, which is what a Punjabi/Urdu speaker expects.
+  ur: "ur-PK-UzmaNeural",
+  "ur-pk": "ur-PK-UzmaNeural",
+  "ur-in": "ur-IN-GulNeural",
+  // Punjabi has NO Edge neural voice. Verified against the live Microsoft voice
+  // list (322 voices, zero `pa-*` entries), so there is nothing correct to
+  // point at. Punjabi is Indo-Aryan and hi-IN-SwaraNeural is the closest
+  // available phonology; it renders Gurmukhi rather than going silent. Override
+  // PUNJABI_VOICE once a real Punjabi voice is available - it is read on every
+  // call, so no other file needs to change.
+  pa: "hi-IN-SwaraNeural",
 };
 
 /**

@@ -79,9 +79,12 @@ function fallbackReply(text, { callbackNumber, callbackIn, locale }) {
  * greeted. A prompt rule is not enough, so the same rule is enforced where the
  * words leave the agent. */
 const ASK_TOPICS = [
-  ["mcn", /\bmc\s*number\b|\bmc\s*#?\b/i],
-  ["phone", /\bphone number\b|\bbest (?:phone )?number\b|\bemail address\b|\breach you (?:at|on)\b/i],
-  ["name", /\byour name\b|\bwhat(?:'s| is) your name\b|\bmay i have your name\b|\bcan i get your name\b/i],
+  ["mcn", /\bmc\s*number\b|\bmc\s*#?\b|\bmotor carrier\b/i],
+  ["phone", /\bphone number\b|\bbest (?:phone )?number\b|\bemail address\b|\breach you (?:at|on)\b|\bnumber to (?:reach|contact)\b/i],
+  // Variants matter: on the 19:28Z call it asked "your name", then "your full
+  // name", then "could you share your full name" - three times - because only an
+  // exact repeat was caught.
+  ["name", /\byour (?:full |first |last )?name\b|\bwhat(?:'s| is) your (?:full )?name\b|\bmay i (?:have|get) your\b|\bcan i (?:have|get) your\b|\bwho (?:is|are) (?:this|who)\b|\bwho am i (?:speaking|talking) to\b/i],
   ["truckType", /\bwhat (?:type|kind) of (?:truck|vehicle)\b|\bwhich (?:type|kind) of (?:truck|vehicle)\b|\bdo you (?:drive|run|operate)\b/i],
   ["truckSize", /\bhow many trucks\b|\bfleet size\b|\bwhat size\b|\bsize of your (?:fleet|trucks)\b/i],
 ];
@@ -227,6 +230,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     return { ...baseConfig, locale: activeLocale, playbook, research: getCachedResearch(product, companyName) };
   };
   const askedFor = new Set();
+  const QUIET_HANGUP_MS = 20000;
   // The question the agent is currently waiting on, so a quiet window re-asks
   // it instead of moving to the next topic.
   let lastAgentAsked = null;
@@ -331,7 +335,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       // the words must match the claimed script, and the same language has to be
       // seen twice in a row. One clip is not enough - that is what turned an
       // English call into French and then Urdu on the 20:25Z call.
-      if (scriptAgreesWithLocale(heard, detected)) {
+        if (scriptAgreesWithLocale(heard, detected, { fromDetection: true })) {
         if (pendingDetected === detected) {
           activeLocale = detected;
           pendingDetected = null;
@@ -378,11 +382,17 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         consecutiveJunk++;
         // Bounded: a line that only ever beeps still ends the call.
         if (consecutiveJunk >= 3) break;
-      } else {
-        consecutiveSilence++;
-        // Two quiet windows in a row = dead line. One window only prompts a check-in.
-        if (consecutiveSilence >= 2) break;
-      }
+        } else {
+          consecutiveSilence++;
+          /* Hangup is budgeted on cumulative quiet time, not a window count.
+           * "Two quiet windows" was safe when a window was 15s - it meant 30s of
+           * silence. The window is 5s now, so the same rule meant 10s, and on the
+           * 19:28Z call the agent said "a manager will call you back within 30
+           * minutes" and hung up while the prospect was still on the line. 20s of
+           * real silence, and a hard floor of three windows so a prospect who is
+           * genuinely there is never dropped. */
+          if (quietMs >= QUIET_HANGUP_MS && consecutiveSilence >= 3) break;
+        }
       // What to say into a quiet window. This used to always be a connectivity
       // check, so a call that opened into dead air went straight to "Can you
       // hear me okay?" (20:24Z and 20:25Z calls) and a live conversation that
@@ -415,10 +425,17 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         : (activeLocale === "en" ? "Hello, is this a good time to talk?" : "Hello?")), neverHeard && firstQuiet ? "opening" : "checkin");
       continue;
     }
-    consecutiveSilence = 0;
-    consecutiveJunk = 0;
-    quietMs = 0;
-    pendingDetected = null;
+      consecutiveSilence = 0;
+      consecutiveJunk = 0;
+      quietMs = 0;
+      // pendingDetected deliberately survives a real turn. It used to be cleared
+      // right here, on every turn - which made the "same language twice in a row"
+      // rule impossible to ever satisfy, because the first turn had already
+      // erased the candidate the second turn was supposed to confirm. Automatic
+      // language switching could therefore never fire for any language, and the
+      // agent stayed in English for the whole call. It is cleared where a
+      // contradiction actually happens: a command, a turn detected in the current
+      // language, or a clip whose script contradicts the claim.
 
     lead(heard, detected);
     leadSpeech.push(heard);
