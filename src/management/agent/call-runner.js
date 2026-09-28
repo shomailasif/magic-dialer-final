@@ -179,7 +179,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
    * So the whole turn gets one hard budget. If the brain misses it, the
    * deterministic fallback line is spoken immediately, and we do not retry: a
    * second attempt would only add another budget's worth of silence. */
-  const BRAIN_BUDGET_MS = 6000;
+  const BRAIN_BUDGET_MS = 8000;
   const askBrain = async (payload) => {
     const startedAt = Date.now();
     const attempt = async () => {

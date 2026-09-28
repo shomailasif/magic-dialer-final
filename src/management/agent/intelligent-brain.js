@@ -90,7 +90,7 @@ async function complete({ history, config, maxTokens = 220 }) {
     for (let attempt = 1; attempt <= GATEWAY_ATTEMPTS; attempt++) {
       const reqId = requestId();
       const c = new AbortController();
-      const t = setTimeout(() => c.abort(), 4500);
+      const t = setTimeout(() => c.abort(), 7000);
       try {
         const r = await fetch(portal + "/api/engine/ai/chat", {
           method: "POST",
@@ -121,7 +121,7 @@ async function complete({ history, config, maxTokens = 220 }) {
         if (text) return { text, requestId:d.requestId||reqId };
         gatewayReason = "empty AI response";
       } catch (e) {
-        gatewayReason = e && e.name === "AbortError" ? "AI gateway timed out after 4.5s" : String((e && e.message) || e);
+        gatewayReason = e && e.name === "AbortError" ? "AI gateway timed out after 7s" : String((e && e.message) || e);
       } finally { clearTimeout(t); }
       if (attempt < GATEWAY_ATTEMPTS) await new Promise((r2) => setTimeout(r2, 250));
     }
@@ -140,7 +140,7 @@ async function complete({ history, config, maxTokens = 220 }) {
   let lastError = "";
   for (const model of models) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4500);
+    const timer = setTimeout(() => controller.abort(), 7000);
     try {
       const res = await fetch(GROQ_URL, {
         method: "POST",
