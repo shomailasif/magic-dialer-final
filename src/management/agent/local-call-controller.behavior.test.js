@@ -337,6 +337,16 @@ async function main() {
   // half-finished delivery being complained about.
   assert.ok(BARGE_YIELD_CONTRACT.ok, "barge-in yield must stay at 700ms");
 
-  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT, unspeakable turn, turn cap, non-Latin refusal");
+  // Response latency and truncation pull in opposite directions. The end of
+  // utterance is 400ms with a short hold, and speech that resumes inside the
+  // hold must be appended to the SAME window rather than starting a new turn -
+  // otherwise raising the timeout to stop truncation is what makes the agent
+  // sound slow on every turn.
+  assert.ok(/endSilenceMs: 400/.test(controllerSrc), "VAD end-of-silence must be 400ms, not 700ms");
+  assert.ok(/const SPEECH_HOLD_MS = 2\d\d;/.test(controllerSrc), "a short speech hold must be configured");
+  assert.ok(/event\.ended && !state\.done && !state\.holdUntil/.test(controllerSrc), "end of utterance must arm a hold, not resolve immediately");
+  assert.ok(/if \(event\.voiced\) state\.holdUntil = 0;/.test(controllerSrc), "resumed speech must cancel the hold and stay in the same utterance");
+
+  console.log("PASS: controller opening barge-in, steady-tone guard, junk STT, remote hangup, greeting lead, empty STT, unspeakable turn, turn cap, non-Latin refusal, speech hold");
 }
 main().catch(e => { console.error(e); process.exit(1); });

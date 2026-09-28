@@ -41,6 +41,15 @@ function isJunkUtterance(text) {
 // 4740ms), which is exactly the rushed, half-finished-sentence delivery being
 // complained about. Not talking over the prospect is handled by capping our own
 // turn length, not by cutting ourselves off mid-word.
+/* How long to keep the window open after the VAD thinks the prospect stopped.
+ * The VAD end-of-silence alone cannot be both fast and safe: 350ms truncated
+ * people mid-sentence, 700ms made the agent visibly slow to answer, which was
+ * reported as a huge delay on every single turn. So the end-of-silence is back
+ * to 400ms and this short hold absorbs the gap where someone resumes: their
+ * resumed speech is appended to the same utterance instead of starting a new
+ * turn, so we answer quickly without cutting anyone off. */
+const SPEECH_HOLD_MS = 220;
+
 const BARGE_YIELD_MS = 700;
 
 function trackBargeLevel(state, level) {
@@ -212,7 +221,13 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
           if (event.speaking) { state.started = true; state.chunks.push(...state.pre); state.pre = []; }
         } else {
           state.chunks.push(frame);
-          if (event.ended && !state.done) { state.done = true; state.resolve(); }
+          // End-of-utterance with a short hold so a resumed sentence is kept in
+          // the same window instead of being cut off and re-transcribed.
+          if (event.ended && !state.done && !state.holdUntil) state.holdUntil = Date.now() + SPEECH_HOLD_MS;
+          if (state.holdUntil) {
+            if (event.voiced) state.holdUntil = 0; // they carried on: same utterance
+            else if (!state.done && Date.now() >= state.holdUntil) { state.done = true; state.resolve(); }
+          }
         }
       }
     },
@@ -248,7 +263,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     if (!state) {
       let release;
       const ended = new Promise((r) => { release = r; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 400 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     let out;
     if (isOpening) {
@@ -289,7 +304,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 400 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -322,7 +337,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 400 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     // A prospect who has stopped talking is answered in well under a second by
     // a human. The old 15s ceiling left 15s of dead air on the line before the
