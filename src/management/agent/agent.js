@@ -263,7 +263,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.36";
+const VERSION = "1.4.37";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -702,9 +702,19 @@ async function runAgent(opts = {}) {
         const hl = `heartbeat OK | ${stats.leads} leads, ${stats.calls} calls, ${stats.leadsUnsynced} unsynced`;
         log(hl);
         ui({ status: "ONLINE", mode: config.mode || "on", line: hl });
-      } else {
+      } else if (res.status === 401 || res.status === 403 || res.status === 409) {
+        // A real answer from the portal: this PC is not allowed to run right now.
         log(`heartbeat rejected (status ${res.status}) - not a registered customer.`);
         ui({ status: "OFFLINE", mode: config.mode || "on", line: "Heartbeat rejected - reconnect this PC from the portal." });
+      } else {
+        /* The portal is unwell, not us. A 503 means its database was briefly
+         * unavailable - not that this PC should be told to reconnect, and
+         * certainly not while a call is running. The old code lumped every
+         * non-200 together and flipped the agent OFFLINE mid-call, which reads
+         * to the operator as a broken product when the phone line is fine.
+         * Keep the last known state and carry on. */
+        log(`heartbeat unavailable (status ${res.status}) - keeping last known state.`);
+        ui({ status: config.portalSyncedAt ? "ONLINE" : "OFFLINE", mode: config.mode || "on", line: config.portalSyncedAt ? "Portal briefly unavailable - call is unaffected." : "Connecting to portal..." });
       }
     } catch (err) {
       log(`heartbeat failed (${safeLog(err,[enrolledToken])}) - retrying. Agent continues offline.`);
