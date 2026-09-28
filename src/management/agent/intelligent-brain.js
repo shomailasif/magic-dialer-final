@@ -71,7 +71,19 @@ Rules:
 - Output only the exact words to speak. No labels, stage directions, markdown, or analysis.`;
 }
 
-async function complete({ history, config, maxTokens = 220 }) {
+/* Deadlines.
+ *
+ * The 7000ms abort protects a live conversation: nobody should sit in silence
+ * waiting on a brain call. But the PRE-DIAL preflight is not a conversation -
+ * nobody is on the line yet, so a slow preflight costs nothing but a few seconds
+ * of the caller's time. It previously shared the 7s abort and gave up, which
+ * turned a slow-but-working brain into "Call failed" before the phone even
+ * rang. It gets its own, much more generous budget, and its own failure reason.
+ */
+const REQUEST_TIMEOUT_MS = 7000;
+const PREFLIGHT_TIMEOUT_MS = 25000;
+
+async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_TIMEOUT_MS }) {
   const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||""),callId=String(config&&config.callId||requestId());
   /* The portal gateway is the only AI path this machine has. It is also
    * occasionally blipped by the hosting platform, which answers with an HTML
@@ -90,7 +102,7 @@ async function complete({ history, config, maxTokens = 220 }) {
     for (let attempt = 1; attempt <= GATEWAY_ATTEMPTS; attempt++) {
       const reqId = requestId();
       const c = new AbortController();
-      const t = setTimeout(() => c.abort(), 7000);
+      const t = setTimeout(() => c.abort(), timeoutMs);
       try {
         const r = await fetch(portal + "/api/engine/ai/chat", {
           method: "POST",
@@ -121,7 +133,7 @@ async function complete({ history, config, maxTokens = 220 }) {
         if (text) return { text, requestId:d.requestId||reqId };
         gatewayReason = "empty AI response";
       } catch (e) {
-        gatewayReason = e && e.name === "AbortError" ? "AI gateway timed out after 7s" : String((e && e.message) || e);
+        gatewayReason = e && e.name === "AbortError" ? `AI gateway timed out after ${timeoutMs}ms` : String((e && e.message) || e);
       } finally { clearTimeout(t); }
       if (attempt < GATEWAY_ATTEMPTS) await new Promise((r2) => setTimeout(r2, 250));
     }
@@ -192,14 +204,18 @@ async function opening(config) {
   });
 }
 
-async function preflightBrain(config) {
-  const r = await complete({
-    history: [{ role: "user", content: "Reply with exactly READY." }],
-    config,
-    maxTokens: 64,
-  });
-  if (String(r.text || "").trim().toUpperCase() !== "READY") {
-    throw new Error("AI brain preflight failed: " + (r.error || "unexpected response"));
+  async function preflightBrain(config) {
+    const startedAt = Date.now();
+    const r = await complete({
+      history: [{ role: "user", content: "Reply with exactly READY." }],
+      config,
+      maxTokens: 64,
+      timeoutMs: PREFLIGHT_TIMEOUT_MS,
+    });
+    if (String(r.text || "").trim().toUpperCase() !== "READY") {
+      // Elapsed goes at the end so the "AI brain preflight failed: <reason>"
+      // shape stays stable for the diagnostics that key off it.
+      throw new Error("AI brain preflight failed: " + (r.error || "unexpected response") + ` (after ${Date.now() - startedAt}ms)`);
   }
   return true;
 }
