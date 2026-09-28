@@ -73,9 +73,67 @@ Rules:
 
 async function complete({ history, config, maxTokens = 220 }) {
   const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||""),callId=String(config&&config.callId||requestId());
-  if(portal&&deviceToken){const reqId=requestId(),c=new AbortController(),t=setTimeout(()=>c.abort(),4500);try{const r=await fetch(portal+"/api/engine/ai/chat",{method:"POST",headers:{"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},body:JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-20)],maxTokens}),signal:c.signal});const d=await r.json().catch(()=>({}));if(!r.ok){return {text:"",error:safeError(d.error||("AI gateway HTTP "+r.status),[deviceToken]),requestId:d.requestId||reqId};}const text=clean(d.text);return text?{text}:{text:"",error:safeError(d.error||"empty AI response",[deviceToken]),requestId:d.requestId||reqId};}catch(e){console.log("[brain] AI gateway failed: "+e?.message+", falling back to direct Groq");}finally{clearTimeout(t);}}
+  /* The portal gateway is the only AI path this machine has. It is also
+   * occasionally blipped by the hosting platform, which answers with an HTML
+   * error page instead of JSON - measured here:
+   *   try4: ERR Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+   * That used to throw, fall through to a direct Groq key this install does not
+   * have, and report "Secure AI gateway unavailable", which names the wrong
+   * thing entirely. A transient blip must not stop a call being placed, and the
+   * error must say what actually happened.
+   *
+   * So: retry the gateway a couple of times on a transient failure, and carry
+   * the real reason forward. */
+  const GATEWAY_ATTEMPTS = 3;
+  let gatewayReason = "";
+  if (portal && deviceToken) {
+    for (let attempt = 1; attempt <= GATEWAY_ATTEMPTS; attempt++) {
+      const reqId = requestId();
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 4500);
+      try {
+        const r = await fetch(portal + "/api/engine/ai/chat", {
+          method: "POST",
+          // Compact key style is deliberate and contract-pinned: safe-diagnostic
+          // and call-diagnostic-correlation assert that the call id and request
+          // id travel with every brain call, so a live call can be tied to the
+          // AI failure that ended it.
+          headers: {"Content-Type":"application/json","x-request-id":reqId,"x-call-id":callId},
+          body: JSON.stringify({deviceToken,messages:[{role:"system",content:systemPrompt(config)},...history.slice(-20)],maxTokens}),
+          signal: c.signal,
+        });
+        // Read the body defensively. The platform sometimes answers with an HTML
+        // error page, and r.json() then throws on the "<!DOCTYPE ..." - which is
+        // how a transient blip used to look like "no AI at all". Some callers
+        // also stub fetch with json() only, so support both shapes.
+        let raw = "";
+        try { raw = typeof r.text === "function" ? await r.text() : JSON.stringify(await r.json()); }
+        catch { raw = ""; }
+        let d = {};
+        try { d = raw ? JSON.parse(raw) : {}; }
+        catch {
+          // The platform served HTML (a 502/503 page), not our API.
+          gatewayReason = `AI gateway returned non-JSON (HTTP ${r.status})`;
+          continue;
+        }
+        if (!r.ok) return { text: "", error: safeError(d.error || ("AI gateway HTTP " + r.status), [deviceToken]), requestId:d.requestId||reqId };
+        const text = clean(d.text);
+        if (text) return { text, requestId:d.requestId||reqId };
+        gatewayReason = "empty AI response";
+      } catch (e) {
+        gatewayReason = e && e.name === "AbortError" ? "AI gateway timed out after 4.5s" : String((e && e.message) || e);
+      } finally { clearTimeout(t); }
+      if (attempt < GATEWAY_ATTEMPTS) await new Promise((r2) => setTimeout(r2, 250));
+    }
+    console.log("[brain] AI gateway unavailable after " + GATEWAY_ATTEMPTS + " attempts: " + gatewayReason);
+  }
   const key = process.env.GROQ_API_KEY || process.env.AUTODIAL_GROQ_KEY || "";
-  if (!key) return { text: "", error: "Secure AI gateway unavailable" };
+  if (!key) {
+    return {
+      text: "",
+      error: gatewayReason ? `Secure AI gateway unavailable: ${gatewayReason}` : "Secure AI gateway unavailable (no portal gateway configured and no direct provider key)",
+    };
+  }
   const preferred = process.env.AUTODIAL_GROQ_MODEL || process.env.GROQ_MODEL || DEFAULT_MODEL;
   const models = preferred === DEFAULT_MODEL ? [preferred] : [preferred, DEFAULT_MODEL];
   const messages = [{ role: "system", content: systemPrompt(config) }, ...history.slice(-20)];
