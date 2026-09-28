@@ -14,8 +14,10 @@ import { authorizeActiveEngineDevice, engineBearerToken } from "@/lib/engine-dev
  *     teaching an agent from that would be worse than teaching it nothing.
  */
 export async function POST(r: Request) {
-  const auth = await authorizeActiveEngineDevice(engineBearerToken(r));
-  if (!auth.ok) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+  // authorizeActiveEngineDevice returns the device record, or null when the
+  // token is missing, revoked, or does not hold the active lease.
+  const device = await authorizeActiveEngineDevice(engineBearerToken(r));
+  if (!device) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
   let body: any = {};
   try { body = await r.json(); } catch { body = {}; }
   const product = String(body.product || "").slice(0, 120);
