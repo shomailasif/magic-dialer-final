@@ -1,4 +1,6 @@
 "use strict";
+
+const { withPortalSlot } = require("./portal-queue");
 /**
  * Agent-side sales research.
  *
@@ -39,12 +41,12 @@ async function refresh({ portal, deviceToken, callId, product, vertical } = {}) 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 20000);
   try {
-    const r = await fetch(base + "/api/engine/research/sales", {
+    const r = await withPortalSlot(() => fetch(base + "/api/engine/research/sales", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + deviceToken, "x-call-id": String(callId || "") },
       body: JSON.stringify({ product: String(product || "").slice(0, 120), vertical: String(vertical || product || "").slice(0, 120) }),
-      signal: ac.signal,
-    });
+        signal: ac.signal,
+      }));
     if (r.ok) {
       const d = await r.json().catch(() => ({}));
       const tactics = Array.isArray(d.tactics) ? d.tactics.filter((t) => t && typeof t.tactic === "string") : [];

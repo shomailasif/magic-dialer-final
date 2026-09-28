@@ -153,6 +153,22 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
    * instead of refusing to dial. */
   const first = await openingFn(brainConfig).catch(() => ({ text: null, error: "opening request failed" }));
   onLog("[local-media-v2] AI brain preflight passed (the opening request is the check)");
+
+  /* Research is gathered here, in the pre-dial window, and nowhere else.
+   *
+   * It used to be fetched in the background from inside the conversation, which
+   * is exactly wrong: the portal accepts one request at a time, this one is slow
+   * because it searches the open web, and it was taking the slot the brain
+   * needed - turns reached 8s while it ran. Here nobody is waiting on a phone
+   * line, so it costs the customer nothing. Bounded, because a slow research
+   * fetch must never delay the ring. */
+  try {
+    const { refresh: refreshResearch } = require("./sales-research");
+    await Promise.race([
+      refreshResearch({ portal: config.portalUrl, deviceToken: config.deviceToken, product: config.product, vertical: config.companyName }),
+      new Promise((r) => setTimeout(r, 2500)),
+    ]);
+  } catch { /* the deterministic tactic floor covers this */ }
   let openingText = String(first && first.text || "").trim();
   if (!openingText) {
     /* A gateway blip must not stop the call being placed. The preflight exists

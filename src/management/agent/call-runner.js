@@ -3,7 +3,7 @@ const { nextTurn, opening } = require("./intelligent-brain");
 const { normalizeLanguage, languageName } = require("./language");
 const { capTurnLength, splitSentences } = require("./turn-length");
 const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("./script-guard");
-const { getResearch: getCachedResearch, refresh: refreshResearch, researchBlock } = require("./sales-research");
+const { getResearch: getCachedResearch, researchBlock } = require("./sales-research");
 
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
@@ -458,9 +458,17 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     transcript.push({ role: "lead", text: line, locale: detected || activeLocale });
   };
 
-  // Research ahead of the call, never during it: the cache is read synchronously
-  // per turn and the fetch runs in the background.
-  refreshResearch({ portal, deviceToken, callId, product, vertical: companyName }).catch(() => {});
+  /* Research must be gathered BEFORE the call, not during it.
+   *
+   * The comment here used to claim "ahead of the call, never during it" while
+   * firing the fetch in the background from inside the conversation. That is
+   * the worst possible place for it now: the portal will only take one request
+   * at a time, and this one is slow (it searches the open web). So it held the
+   * slot the brain needed, and turns went to 8s.
+   *
+   * A cold cache simply means the conversation runs on the deterministic tactic
+   * floor, which is already guaranteed to be present. The fetch now happens in
+   * the pre-dial window, where nothing is waiting on a person. */
 
   if (preparedOpeningText) {
     await agent(preparedOpeningText, { intent: "opening" });
