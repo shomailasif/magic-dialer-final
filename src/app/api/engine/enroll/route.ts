@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { randomBytes, createHash } from "crypto";
 import { prisma } from "@/lib/db";
+import { invalidateConfigCache } from "@/app/api/heartbeat/route";
 const hash=(v:string)=>createHash("sha256").update(v).digest("hex");
 export async function POST(req:Request){
  let b:any; try{b=await req.json()}catch{return NextResponse.json({error:"Invalid body"},{status:400})}
@@ -33,6 +34,10 @@ export async function POST(req:Request){
    await tx.engineDevice.upsert({where:{userId_machineId:{userId:row.userId,machineId}},create:{userId:row.userId,machineId,tokenHash:hash(token),leaseUntil},update:{tokenHash:hash(token),revokedAt:null,leaseUntil}});
    return token;
   });
+  // A fresh enrollment changes the SIP credentials the heartbeat hands out, so
+  // the heartbeat's short-lived config cache must not survive it. Best effort:
+  // a failure here must never block enrollment, and the cache expires anyway.
+  try{ invalidateConfigCache(); }catch{}
   return NextResponse.json({ok:true,deviceToken});
  } catch(e){
   const m=e instanceof Error?e.message:"";
