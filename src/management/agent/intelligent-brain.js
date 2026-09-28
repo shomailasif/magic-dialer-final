@@ -1,4 +1,5 @@
 const { requestId, safeError } = require("./safe-diagnostic");
+const health = require("./gateway-health");
 const { languageName } = require("./language");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_MODEL = "openai/gpt-oss-120b";
@@ -117,9 +118,16 @@ async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_
    *
    * So: retry the gateway a couple of times on a transient failure, and carry
    * the real reason forward. */
-  const GATEWAY_ATTEMPTS = 3;
+  /* Three 7s attempts is 21 seconds of silence for one reply, and on the 20:40Z
+   * call the gateway timed out three times in a row and then again on the next
+   * turns, so every turn cost the prospect ~21s of dead air. Two bounded
+   * attempts, plus a circuit breaker: once the gateway has failed three times we
+   * stop paying for the knowledge that it is down. */
+  const GATEWAY_ATTEMPTS = 2;
   let gatewayReason = "";
-  if (portal && deviceToken) {
+  if (health.isOpen("brain")) {
+    gatewayReason = `AI gateway ${health.reason("brain")}`;
+  } else if (portal && deviceToken) {
     for (let attempt = 1; attempt <= GATEWAY_ATTEMPTS; attempt++) {
       const reqId = requestId();
       const c = new AbortController();
@@ -146,17 +154,20 @@ async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_
         try { d = raw ? JSON.parse(raw) : {}; }
         catch {
           // The platform served HTML (a 502/503 page), not our API.
+          health.recordFailure("brain");
           gatewayReason = `AI gateway returned non-JSON (HTTP ${r.status})`;
           continue;
         }
-        if (!r.ok) return { text: "", error: safeError(d.error || ("AI gateway HTTP " + r.status), [deviceToken]), requestId:d.requestId||reqId };
+        if (!r.ok) { health.recordFailure("brain"); return { text: "", error: safeError(d.error || ("AI gateway HTTP " + r.status), [deviceToken]), requestId:d.requestId||reqId }; }
         const text = clean(d.text);
-        if (text) return { text, requestId:d.requestId||reqId };
+        if (text) { health.recordSuccess("brain"); return { text, requestId:d.requestId||reqId }; }
+        health.recordFailure("brain");
         gatewayReason = "empty AI response";
       } catch (e) {
+        health.recordFailure("brain");
         gatewayReason = e && e.name === "AbortError" ? `AI gateway timed out after ${timeoutMs}ms` : String((e && e.message) || e);
       } finally { clearTimeout(t); }
-      if (attempt < GATEWAY_ATTEMPTS) await new Promise((r2) => setTimeout(r2, 250));
+      if (attempt < GATEWAY_ATTEMPTS) await new Promise((r2) => setTimeout(r2, 200));
     }
     console.log("[brain] AI gateway unavailable after " + GATEWAY_ATTEMPTS + " attempts: " + gatewayReason);
   }

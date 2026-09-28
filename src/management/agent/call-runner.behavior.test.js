@@ -126,11 +126,19 @@ async function main() {
     const deadAirOpen = await run([{ text: null, quiet: true, waitedMs: 5000 }, { text: "Yes, I can hear you.", language: "en" }, REMOTE_BYE]);
     const checkIns = deadAirOpen.spoken.filter(l => /can you hear me|make sure you can hear/i.test(l));
     assert.equal(checkIns.length, 0, `the first quiet window must not be a connectivity check, got: ${JSON.stringify(checkIns)}`);
-    const openPrompt = JSON.stringify(brainPrompts.slice(-3));
-    assert.ok(
-      /not answered yet/i.test(openPrompt) && /Do not ask if they can hear you/i.test(openPrompt),
-      `the first quiet window must instruct a natural opener, not a connectivity check, got: ${openPrompt}`
-    );
+      // Search every request, not a fixed window: the number of brain calls per
+      // turn is allowed to change, and a window made this pass or fail on
+      // unrelated traffic. The opener prompt must also come before the generic
+      // "went quiet" prompt, so the ordering is still checked.
+      const openPrompt = JSON.stringify(brainPrompts);
+      assert.ok(
+        /not answered yet/i.test(openPrompt) && /Do not ask if they can hear you/i.test(openPrompt),
+        `the first quiet window must instruct a natural opener, not a connectivity check, got: ${openPrompt.slice(0, 400)}`
+      );
+      const openerAt = brainPrompts.findIndex((p) => /Do not ask if they can hear you/i.test(JSON.stringify(p)));
+      const quietAt = brainPrompts.findIndex((p) => /went quiet/i.test(JSON.stringify(p)));
+      assert.ok(openerAt >= 0, "the natural-opener prompt must be sent");
+      assert.ok(quietAt < 0 || quietAt > openerAt, "the opener must come before any generic quiet prompt");
 
     // Once the prospect HAS spoken, a later pause must continue the
     // conversation, never comment on the line.

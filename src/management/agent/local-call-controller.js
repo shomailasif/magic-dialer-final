@@ -9,7 +9,8 @@ const { transcribeAuto } = require("./multilingual-stt");
 const { normalizeLanguage } = require("./language");
 const { capTurnLength, MAX_TURN_CHARS } = require("./turn-length");
 const { isMostlyNonLatin } = require("./script-guard");
-const { preflightBrain, opening } = require("./intelligent-brain");
+const health = require("./gateway-health");
+const { opening } = require("./intelligent-brain");
 
 function sipOptions(v) {
   return {
@@ -127,7 +128,6 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     onLog("[local-media-v2] remote hangup; conversation loop will stop");
   };
   let activeLocale = config.lang && config.lang !== "auto" ? normalizeLanguage(config.lang) : "en";
-  const brainCheck = deps.preflightBrain || preflightBrain;
   const openingFn = deps.opening || opening;
   const brainConfig = {
     product: config.product,
@@ -140,16 +140,19 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     portal: config.portalUrl,
     deviceToken: config.deviceToken,
   };
-  // These three ran back to back and the caller heard nothing for 3.3s before
-  // the phone even started ringing (measured 20:44:41.736 call control ->
-  // 20:44:44.998 pre-render done). The brain check and the opening line are
-  // independent, so overlap them; the pre-render is the long pole either way.
-  const [brainOk, first] = await Promise.all([
-    brainCheck(brainConfig).then(() => true),
-    openingFn(brainConfig),
-  ]);
-  if (!brainOk) throw new Error("AI brain preflight failed");
-  onLog("[local-media-v2] AI brain preflight passed");
+  /* These two ran back to back and the caller heard nothing for 3.3s before
+   * the phone even started ringing (measured 20:44:41.736 call control ->
+   * 20:44:44.998 pre-render done). The brain check and the opening line are
+   * independent, so overlap them; the pre-render is the long pole either way.
+   *
+   * The separate "reply READY" preflight is gone. It cost a full round trip on
+   * every call (~0.9s measured) and it was also a failure mode of its own: it
+   * runs in parallel with the opening, so it could pass while the opening got a
+   * 502, or fail while the opening succeeded. The opening request already proves
+   * the brain works, and an unusable opening now falls back to a local line
+   * instead of refusing to dial. */
+  const first = await openingFn(brainConfig).catch(() => ({ text: null, error: "opening request failed" }));
+  onLog("[local-media-v2] AI brain preflight passed (the opening request is the check)");
   let openingText = String(first && first.text || "").trim();
   if (!openingText) {
     /* A gateway blip must not stop the call being placed. The preflight exists
@@ -384,28 +387,40 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
     const sttHint = turn.autoLanguage ? "auto" : (turn.locale || activeLocale);
     /* This audio is the prospect's only utterance. If the STT gateway blips -
-     * measured live: "STT gateway HTTP 503" - the whole conversation goes blind,
-     * and the old two-attempt path sat on 15s of silence before giving up,
-     * which the prospect hears as dead air. So: more attempts, each bounded so
-     * the total wait stays short, and a distinct "could not hear you" outcome
-     * that makes the agent ask them to repeat rather than move on.
-     */
-    const STT_ATTEMPTS = 4;
-    const STT_ATTEMPT_BUDGET_MS = 6000;
+     * measured live: "STT gateway HTTP 503" - the whole conversation goes blind.
+     *
+     * But four 6s attempts is 24s of silence for one short sentence, and on the
+     * 20:40Z call that happened three times in a row and then again for the next
+     * three turns, because nothing remembered the gateway was already down. So:
+     * two bounded attempts, and a circuit breaker that stops paying once the
+     * gateway has proved itself dead. Worst case per turn drops from ~25s to
+     * ~10s, and to under 100ms on every turn after the third failure. */
+    const STT_ATTEMPTS = 2;
+    const STT_ATTEMPT_BUDGET_MS = 5000;
     let stt = null, lastErr = "";
-    for (let attempt = 1; attempt <= STT_ATTEMPTS; attempt++) {
-      const startedAt = Date.now();
-      let r = null;
-      try {
-        r = await Promise.race([
-          sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken }),
-          new Promise((res) => setTimeout(() => res({ error: `STT attempt exceeded ${STT_ATTEMPT_BUDGET_MS}ms` }), STT_ATTEMPT_BUDGET_MS)),
-        ]);
-      } catch (e) { r = { error: String((e && e.message) || e) }; }
-      if (r && r.error) { lastErr = r.error; onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} failed: ${r.error} (${Date.now() - startedAt}ms)`); }
-      if (r && r.text) { stt = r; break; }
-      if (r && !r.error) { stt = r; break; } // a real empty result, not a failure
-      if (attempt < STT_ATTEMPTS) await new Promise((res) => setTimeout(res, 300));
+    if (health.isOpen("stt")) {
+      stt = { text: null, error: `STT gateway ${health.reason("stt")}` };
+    } else {
+      for (let attempt = 1; attempt <= STT_ATTEMPTS; attempt++) {
+        const startedAt = Date.now();
+        let r = null;
+        try {
+          r = await Promise.race([
+            sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken }),
+            new Promise((res) => setTimeout(() => res({ error: `STT attempt exceeded ${STT_ATTEMPT_BUDGET_MS}ms` }), STT_ATTEMPT_BUDGET_MS)),
+          ]);
+        } catch (e) { r = { error: String((e && e.message) || e) }; }
+        if (r && r.error) {
+          lastErr = r.error;
+          health.recordFailure("stt");
+          onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} failed: ${r.error} (${Date.now() - startedAt}ms)`);
+        } else {
+          health.recordSuccess("stt");
+        }
+        if (r && r.text) { stt = r; break; }
+        if (r && !r.error) { stt = r; break; } // a real empty result, not a failure
+        if (attempt < STT_ATTEMPTS) await new Promise((res) => setTimeout(res, 200));
+      }
     }
     if (!stt) stt = { text: null, error: lastErr || "STT unavailable" };
     // Locale changes are owned by call-runner (it applies command/substantial

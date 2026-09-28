@@ -1,6 +1,6 @@
 const { scoreLead, shouldEscalate, learn } = require("./brain");
 const { nextTurn, opening } = require("./intelligent-brain");
-const { normalizeLanguage } = require("./language");
+const { normalizeLanguage, languageName } = require("./language");
 const { capTurnLength, splitSentences } = require("./turn-length");
 const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("./script-guard");
 const { getResearch: getCachedResearch, refresh: refreshResearch, researchBlock } = require("./sales-research");
@@ -213,6 +213,11 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let stopRequested = false;
   let humanRequested = false;
   let pendingDetected = null;
+  // Recent substantial detections, so two agreeing turns need not be adjacent.
+  const recentDetections = [];
+  // How many times we have already asked a prospect to repeat themselves, so the
+  // apology is not the same sentence every time.
+  let askedUnheard = 0;
   // Set when the agent has already said goodbye, so we never talk over a
   // farewell with a second one.
   let closingSpoken = false;
@@ -222,13 +227,13 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // The learned playbook has to reach the live brain, or learning only records
   // scores and never changes a call. The highest-scoring strategies, and the
   // objection-handling ones this vertical actually hits, are named in the prompt.
-  const config = () => {
-    const l = learning || {};
-    const scores = l.strategyScores || {};
-    const ranked = Object.keys(scores).sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
-    const playbook = ranked.filter((k) => (scores[k] || 0) > -1).slice(0, 4);
-    return { ...baseConfig, locale: activeLocale, playbook, research: getCachedResearch(product, companyName) };
-  };
+    const config = (forLocale) => {
+      const l = learning || {};
+      const scores = l.strategyScores || {};
+      const ranked = Object.keys(scores).sort((a, b) => (scores[b] || 0) - (scores[a] || 0));
+      const playbook = ranked.filter((k) => (scores[k] || 0) > -1).slice(0, 4);
+      return { ...baseConfig, locale: normalizeLanguage(forLocale || activeLocale, activeLocale), playbook, research: getCachedResearch(product, companyName) };
+    };
   const askedFor = new Set();
   const QUIET_HANGUP_MS = 20000;
   // The question the agent is currently waiting on, so a quiet window re-asks
@@ -239,32 +244,165 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // Everything the prospect actually said, so the closing can repeat their number.
   const leadSpeech = [];
   let openingSpoken = false;
+    /* A model that answers in the wrong register is worse than silence, because
+   * it sounds like the machine admitting it is one. On the 20:40Z call the agent
+   * told the prospect "I want to answer that accurately rather than guess. Let
+   * me note it for the team to follow up" - after the prospect had spoken Urdu.
+   * None of this may ever reach the voice. */
+  const META_LINE_RE = new RegExp([
+    "rather than guess", "let me note it", "note it for the team", "for the team to follow up",
+    "i'?m (?:just )?an? (?:ai|assistant|bot|language model)", "as an ai",
+    "i (?:can'?t|cannot|am unable to) (?:guarantee|verify|promise)",
+    "follow ?up (?:with|to) the team", "i'?ll (?:have to )?escalate that",
+    "my instructions", "based on my (?:training|programming|instructions)",
+    "i don'?t have (?:access|enough information)", "consult (?:my|the) (?:notes|documentation)",
+  ].join("|"), "i");
+
+  function isMetaLine(text) {
+    return META_LINE_RE.test(String(text || ""));
+  }
+
+  /* Fixed lines for when we must speak without the brain. These were English
+   * only, so a prospect speaking Urdu got "Sorry, I did not catch that" in
+   * English - the same language failure, wearing a different hat. Every line
+   * here has to be in the language of the call, or it must not be spoken. */
+  const ASK_AGAIN = Object.freeze({
+    en: ["Sorry, I did not catch that clearly. Could you say that again?",
+         "You cut out for a second there - what did you say?",
+         "Sorry, I lost that. What were you saying?"],
+    ur: ["معذرت، میں سن نہیں سکا۔ دوبارہ کہیں؟",
+         "آواز اچھنی تھی، دوبارہ کہیں؟",
+         "معذرت، کم سنائی دیا۔ دوبارہ کہیں؟"],
+    es: ["Disculpe, no he entendido. ¿Puede repetirlo?",
+         "Le he oído mal. ¿Lo repite?",
+         "Perdón, ¿puede decir eso otra vez?"],
+    ru: ["Извините, я не расслышал. Повторите, пожалуйста?",
+         "Плохо слышно. Повторите, пожалуйста?",
+         "Простите, что вы сказали?"],
+    fr: ["Désolé, je n'ai pas bien entendu. Vous pouvez répéter ?",
+         "Je vous ai mal entendu. Vous pouvez répéter ?",
+         "Pardon, vous pouvez dire cela à nouveau ?"],
+    it: ["Scusi, non ho sentito bene. Può ripetere?",
+         "Ho sentito male. Può ripetere, per favore?",
+         "Mi scusi, può dirlo di nuovo?"],
+    zh: ["抱歉，我没听清。麻烦您再说一遍好吗？",
+         "不好意思，声音不清楚，能再说一次吗？",
+         "抱歉，您能再说一遍吗？"],
+    hi: ["क्षमा करें, मैं ठीक से नहीं सुन पाया। कृपया दोबारा बोलिए?",
+         "आवाज़ साफ़ नहीं आई, कृपया दोबारा कहिए?",
+         "माफ़ कीजिए, क्या आप दोबारा बोलेंगे?"],
+  });
+  const ASK_AGAIN_FALLBACK = Object.freeze({
+    ur: "معذرت، دوبارہ کہیں؟", es: "¿Puede repetir, por favor?",
+    ru: "Повторите, пожалуйста?", fr: "Vous pouvez répéter, s'il vous plaît ?",
+    it: "Può ripetere, per favore?", zh: "麻烦您再说一遍好吗？",
+    hi: "कृपया दोबारा बोलिए?",
+  });
+
+  /* Localized callback sentence + the words that mean the closing already
+   * promises one. Both were English-only, so every non-English call ended by
+   * switching back to English. Null means "we have no trustworthy translation",
+   * and then we add nothing rather than speak English at a Urdu speaker. */
+  const CALLBACK_TEXT = Object.freeze({
+    en: (n) => (n ? `A manager will call you back on ${n} within the next 30 minutes.` : "A manager will call you back within the next 30 minutes."),
+    ur: (n) => (n ? `ایک منیجر اگلے 30 منٹ میں آپ کو ${n} پر کال کرے گا۔` : "ایک منیجر اگلے 30 منٹ میں آپ کو کال کرے گا۔"),
+    es: (n) => (n ? `Un responsable te llamará al ${n} en los próximos 30 minutos.` : "Un responsable te llamará en los próximos 30 minutos."),
+    ru: (n) => (n ? `Менеджер перезвонит вам на ${n} в течение 30 минут.` : "Менеджер перезвонит вам в течение 30 минут."),
+    fr: (n) => (n ? `Un responsable vous rappellera au ${n} dans les 30 minutes.` : "Un responsable vous rappellera dans les 30 minutes."),
+    it: (n) => (n ? `Un responsabile la richiamerà al ${n} entro 30 minuti.` : "Un responsabile la richiamerà entro 30 minuti."),
+    zh: (n) => (n ? `客服会在30分钟内致电 ${n}。` : "客服会在30分钟内致电给您。"),
+    hi: (n) => (n ? `एक मैनेजर अगले 30 मिनट में ${n} पर फ़ोन करेंगे।` : "एक मैनेजर अगले 30 मिनट में फ़ोन करेंगे।"),
+  });
+  const CALLBACK_MEANS = Object.freeze({
+    en: /\b(manager|call you back|callback|follow up|ring you|get back to you)\b/i,
+    ur: /منیجر|کال کر|فون کر|رابطہ/,
+    es: /responsable|te (?:llamaré|llamara)|volver(?:é|e) a llamar|te llamamos/,
+    ru: /менеджер|перезвон|звон|свяж/,
+    fr: /responsable|rappell|appeler|rappel/,
+    it: /responsabile|richiam|chiamat/,
+    zh: /客服|回电|致电|打电话/,
+    hi: /मैनेजर|फ़ोन|कॉल|संपर्क/,
+  });
+
+  const callbackSentence = (loc, captured) => {
+    const fn = CALLBACK_TEXT[loc];
+    return fn ? () => fn(captured) : null;
+  };
+  const alreadyPromisesCallback = (line, loc) => {
+    const re = CALLBACK_MEANS[loc];
+    return re ? re.test(line) : false;
+  };
+
+  const normalizeSpoken = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+
+  // A short, human recovery for when the brain returns something unusable.
+  const unusableReply = (loc) => {
+    const lines = (loc || activeLocale) === "en"
+      ? ["Sorry, could you tell me a bit more about that?",
+         "Sorry, I lost that. What were you asking about?",
+         "Could you say a little more about that?"]
+      : ["Sorry, could you tell me a bit more about that?",
+         "Could you say a little more about that?"];
+    return lines.find((l) => !spokenLines.has(normalizeSpoken(l))) || lines[0];
+  };
+
+  /* Said when the brain re-asks something already asked. It must not ask
+   * anything itself, or it becomes the fourth version of the same question. */
+  const advanceLine = (loc) => {
+    const lines = loc === "en"
+      ? ["Thanks, got it.", "Understood.", "Sure, let's keep going.",
+         "Okay - and what brings you in today?"]
+      : ["Thanks, got it.", "Understood.", "Sure, let's keep going."];
+    return lines.find((l) => !spokenLines.has(normalizeSpoken(l))) || lines[0];
+  };
+
   const agent = async (text, opts = {}) => {
-    // Cap here, where the words are produced, so every consumer of a turn - a
-    // live call or an offline simulation - gets a speakable length. The
-    // controller caps again as a net before anything reaches the wire.
-    let line = capTurnLength(String(text || "").trim());
-    if (!line) return;
-    // Never re-introduce after the opening, and never re-ask for something
-    // already asked.
-    if (!openingSpoken) openingSpoken = true;
-    else {
-      // A repeat introduction may only be dropped once the opening has actually
-      // been said. On the 19:09Z call the brain was asked to restate the opener,
-      // did exactly that, and the guard then deleted the whole line for being a
-      // restatement - the agent said nothing for 14 seconds. A guard that makes
-      // us go quiet is worse than the repetition it prevents.
-      const trimmed = lastSpokenLine ? stripRepeatedAsks(line, askedFor) : line;
-      if (trimmed) line = trimmed;
-    }
-    // The brain likes to mirror whatever script the prospect used, even on a
-    // call configured for another language. That put Devanagari and Arabic
-    // through an English voice on the 21:05Z call. Do not speak a script we
-    // have no voice for; RTP keep-alive holds the line and the next turn is
-    // generated in the configured language.
-    if (!NON_LATIN_LOCALE.has(String(activeLocale).toLowerCase()) && isMostlyNonLatin(line)) {
-      line = "";
-    }
+      /* The language of the turn is not always the call's default language. On
+       * the 20:40Z call the prospect spoke Urdu - the recognizer heard it
+       * correctly and said `ur` - and the agent answered in English, because the
+       * reply language came from activeLocale and the switch to Urdu needs two
+       * agreeing turns to be believed. "I want to answer that accurately rather
+       * guess" was the result. So a turn that has been heard in another language
+       * is answered in that language, immediately, with the matching voice. */
+      const loc = normalizeLanguage(opts.locale || activeLocale, activeLocale);
+      // Cap here, where the words are produced, so every consumer of a turn - a
+      // live call or an offline simulation - gets a speakable length. The
+      // controller caps again as a net before anything reaches the wire.
+      let line = capTurnLength(String(text || "").trim());
+      if (!line) return;
+      /* Last line of defence, in the one place every spoken line passes. The
+       * per-turn checks catch the obvious paths, but a meta line that slipped
+       * through a closing or a quiet window still reached the voice on the
+       * 20:40Z call. Nothing that admits to being a machine is ever spoken. */
+      if (isMetaLine(line)) line = "";
+      // Never re-introduce after the opening, and never re-ask for something
+      // already asked.
+      if (!openingSpoken) openingSpoken = true;
+      else {
+        // A repeat introduction may only be dropped once the opening has actually
+        // been said. On the 19:09Z call the brain was asked to restate the opener,
+        // did exactly that, and the guard then deleted the whole line for being a
+        // restatement - the agent said nothing for 14 seconds. A guard that makes
+        // us go quiet is worse than the repetition it prevents.
+        const trimmed = lastSpokenLine ? stripRepeatedAsks(line, askedFor) : line;
+        if (trimmed) line = trimmed;
+        else if (lastSpokenLine) {
+          /* stripRepeatedAsks returns "" when the whole line is a question we
+           * have already asked. Keeping the original then said the same question
+           * anyway, so the guard did nothing: on the 20:40Z call the agent asked
+           * for the name three times running - "your name to start", "let me know
+           * your name", "what's your name". Move the conversation on instead. */
+          line = advanceLine(loc);
+        }
+      }
+      // The brain likes to mirror whatever script the prospect used, even on a
+      // call configured for another language. That put Devanagari and Arabic
+      // through an English voice on the 21:05Z call. Do not speak a script we
+      // have no voice for; RTP keep-alive holds the line and the next turn is
+      // generated in the configured language.
+      if (!NON_LATIN_LOCALE.has(loc) && isMostlyNonLatin(line)) {
+        line = "";
+      }
     if (!line) return;
     // Never repeat a line. The 18:51Z call said "The line is connected and
     // ready" on two consecutive turns, and a stub brain here produced the same
@@ -272,22 +410,47 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     // caller can do. Consecutive-only checking was not enough, so this tracks
     // every line already spoken and rotates the substitute too.
     const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
-    if (spokenLines.has(norm(line))) {
-      const subs = activeLocale === "en"
-        ? ["Sorry, I did not quite catch that - could you tell me a bit more?",
-           "Sorry, you cut out for a second - what did you say?",
-           "Could you say that again, a little louder?",
-           "Sorry, I missed that. What would you like to ask about?"]
-        : ["Sorry, could you repeat that?",
-           "Sorry, you cut out for a second.",
-           "Could you say that again?"];
-      line = subs.find((s) => !spokenLines.has(norm(s))) || subs[0];
-    }
-    spokenLines.add(norm(line));
-    lastSpokenLine = line;
-    transcript.push({ role: "agent", text: line, locale: activeLocale });
-    await speak(line, { locale: activeLocale, intent: opts.intent });
-  };
+      if (spokenLines.has(normalizeSpoken(line))) {
+        if (opts && opts.noRetry) {
+          /* A quiet window or a closing has already spent a round trip, and the
+           * prospect is waiting. Do not spend a second one just to avoid a
+           * repeated filler line - rotate instead. */
+          line = advanceLine(loc);
+        } else {
+        /* The brain repeated itself. Rather than substitute an English sentence
+         * into a foreign-language call, or go silent, give it one more go with
+         * an explicit instruction - this is rare, and one round trip beats both
+         * wrong-language output and dead air. */
+        const fresh = await askBrain({
+          transcript: [
+            ...transcript,
+            { role: "assistant", text: line },
+            { role: "user", content: `You already said exactly that, verbatim. Do not repeat it. Say something different that moves the conversation forward, in ${languageName(loc)}, in one short natural sentence. Ask no question you have already asked.` },
+          ],
+          ...config(loc),
+        }).catch(() => ({ text: "" }));
+        const retry = isMetaLine(fresh && fresh.text) ? "" : String((fresh && fresh.text) || "");
+        if (retry && !spokenLines.has(normalizeSpoken(capTurnLength(retry)))) {
+          line = capTurnLength(retry);
+        } else if (loc !== "en") {
+          // Still stuck, and we have no trustworthy line in this language.
+          return;
+        } else {
+          const subs = [
+            "Sorry, I did not quite catch that - could you tell me a bit more?",
+            "Sorry, you cut out for a second - what did you say?",
+            "Could you say that again, a little louder?",
+            "Sorry, I missed that. What would you like to ask about?",
+          ];
+          line = subs.find((s) => !spokenLines.has(normalizeSpoken(s))) || subs[0];
+        }
+        }
+      }
+      spokenLines.add(normalizeSpoken(line));
+      lastSpokenLine = line;
+      transcript.push({ role: "agent", text: line, locale: loc });
+      await speak(line, { locale: loc, intent: opts.intent });
+    };
   const lead = (text, detected) => {
     const line = String(text || "").trim();
     if (!line) return;
@@ -336,17 +499,28 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       // seen twice in a row. One clip is not enough - that is what turned an
       // English call into French and then Urdu on the 20:25Z call.
         if (scriptAgreesWithLocale(heard, detected, { fromDetection: true })) {
-        if (pendingDetected === detected) {
-          activeLocale = detected;
-          pendingDetected = null;
-          timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "detected" });
+          /* Two detections of the same language, within the last three turns -
+           * not strictly consecutive. On the 20:40Z call the recognizer returned
+           * Urdu, English, Urdu: a short clip read as "Hello." in between cleared
+           * the candidate, so the call never moved to Urdu and the agent spent
+           * the whole call answering Urdu with English. One short misdetection
+           * between two agreeing turns is exactly what a noisy clip looks like,
+           * and it should not cost the prospect their language. */
+          recentDetections.push(detected);
+          if (recentDetections.length > 3) recentDetections.shift();
+          const agreed = recentDetections.filter((d) => d === detected).length;
+          if (agreed >= 2) {
+            activeLocale = detected;
+            pendingDetected = null;
+            recentDetections.length = 0;
+            timeline.push({ at: Date.now(), event: "language-switch", locale: activeLocale, source: "detected" });
+          } else {
+            pendingDetected = detected;
+            timeline.push({ at: Date.now(), event: "language-candidate", locale: detected, note: "awaiting a second confirming turn" });
+          }
         } else {
-          pendingDetected = detected;
-          timeline.push({ at: Date.now(), event: "language-candidate", locale: detected, note: "awaiting a second confirming turn" });
+          pendingDetected = null;
         }
-      } else {
-        pendingDetected = null;
-      }
     } else {
       pendingDetected = null;
     }
@@ -367,17 +541,22 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
       /* We could not hear them, or they went quiet. Both are handled, and
        * neither advances the conversation. */
-      if (heardResult && typeof heardResult === "object" && heardResult.unheard) {
-        const ask = {
-          role: "lead",
-          text: "The prospect was speaking but the call could not hear them clearly. Do NOT move on to a new topic and do NOT ask a new question. Apologise in one short sentence and ask them to say that again.",
-        };
-        const reply = await askBrain({ transcript: [...transcript, ask], ...config() });
-        await agent(reply.text || (activeLocale === "en"
-          ? "Sorry, I did not catch that clearly. Could you say that again?"
-          : "Sorry, could you repeat that?"), { intent: "reassurance" });
-        continue;
-      }
+        if (heardResult && typeof heardResult === "object" && heardResult.unheard) {
+          /* No brain call here. The prospect is already waiting on an apology,
+           * and asking the model to produce it cost a 7s round trip on the
+           * 20:40Z call and returned "I want to answer that accurately rather
+           * than guess" - a line that tells the prospect they are talking to a
+           * machine. "Sorry, could you say that again?" needs no intelligence. */
+          const asked = askedUnheard;
+          askedUnheard++;
+          const pool = ASK_AGAIN[activeLocale] || [ASK_AGAIN_FALLBACK[activeLocale]].filter(Boolean);
+          await agent(pool.length
+            ? (pool[asked % pool.length])
+            // No line we can trust in this language. Better to hold the turn than
+            // to answer a Punjabi speaker in English.
+            : "", { intent: "reassurance", locale: activeLocale });
+          continue;
+        }
       if (reportedNoise || junkLead) {
         consecutiveJunk++;
         // Bounded: a line that only ever beeps still ends the call.
@@ -419,10 +598,11 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         ask = { role: "lead", text: "The prospect went quiet. Continue the conversation naturally from what was just discussed, or ask one simple question to invite a reply. Do not comment on the line, the connection, or whether they can hear you." };
       }
       const hello = await askBrain({ transcript: [...transcript, ask], ...config() });
-      if (hello.text) lastAgentAsked = extractQuestion(hello.text) || pendingQuestion;
-      await agent(hello.text || (neverHeard && firstQuiet
+      if (hello.text && !isMetaLine(hello.text)) lastAgentAsked = extractQuestion(hello.text) || pendingQuestion;
+      await agent((hello.text && !isMetaLine(hello.text)) ? hello.text : (neverHeard && firstQuiet
         ? (activeLocale === "en" ? "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick call?" : "Hello.")
-        : (activeLocale === "en" ? "Hello, is this a good time to talk?" : "Hello?")), neverHeard && firstQuiet ? "opening" : "checkin");
+        : (activeLocale === "en" ? "Hello, is this a good time to talk?" : "Hello?")),
+      { intent: neverHeard && firstQuiet ? "opening" : "checkin", noRetry: true });
       continue;
     }
       consecutiveSilence = 0;
@@ -445,7 +625,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     if (stopRequested) {
       const stopLine = await askBrain({ transcript: [...transcript, { role: "lead", text: "Acknowledge the do-not-call request immediately and end the call." }], ...config() });
       closingSpoken = true;
-      await agent(stopLine.text || fallbackReply(heard, config()));
+      await agent((stopLine.text && !isMetaLine(stopLine.text)) ? stopLine.text : fallbackReply(heard, config()), { noRetry: true });
       break;
     }
     if (humanRequested) {
@@ -454,9 +634,22 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       break;
     }
 
-    const ai = await askBrain({ transcript, ...config() });
-    lastAgentAsked = extractQuestion(ai.text) || null;
-    await agent(ai.text || fallbackReply(heard, config()), { intent: turnIntent(heard, ai.text) });
+    /* Answer in the language this turn was spoken in, as soon as the words and
+     * the claimed language agree. Waiting for a confirmed call-level switch meant
+     * a prospect who spoke Urdu for two turns was still answered in English -
+     * the one thing that makes a multilingual agent feel broken. */
+    const turnLocale = (detected && detected !== activeLocale
+      && isSubstantialUtterance(heard)
+      && scriptAgreesWithLocale(heard, detected, { fromDetection: true }))
+      ? detected
+      : activeLocale;
+
+    const ai = await askBrain({ transcript, ...config(turnLocale) });
+    // A meta line is not an answer. It is also not a question, so it must not
+    // become the "waiting on this" question the next quiet window re-asks.
+    const aiText = isMetaLine(ai.text) ? "" : String(ai.text || "");
+    lastAgentAsked = aiText ? (extractQuestion(aiText) || null) : lastAgentAsked;
+    await agent(aiText || unusableReply(turnLocale), { intent: turnIntent(heard, aiText), locale: turnLocale });
 
     // Repeated AI failure must not silently turn the universal agent back into
     // a rigid industry script. End safely and leave a human-follow-up result.
@@ -500,24 +693,25 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         } else {
           line = line.replace(/[\d][\d\s().`'\-]{5,}[\d]/g, "");
         }
-        const saysCallback = /\b(manager|call you back|callback|follow up|ring you|get back to you)\b/i.test(line);
-        if (!saysCallback) {
-          line = line.replace(/[.!]?\s*$/, captured
-            ? `. We'll call you back on ${captured} within the next 30 minutes.`
-            : ". A manager will call you back within the next 30 minutes.");
+        /* The closing was augmented in English only, so an Urdu call ended with
+         * "... ہے، کیا آپ سن رہے ہیں؟. A manager will call you back within the
+         * next 30 minutes." - the last thing a prospect hears is the agent
+         * forgetting their language. Every augmentation is now localized, and
+         * where we have no trustworthy translation we say nothing rather than
+         * switching to English at the end of the call. */
+        const cb = callbackSentence(activeLocale, captured);
+        const saysCallback = alreadyPromisesCallback(line, activeLocale);
+        if (!saysCallback && cb) {
+          line = line.replace(/[.!]?\s*$/, ". " + (captured ? cb(captured) : cb()));
         } else if (captured && !line.includes(captured)) {
           // It promised a callback but never gave the number. Add just the number.
-          line = line.replace(/[.!]?\s*$/, ` on ${captured}.`);
+          line = line.replace(/[.!]?\s*$/, ` ${captured}.`);
         }
-        if (!/\b30 minutes\b/i.test(line)) {
-          line = line.replace(/[.!]?\s*$/, ". We'll be in touch within 30 minutes.");
-        }
-        await agent(capTurnLength(line), { intent: "closing" });
+        await agent(capTurnLength(line), { intent: "closing", noRetry: true });
       } else {
-      await agent(captured
-        ? `Thanks for your time. A manager will call you back on ${captured} within the next 30 minutes. Goodbye.`
-        : "Thanks for your time. A manager will call you back within the next 30 minutes. Goodbye.");
-    }
+        const cb = callbackSentence(activeLocale, captured);
+        await agent(cb ? `Thanks for your time. ${cb(captured)} Goodbye.` : "");
+      }
   }
 
   const verdict = scoreLead({ transcript, fields: leadFields, locale: activeLocale });
