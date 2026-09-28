@@ -14,7 +14,8 @@
  *   2. It returns tactics, not articles. A tactic has to be sayable in one
  *      short sentence on a phone call, or it is worthless in the prompt.
  */
-const { ddgSearch } = require("./find-leads");
+const { webSearch } = require("./find-leads");
+const { baselineTactics } = require("./tactic-library");
 
 const UA_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const MAX_RESULTS_PER_QUERY = 5;
@@ -114,16 +115,28 @@ async function researchSales({ vertical, product, limit = 6 } = {}) {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < UA_CACHE_TTL_MS && hit.tactics.length) return hit.tactics.slice(0, limit);
 
+  // The curated floor first, so the agent always has tactics even when every
+  // search engine is throttling. Live research is merged on top, never instead.
+  const baseline = baselineTactics(Math.max(4, Math.ceil(limit * 0.7)));
   const topics = RESEARCH_TOPICS.slice(0, Math.max(2, Math.min(RESEARCH_TOPICS.length, Math.ceil(limit / 1.5))));
+
   // Search every topic, then read the best pages from each. Search alone only
   // tells us a page *about* scripts exists; the technique is in the page.
   const searches = await Promise.all(
     topics.map(async (t) => {
       let results = [];
-      try { results = await ddgSearch(t.q(v), MAX_RESULTS_PER_QUERY); } catch { results = []; }
+      try { results = await webSearch(t.q(v), MAX_RESULTS_PER_QUERY); } catch { results = []; }
       return { topic: t.key, results };
     })
   );
+
+  // If every engine is throttling we still return the floor, and we record
+  // that no live research happened so it is visible rather than assumed.
+  if (!searches.some((s) => s.results.length)) {
+    cache.set(key, { at: Date.now(), tactics: baseline, searched: false });
+    return baseline.slice(0, limit);
+  }
+
 
   const gathered = [];
   const pageWork = [];
@@ -154,6 +167,7 @@ async function researchSales({ vertical, product, limit = 6 } = {}) {
     if (list[0]) fromPages.push(list[0]);
   }
   for (const t of fromPages) gathered.unshift(t);
+  for (const b of baseline) gathered.push(b);
 
   // De-duplicate near-identical tactics so the prompt is not five ways of
   // saying the same thing.
@@ -167,7 +181,7 @@ async function researchSales({ vertical, product, limit = 6 } = {}) {
     if (tactics.length >= limit) break;
   }
 
-  cache.set(key, { at: Date.now(), tactics });
+  cache.set(key, { at: Date.now(), tactics, searched: true });
   return tactics;
 }
 

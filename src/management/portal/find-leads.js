@@ -111,7 +111,7 @@ async function searchLeads({ product, count = 10 } = {}) {
  * cloud IPs, so every caller goes through this and gets whichever engine is
  * currently answering.
  * ------------------------------------------------------------------------- */
-const ENGINE_ORDER = process.env.SEARCH_API_KEY ? ["serper", "ddg", "bing", "mojeek"] : ["ddg", "bing", "mojeek"];
+const ENGINE_ORDER = process.env.SEARCH_API_KEY ? ["serper", "searx", "bing", "ddg", "mojeek"] : ["searx", "bing", "ddg", "mojeek"];
 
 async function fetchHtml(url) {
   const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml" }, signal: AbortSignal.timeout(12_000) });
@@ -134,7 +134,7 @@ function decodeBingUrl(u) {
   }
 }
 
-/** Words that carry the meaning of a query, used to reject off-topic results. */
+/** Words that carry the meaning of a query. */
 const STOP = new Set(["the", "a", "an", "for", "to", "of", "and", "or", "in", "on", "with", "how", "what", "best", "call", "calls", "script", "scripts", "you", "your", "is", "are", "do", "does", "that", "this", "it", "at", "by", "from", "as", "be", "use", "using"]);
 
 function keywords(q) {
@@ -144,21 +144,24 @@ function keywords(q) {
     .filter((w) => w.length > 2 && !STOP.has(w));
 }
 
-/**
- * A free engine can answer a completely different question - Bing returned
- * ChatGPT results for "cold call opener script for truck dispatch services"
- * from this IP. Feeding that into a sales prompt would teach the agent to
- * answer with nonsense, so every result must share real vocabulary with the
- * query or it is discarded.
- */
+/* Results that are never a source of a usable sales technique: social media,
+   reference works, marketplaces, and the aggregator's own furniture. */
+const RESULT_NOISE = /(?:facebook|instagram|twitter|x\.com|linkedin|youtube|tiktok|pinterest|reddit|quora|wikipedia|amazon|ebay|walmart|alibaba|indeed\.com|glassdoor|trustpilot|quora\.com)/i;
+
 function isRelevant(result, query) {
   const kw = keywords(query);
   if (!kw.length) return true;
+  if (RESULT_NOISE.test(String(result.source || ""))) return false;
   const hay = `${result.title || ""} ${result.snippet || ""} ${result.source || ""}`.toLowerCase();
   let hits = 0;
   for (const w of kw) if (hay.includes(w)) hits++;
-  // At least a third of the meaningful query words, and never zero.
-  return hits > 0 && hits >= Math.max(1, Math.ceil(kw.length * 0.34));
+  /* Loose on purpose. Search results only have to look plausibly on-topic: a
+   * page titled "Truck Dispatch Sales Playbook" is worth opening even if it
+   * shares few words with the query, because the technique is inside the page.
+   * Requiring most query words here threw away the good pages - measured: a
+   * strict gate turned 45 real results into 0. The strict quality gate is
+   * applied later, to the sentences actually mined out of the page. */
+  return hits >= 1;
 }
 
 function bingSearch(html, count) {
@@ -226,6 +229,47 @@ function mojeekSearch(html, count) {
 }
 
 /**
+ * SearXNG instances. Measured from this host: searxng.site returns real,
+ * parseable results (45 across two queries) while the other public instances
+ * return nothing, so it leads and the rest are only tried if it fails.
+ */
+const SEARX_INSTANCES = [
+  "https://searxng.site",
+  "https://searx.be",
+  "https://baresearch.org",
+];
+
+function parseSearx(html) {
+  const out = [];
+  const arts = html.split(/<article[^>]*class="[^"]*result[^"]*"/i).slice(1);
+  for (const a of arts) {
+    const h = a.match(/<h3[^>]*>[\s\S]*?<a[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
+    if (!h) continue;
+    const href = h[1];
+    const title = strip(h[2]);
+    if (!title || !/^https?:/i.test(href)) continue;
+    const p = a.match(/<p[^>]*class="[^"]*content[^"]*"[^>]*>([\s\S]*?)<\/p>/i) || a.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+    out.push({ title, source: href, snippet: p ? strip(p[1]) : "", company: extractCompany(title) });
+  }
+  return out;
+}
+
+async function searxSearch(query, count) {
+  const q = encodeURIComponent(String(query || "").trim());
+  for (const base of SEARX_INSTANCES) {
+    try {
+      const html = await fetchHtml(`${base}/search?q=${q}`);
+      if (!html) continue;
+      const results = parseSearx(html).filter((r) => isRelevant(r, query));
+      if (results.length) return results.slice(0, count);
+    } catch {
+      /* try the next instance */
+    }
+  }
+  return [];
+}
+
+/**
  * Search the open web, trying each engine until one returns results.
  * Never throws - returns [] if every engine fails.
  */
@@ -237,6 +281,8 @@ async function webSearch(query, count = 5, engines = ENGINE_ORDER) {
     try {
       if (engine === "serper") {
         results = await serperSearch(String(query || "").trim(), count);
+      } else if (engine === "searx") {
+        results = await searxSearch(query, count);
       } else if (engine === "ddg") {
         const html = await fetchHtml(`https://lite.duckduckgo.com/lite/?q=${q}`);
         if (html) {
@@ -275,4 +321,4 @@ async function webSearch(query, count = 5, engines = ENGINE_ORDER) {
   return [];
 }
 
-module.exports = { searchLeads, ddgSearch, webSearch, decodeBingUrl, isRelevant, ENGINE_ORDER };
+module.exports = { searchLeads, ddgSearch, webSearch, decodeBingUrl, isRelevant, parseSearx, SEARX_INSTANCES, ENGINE_ORDER };
