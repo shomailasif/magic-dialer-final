@@ -264,7 +264,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.47";
+const VERSION = "1.4.48";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -562,9 +562,15 @@ async function runAgent(opts = {}) {
       startQueue: async (arg) => {
         if (queueIsRunning()) return { ok: true, alreadyRunning: true };
         const q = require("node:child_process");
-        const args = [__filename, "--run-queue", "--no-browser", "--once"];
+        const args = ["--run-queue", "--no-browser", "--once"];
         if (arg && arg.maxCalls) args.push("--max-calls=" + arg.maxCalls);
-        const child = q.spawn(q.execPath, args, { detached: true, stdio: "ignore", windowsHide: true });
+        /* In the packaged app __filename points inside the snapshot, which cannot
+         * be spawned as a real script - so the queue is a second copy of this same
+         * executable with different flags. Unpackaged, it is node plus this file. */
+        const packed = isPacked();
+        const child = packed
+          ? q.spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true })
+          : q.spawn(process.execPath, [__filename, ...args], { detached: true, stdio: "ignore", windowsHide: true });
         child.unref();
         return { ok: true, started: true, pid: child.pid };
       },
