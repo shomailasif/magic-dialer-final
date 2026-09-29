@@ -59,21 +59,34 @@ export async function POST(req:Request){
    const renewed = await prisma.user.updateMany({ where: claim, data: { activeEngineMachineId: d.machineId, engineLeaseUntil: leaseUntil } });
    leaseHeld = renewed.count === 1;
    if (!leaseHeld) {
-    const holder = await prisma.engineDevice.findFirst({
-     where: { userId: d.userId, machineId: { not: d.machineId } },
-     orderBy: { lastSeenAt: "desc" },
-     select: { machineId: true, lastSeenAt: true, leaseUntil: true },
+    // Read the holder fresh, and match the takeover on that exact value. The
+    // first version looked up the holding *device row* and then updated on
+    // `holder.machineId ?? "__none__"` - so when the account pointed at a machine
+    // that had no device row (deleted PC, or a value left by an earlier account)
+    // the takeover matched nothing and the account stayed locked out. Matching
+    // on what is actually stored in the user row cannot miss.
+    const owner = await prisma.user.findUnique({
+     where: { id: d.userId },
+     select: { activeEngineMachineId: true, engineLeaseUntil: true },
     });
-    const lastSeen = holder?.lastSeenAt ? new Date(holder.lastSeenAt).getTime() : 0;
-    const stale = !holder || !lastSeen || Date.now() - lastSeen > STALE_HOLDER_MS;
-    console.error(`heartbeat lease held by machine=${holder?.machineId || "unknown"} lastSeen=${holder?.lastSeenAt || "never"} stale=${stale}`);
+    const holderMachineId = owner?.activeEngineMachineId ?? null;
+    const holderDevice = holderMachineId
+     ? await prisma.engineDevice.findFirst({
+       where: { userId: d.userId, machineId: holderMachineId },
+       select: { lastSeenAt: true, revokedAt: true },
+      })
+     : null;
+    const lastSeen = holderDevice?.lastSeenAt ? new Date(holderDevice.lastSeenAt).getTime() : 0;
+    const revoked = Boolean(holderDevice?.revokedAt);
+    const stale = revoked || !holderMachineId || !lastSeen || Date.now() - lastSeen > STALE_HOLDER_MS;
+    console.error(`heartbeat lease held by machine=${holderMachineId || "none"} holderDevice=${holderDevice ? "present" : "MISSING"} lastSeen=${holderDevice?.lastSeenAt || "never"} stale=${stale}`);
     if (stale) {
      const takeover = await prisma.user.updateMany({
-      where: { id: d.userId, activeEngineMachineId: holder?.machineId ?? "__none__" },
+      where: { id: d.userId, activeEngineMachineId: holderMachineId },
       data: { activeEngineMachineId: d.machineId, engineLeaseUntil: leaseUntil },
      });
      leaseHeld = takeover.count === 1;
-     console.error(`heartbeat lease takeover by stale holder: ${leaseHeld ? "granted" : "refused"}`);
+     console.error(`heartbeat lease takeover: ${leaseHeld ? "granted" : "refused"}`);
     }
    }
    if (leaseHeld) await prisma.engineDevice.update({ where: { id: d.id }, data: { leaseUntil } });
