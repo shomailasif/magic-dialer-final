@@ -264,7 +264,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.49";
+const VERSION = "1.4.50";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -825,32 +825,22 @@ async function runAgent(opts = {}) {
           maxCalls: limit,
           shouldStop: () => Boolean(queueControl && queueControl.stop),
           placeCall: async (lead) => {
-            const phoneSession = await ensurePhoneSession({
-              portal, token: enrolledToken, callList: config.callList, post, log,
+            /* The same local call path the dashboard's call button uses, which is
+             * the path this account actually dials on - the portal session route
+             * is not what makes these calls. voiceCall inside it still posts the
+             * result to /api/call-result, so a qualified lead is emailed by the
+             * portal before the next call is dialled. */
+            const result = await runLocalCall({
+              config,
               number: lead.phone,
-            });
-            const result = await voiceCall({
-              sessionId: phoneSession.sessionId,
-              product: config.product,
-              leadFields: config.leadFields || [],
-              persona: config.persona,
-              companyName: config.companyName,
-              callbackNumber: config.callbackNumber,
-              callbackIn: config.callbackIn,
-              contactEmail: config.contactEmail,
-              token: enrolledToken,
-              portal,
-              learning: config.learning,
-              locale: config.lang || "en",
-              voiceStyle: config.voiceStyle || "human",
               lead,
               onLog: (m) => { log(m); ui({ line: m }); },
               onMode: (m) => ui({ mode: m }),
             });
-            config.learning = result.learning;
-            bumpStats(config, result);
+            if (result && result.learning) config.learning = result.learning;
+            bumpStats(config, result || {});
             saveConfig(config, cfgPath);
-            return result;
+            return result || {};
           },
         });
       } catch (e) {

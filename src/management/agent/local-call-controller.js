@@ -108,7 +108,7 @@ async function runLocalCall(opts) {
   }
 }
 
-async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () => {}, deps = {} }) {
+async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode = () => {}, deps = {} }) {
   const makeEngine = deps.createLocalRingCentralEngine || createLocalRingCentralEngine;
   const makeVad = deps.createVad || createVad;
   const tts = deps.speakToBuffer || speakToBuffer;
@@ -499,14 +499,18 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
       learning: config.learning,
       locale: config.lang || "auto",
       voiceStyle: config.voiceStyle || "friendly",
-      preparedOpeningText: openingText,
-      portal: config.portalUrl,
-      token: config.deviceToken,
-      speakFn,
-      listenFn,
-      onLog,
-      onMode,
-    });
+        preparedOpeningText: openingText,
+        portal: config.portalUrl,
+        token: config.deviceToken,
+        /* Which lead this call is for, so the opening can use their name and the
+         * conversation is about them. The queue passes it; a manual call has
+         * none and the agent opens generically. */
+        lead: lead || null,
+        speakFn,
+        listenFn,
+        onLog,
+        onMode,
+      });
   } finally {
     engine.close();
   }
