@@ -264,7 +264,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.48";
+const VERSION = "1.4.49";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -561,18 +561,14 @@ async function runAgent(opts = {}) {
       queueIsRunning,
       startQueue: async (arg) => {
         if (queueIsRunning()) return { ok: true, alreadyRunning: true };
-        const q = require("node:child_process");
-        const args = ["--run-queue", "--no-browser", "--once"];
-        if (arg && arg.maxCalls) args.push("--max-calls=" + arg.maxCalls);
-        /* In the packaged app __filename points inside the snapshot, which cannot
-         * be spawned as a real script - so the queue is a second copy of this same
-         * executable with different flags. Unpackaged, it is node plus this file. */
-        const packed = isPacked();
-        const child = packed
-          ? q.spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true })
-          : q.spawn(process.execPath, [__filename, ...args], { detached: true, stdio: "ignore", windowsHide: true });
-        child.unref();
-        return { ok: true, started: true, pid: child.pid };
+        /* Same process as this one - the queue uses the enrolled token and the
+         * live lease, and a second agent would only take the lease from us. Not
+         * awaited: a call takes minutes and the button must return at once. */
+        if (typeof startQueueInProcess !== "function") {
+          return { ok: false, error: "The engine is still starting up." };
+        }
+        startQueueInProcess(arg && arg.maxCalls).catch(() => {});
+        return { ok: true, started: true };
       },
       serviceName: "Magic Dialer",
     });
@@ -803,59 +799,77 @@ async function runAgent(opts = {}) {
    * qualified the portal has already emailed it by the time we dial the next one
    * - the agent posts every result to /api/call-result, which only stores and
    * emails when the result says qualified. Nothing is emailed from here, because
-   * sending it twice is worse than not sending it. */
-  if (opts.runQueue === true) {
-    const { runQueue } = require("./lead-queue");
+   * sending it twice is worse than not sending it.
+   *
+   * It runs in this process, not as a second copy of the agent: the queue needs
+   * the enrolled token and the live engine lease, and a second instance would
+   * only fight this one for both. */
+  const { runQueue } = require("./lead-queue");
+  const runLeadQueue = (maxCalls) => {
+    const limit = Number(maxCalls) > 0 ? Number(maxCalls) : Infinity;
     queueControl = { running: true, stop: false, summary: null, startedAt: new Date().toISOString() };
+    writeQueueStatus(queueControl);
     const markProgress = (s) => {
-      queueControl.summary = s;
+      if (queueControl) queueControl.summary = s;
       const line = `Queue ${s.attempted} called, ${s.connected} connected, ${s.qualified} qualified.`;
       log(line);
       ui({ line });
-      writeQueueStatus(queueControl, statusPath);
+      writeQueueStatus(queueControl);
     };
-    try {
-      await runQueue({
-        portal, token: enrolledToken, deviceToken: config.deviceToken,
-        log: (m) => { log(m); ui({ line: m }); },
-        onProgress: markProgress,
-        maxCalls: Number(opts.maxCalls) > 0 ? Number(opts.maxCalls) : Infinity,
-        shouldStop: () => Boolean(queueControl && queueControl.stop),
-        placeCall: async (lead) => {
-          const phoneSession = await ensurePhoneSession({
-            portal, token: enrolledToken, callList: config.callList, post, log,
-            number: lead.phone,
-          });
-          const result = await voiceCall({
-            sessionId: phoneSession.sessionId,
-            product: config.product,
-            leadFields: config.leadFields || [],
-            persona: config.persona,
-            companyName: config.companyName,
-            callbackNumber: config.callbackNumber,
-            callbackIn: config.callbackIn,
-            contactEmail: config.contactEmail,
-            token: enrolledToken,
-            portal,
-            learning: config.learning,
-            locale: config.lang || "en",
-            voiceStyle: config.voiceStyle || "human",
-            lead,
-            onLog: (m) => { log(m); ui({ line: m }); },
-            onMode: (m) => ui({ mode: m }),
-          });
-          config.learning = result.learning;
-          bumpStats(config, result);
-          saveConfig(config, cfgPath);
-          return result;
-        },
-      });
-    } catch (e) {
-      log("Dial queue stopped: " + safeLog(e, [enrolledToken]));
-      ui({ line: "Dial queue stopped." });
-    }
-    if (queueControl) queueControl.running = false;
-    writeQueueStatus(queueControl, statusPath);
+    const work = (async () => {
+      try {
+        await runQueue({
+          portal, token: enrolledToken, deviceToken: config.deviceToken,
+          log: (m) => { log(m); ui({ line: m }); },
+          onProgress: markProgress,
+          maxCalls: limit,
+          shouldStop: () => Boolean(queueControl && queueControl.stop),
+          placeCall: async (lead) => {
+            const phoneSession = await ensurePhoneSession({
+              portal, token: enrolledToken, callList: config.callList, post, log,
+              number: lead.phone,
+            });
+            const result = await voiceCall({
+              sessionId: phoneSession.sessionId,
+              product: config.product,
+              leadFields: config.leadFields || [],
+              persona: config.persona,
+              companyName: config.companyName,
+              callbackNumber: config.callbackNumber,
+              callbackIn: config.callbackIn,
+              contactEmail: config.contactEmail,
+              token: enrolledToken,
+              portal,
+              learning: config.learning,
+              locale: config.lang || "en",
+              voiceStyle: config.voiceStyle || "human",
+              lead,
+              onLog: (m) => { log(m); ui({ line: m }); },
+              onMode: (m) => ui({ mode: m }),
+            });
+            config.learning = result.learning;
+            bumpStats(config, result);
+            saveConfig(config, cfgPath);
+            return result;
+          },
+        });
+      } catch (e) {
+        log("Dial queue stopped: " + safeLog(e, [enrolledToken]));
+        ui({ line: "Dial queue stopped." });
+      }
+      if (queueControl) queueControl.running = false;
+      writeQueueStatus(queueControl);
+      log("Dial queue finished.");
+      ui({ line: "Dial queue finished." });
+    })();
+    return work;
+  };
+  /* The dashboard reaches this in the same process, so starting the queue never
+   * waits on a call. */
+  var startQueueInProcess = runLeadQueue;
+
+  if (opts.runQueue === true) {
+    await runLeadQueue(opts.maxCalls);
     if (opts.once === true) { stopHeartbeat = true; await heartbeatTask; return; }
   }
 
