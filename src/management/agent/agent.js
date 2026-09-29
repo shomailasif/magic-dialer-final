@@ -264,7 +264,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.44";
+const VERSION = "1.4.45";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -556,6 +556,18 @@ async function runAgent(opts = {}) {
         log("LOCAL DASHBOARD CALL CONTROL: " + number);
         return runLocalCall({ config: liveConfig, number, onLog: (m) => log(m), onMode: () => {} });
       },
+      readQueueStatus,
+      stopQueue,
+      queueIsRunning,
+      startQueue: async (arg) => {
+        if (queueIsRunning()) return { ok: true, alreadyRunning: true };
+        const q = require("node:child_process");
+        const args = [__filename, "--run-queue", "--no-browser", "--once"];
+        if (arg && arg.maxCalls) args.push("--max-calls=" + arg.maxCalls);
+        const child = q.spawn(q.execPath, args, { detached: true, stdio: "ignore", windowsHide: true });
+        child.unref();
+        return { ok: true, started: true, pid: child.pid };
+      },
       serviceName: "Magic Dialer",
     });
     try { writeDashboardUrl(uiServer.url); } catch {}
@@ -778,6 +790,92 @@ async function runAgent(opts = {}) {
   }
 
 
+  /* Work the lead list, one call after another.
+   *
+   * Until now the engine placed exactly one call and then sat there. This runs
+   * the list: take the next lead as soon as the previous call ends, and if it
+   * qualified the portal has already emailed it by the time we dial the next one
+   * - the agent posts every result to /api/call-result, which only stores and
+   * emails when the result says qualified. Nothing is emailed from here, because
+   * sending it twice is worse than not sending it. */
+  if (opts.runQueue === true) {
+    const { runQueue } = require("./lead-queue");
+    queueControl = { running: true, stop: false, summary: null, startedAt: new Date().toISOString() };
+    const markProgress = (s) => {
+      queueControl.summary = s;
+      const line = `Queue ${s.attempted} called, ${s.connected} connected, ${s.qualified} qualified.`;
+      log(line);
+      ui({ line });
+      writeQueueStatus(queueControl, statusPath);
+    };
+    try {
+      await runQueue({
+        portal, token: enrolledToken, deviceToken: config.deviceToken,
+        log: (m) => { log(m); ui({ line: m }); },
+        onProgress: markProgress,
+        maxCalls: Number(opts.maxCalls) > 0 ? Number(opts.maxCalls) : Infinity,
+        shouldStop: () => Boolean(queueControl && queueControl.stop),
+        placeCall: async (lead) => {
+          const phoneSession = await ensurePhoneSession({
+            portal, token: enrolledToken, callList: config.callList, post, log,
+            number: lead.phone,
+          });
+          const result = await voiceCall({
+            sessionId: phoneSession.sessionId,
+            product: config.product,
+            leadFields: config.leadFields || [],
+            persona: config.persona,
+            companyName: config.companyName,
+            callbackNumber: config.callbackNumber,
+            callbackIn: config.callbackIn,
+            contactEmail: config.contactEmail,
+            token: enrolledToken,
+            portal,
+            learning: config.learning,
+            locale: config.lang || "en",
+            voiceStyle: config.voiceStyle || "human",
+            lead,
+            onLog: (m) => { log(m); ui({ line: m }); },
+            onMode: (m) => ui({ mode: m }),
+          });
+          config.learning = result.learning;
+          bumpStats(config, result);
+          saveConfig(config, cfgPath);
+          return result;
+        },
+      });
+    } catch (e) {
+      log("Dial queue stopped: " + safeLog(e, [enrolledToken]));
+      ui({ line: "Dial queue stopped." });
+    }
+    if (queueControl) queueControl.running = false;
+    writeQueueStatus(queueControl, statusPath);
+    if (opts.once === true) { stopHeartbeat = true; await heartbeatTask; return; }
+  }
+
+/* Queue progress, written where the dashboard can read it, plus the small
+ * helpers that let a run be stopped without restarting the engine. */
+let queueControl = null;
+function queueStatusPath() {
+  return require("node:path").join(require("node:os").homedir(), "AppData", "Local", "Magic Dialer", "queue-status.json");
+}
+function writeQueueStatus(control) {
+  try {
+    const fs = require("node:fs");
+    fs.mkdirSync(require("node:path").dirname(queueStatusPath()), { recursive: true });
+    fs.writeFileSync(queueStatusPath(), JSON.stringify({
+      running: Boolean(control && control.running),
+      startedAt: (control && control.startedAt) || null,
+      summary: (control && control.summary) || null,
+    }));
+  } catch {}
+}
+function readQueueStatus() {
+  try { return JSON.parse(require("node:fs").readFileSync(queueStatusPath(), "utf8")); }
+  catch { return { running: false, startedAt: null, summary: null }; }
+}
+function stopQueue() { if (queueControl) queueControl.stop = true; }
+function queueIsRunning() { return Boolean(queueControl && queueControl.running); }
   // Normal agent lifetime is owned by the one heartbeat task above.
   await heartbeatTask;
 }
@@ -795,8 +893,12 @@ if (require.main === module) {
   const open = argv.includes("--open") || argv.includes("--launch") || argv.includes("--show");
   const call = argv.includes("--call") || argv.includes("--call-once");
   const callOnce = argv.includes("--call-once");
+  /* The lead queue: work the list, one call after another. --max-calls is the
+   * safety stop, so a queue can be run for a bounded number of calls. */
+  const runQueue = argv.includes("--run-queue") || argv.includes("--dial-queue");
+  const maxCalls = Number((argv.find((a) => a.startsWith("--max-calls=")) || "").split("=")[1]) || 0;
   const noBrowser = argv.includes("--no-browser") || argv.includes("--silent") || argv.includes("--startup");
-   const rest = argv.filter((a) => !a.startsWith("--"));
+  const rest = argv.filter((a) => !a.startsWith("--"));
   if (argv.includes("--watchdog")) {
     runWatchdog(argv.filter((a) => a !== "--watchdog")).catch((e) => {
       supervisorNote(`watchdog supervisor crashed: ${safeLog(e)}`);
@@ -804,7 +906,8 @@ if (require.main === module) {
       process.exit(1);
     });
   } else {
-    runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce, open, noBrowser }).catch((e) => {
+    runAgent({ token: rest[0], portalUrl: rest[1], setup, call, callOnce, open, noBrowser, runQueue, maxCalls, once: callOnce })
+      .catch((e) => {
       supervisorNote(`agent crashed: ${safeLog(e)}`);
       console.error(safeLog(e));
       process.exit(1);

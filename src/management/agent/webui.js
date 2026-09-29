@@ -569,8 +569,32 @@ async function startWebUi(opts) {
         sendJson(res, 500, { ok: false, engine: "local", error: e && e.message || "Local call failed." });
       }
       return;
-    }
-    if (req.method === "POST" && (p === "/api/pause" || p === "/api/resume")) {
+      }
+      /* The lead queue: work the list, one call after another, with no idle
+       * time. A qualified lead is emailed by the portal the moment the result
+       * arrives, so nothing is sent from here and nothing is sent twice. */
+      if (p === "/api/queue/status" && req.method === "GET") {
+        sendJson(res, 200, { ok: true, ...(typeof opts.readQueueStatus === "function" ? opts.readQueueStatus() : { running: false }) });
+        return;
+      }
+      if (p === "/api/queue/stop" && req.method === "POST") {
+        if (typeof opts.stopQueue === "function") opts.stopQueue();
+        sendJson(res, 200, { ok: true, stopping: true });
+        return;
+      }
+      if (p === "/api/queue/start" && req.method === "POST") {
+        if (typeof opts.startQueue !== "function") { sendJson(res, 503, { ok: false, error: "Queue control unavailable." }); return; }
+        try {
+          const body = await readJson(req);
+          const maxCalls = Math.min(Number(body && body.maxCalls) || 0, 5000);
+          const r = await opts.startQueue({ maxCalls });
+          sendJson(res, 200, { ok: true, ...r });
+        } catch (e) {
+          sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not start the queue." });
+        }
+        return;
+      }
+      if (req.method === "POST" && (p === "/api/pause" || p === "/api/resume")) {
       const mode = p === "/api/pause" ? "off" : "on";
       try {
         const cfg = opts.readConfig() || {};
