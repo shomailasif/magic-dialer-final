@@ -5,6 +5,11 @@ const { capTurnLength, splitSentences } = require("./turn-length");
 const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("./script-guard");
 const { getResearch: getCachedResearch, researchBlock } = require("./sales-research");
 
+// Asking who is calling is a request for the introduction, not small talk. On
+// the 18:44Z call the prospect asked "Who is this?" and the repeat-introduction
+// guard removed the agent's name from the reply, so they were answered with
+// "Is now a good time to talk?".
+const WHO_IS_THIS_RE = /\b(who(?:'s| is) this|who(?:'s| are) (?:this|you)|what(?:'s| is) (?:this|that)|kaun (?:ho|hai)|koi hai)\b/i;
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
 const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
 const JUNK_LEAD_RE = /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ringing\.?|phone ringing\.?|the phone is ringing\.?|voicemail\.?|voice mail\.?|please leave a message.*|leave a message.*|at the tone.*|click\.?|noise\.?|static\.?|\[.*\]|\(beep\))$/i;
@@ -215,6 +220,12 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let pendingDetected = null;
   // Recent substantial detections, so two agreeing turns need not be adjacent.
   const recentDetections = [];
+  // Set when the prospect asks who is calling, and once the opener has been said.
+  // Between them these stop the two opener habits that read as a machine: repeating
+  // the opener as an answer to "who is this?", and re-asking "is this a good time"
+  // in the middle of a conversation.
+  let askedWhoIsThis = false;
+  let openingAsked = false;
   // How many times we have already asked a prospect to repeat themselves, so the
   // apology is not the same sentence every time.
   let askedUnheard = 0;
@@ -375,26 +386,40 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
        * through a closing or a quiet window still reached the voice on the
        * 20:40Z call. Nothing that admits to being a machine is ever spoken. */
       if (isMetaLine(line)) line = "";
-      // Never re-introduce after the opening, and never re-ask for something
-      // already asked.
-      if (!openingSpoken) openingSpoken = true;
-      else {
-        // A repeat introduction may only be dropped once the opening has actually
-        // been said. On the 19:09Z call the brain was asked to restate the opener,
-        // did exactly that, and the guard then deleted the whole line for being a
-        // restatement - the agent said nothing for 14 seconds. A guard that makes
-        // us go quiet is worse than the repetition it prevents.
-        const trimmed = lastSpokenLine ? stripRepeatedAsks(line, askedFor) : line;
-        if (trimmed) line = trimmed;
-        else if (lastSpokenLine) {
-          /* stripRepeatedAsks returns "" when the whole line is a question we
-           * have already asked. Keeping the original then said the same question
-           * anyway, so the guard did nothing: on the 20:40Z call the agent asked
-           * for the name three times running - "your name to start", "let me know
-           * your name", "what's your name". Move the conversation on instead. */
-          line = advanceLine(loc);
+        // Never re-introduce after the opening, and never re-ask for something
+        // already asked - EXCEPT when the prospect asks who is calling, because
+        // then repeating it is the only correct answer.
+        if (!openingSpoken) openingSpoken = true;
+        else if (askedWhoIsThis) {
+          // On the 18:44Z call the prospect asked "Who is this?" and the guard
+          // removed "This is Atlas with Zaz Logistics" for being a repeat
+          // introduction, so the prospect heard "Is now a good time to talk?" in
+          // reply to asking who was calling. Skip the strip entirely here.
+        } else {
+          // A repeat introduction may only be dropped once the opening has actually
+          // been said. On the 19:09Z call the brain was asked to restate the opener,
+          // did exactly that, and the guard then deleted the whole line for being a
+          // restatement - the agent said nothing for 14 seconds. A guard that makes
+          // us go quiet is worse than the repetition it prevents.
+          const trimmed = lastSpokenLine ? stripRepeatedAsks(line, askedFor) : line;
+          if (trimmed) line = trimmed;
+          else if (lastSpokenLine) {
+            /* stripRepeatedAsks returns "" when the whole line is a question we
+             * have already asked. Keeping the original then said the same question
+             * anyway, so the guard did nothing: on the 20:40Z call the agent asked
+             * for the name three times running - "your name to start", "let me know
+             * your name", "what's your name". Move the conversation on instead. */
+            line = advanceLine(loc);
+          }
         }
-      }
+        // "Is this a good time to talk?" is only ever an opener. Said again
+        // mid-call it is the sound of a machine, and on the 18:44Z call the
+        // prospect heard it three times in ninety seconds.
+        if (openingAsked && /\b(?:is (?:now )?(?:this|it) a good time|good time to (?:talk|chat))\b/i.test(line)) {
+          line = loc === "en"
+            ? "Before I forget - what kind of trucks do you run, and how many?"
+            : advanceLine(loc);
+        }
       // The brain likes to mirror whatever script the prospect used, even on a
       // call configured for another language. That put Devanagari and Arabic
       // through an English voice on the 21:05Z call. Do not speak a script we
@@ -627,6 +652,10 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
     lead(heard, detected);
     leadSpeech.push(heard);
+    // "Who is this?" has to be answered with the name, and "is this a good time"
+    // is an opener only. Both are tracked so the guards know.
+    if (WHO_IS_THIS_RE.test(heard)) askedWhoIsThis = true;
+    if (openingSpoken) openingAsked = true;
     stopRequested = STOP_RE.test(heard);
     humanRequested = HUMAN_RE.test(heard) && /\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
 
@@ -642,15 +671,20 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       break;
     }
 
-    /* Answer in the language this turn was spoken in, as soon as the words and
-     * the claimed language agree. Waiting for a confirmed call-level switch meant
-     * a prospect who spoke Urdu for two turns was still answered in English -
-     * the one thing that makes a multilingual agent feel broken. */
-    const turnLocale = (detected && detected !== activeLocale
-      && isSubstantialUtterance(heard)
-      && scriptAgreesWithLocale(heard, detected, { fromDetection: true }))
-      ? detected
-      : activeLocale;
+    /* Reply in the language the call is IN, not the language of the last clip.
+     *
+     * This used to answer each turn in whatever the recognizer last detected, to
+     * stop an Urdu speaker being answered in English. It was the wrong fix: on
+     * the 18:44Z call the recognizer returned "Oke, itu..." for an English
+     * "Okay, that's...", and the agent answered in Indonesian - full sentence,
+     * correct grammar, wrong language - for the rest of the call. One short clip
+     * moving a whole conversation is exactly what the two-turn confirmation
+     * exists to prevent, and the per-turn rule bypassed it.
+     *
+     * The call-level switch still needs two detections within three turns, and it
+     * now actually gets heard, because the per-turn path no longer competes with
+     * it. */
+    const turnLocale = activeLocale;
 
     const ai = await askBrain({ transcript, ...config(turnLocale) });
     // A meta line is not an answer. It is also not a question, so it must not

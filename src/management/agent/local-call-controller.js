@@ -8,7 +8,7 @@ const { registerSession } = require("../portal/softphone");
 const { transcribeAuto } = require("./multilingual-stt");
 const { normalizeLanguage } = require("./language");
 const { capTurnLength, MAX_TURN_CHARS } = require("./turn-length");
-const { isMostlyNonLatin } = require("./script-guard");
+const { isMostlyNonLatin, NON_LATIN_LOCALE } = require("./script-guard");
 const health = require("./gateway-health");
 const { opening } = require("./intelligent-brain");
 
@@ -309,14 +309,14 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     if (isOpening) {
       out = preparedOpening.audio;
       preparedOpening = null;
-    } else if (isMostlyNonLatin(spoken)) {
-      // The brain sometimes mirrors the prospect's script even when the call is
-      // configured for another language. On the 21:05Z call that put Devanagari
-      // and Arabic text through an English voice, which is what made the prospect
-      // say "the dumb AI is not understanding what I'm saying". Refuse to put a
-      // script on the wire we have no voice for; the next turn is generated in
-      // the configured language.
-      onLog(`[local-media-v2] agent turn is mostly non-Latin for locale=${locale}; not speaking it`);
+    } else if (isMostlyNonLatin(spoken) && !NON_LATIN_LOCALE.has(String(locale || "").toLowerCase())) {
+      /* Refuse to put a script on the wire that the current voice cannot speak -
+       * and only then. This check used to fire on any non-Latin text regardless
+       * of the locale, so on a call correctly switched to Urdu the model replied
+       * in Urdu and the agent went silent for 25 seconds rather than speak it.
+       * The prospect heard nothing at all. For a ur/ar/zh/... call, non-Latin
+       * text is the right answer and must always be spoken. */
+      onLog(`[local-media-v2] agent turn is mostly non-Latin but the ${locale} voice cannot speak it; not speaking it`);
       if (state) { state.playing = false; state.playbackStartedAt = 0; }
       return;
     } else {

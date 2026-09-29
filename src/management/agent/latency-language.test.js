@@ -20,6 +20,8 @@
  */
 
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 const { runCall } = require("./call-runner");
 const health = require("./gateway-health");
 const brain = require("./intelligent-brain");
@@ -65,8 +67,7 @@ function run(script, fetchStub) {
 async function main() {
   health.reset();
 
-  // 1. A turn heard in Urdu is answered in Urdu, immediately, with an Urdu
-  //    voice - not after some two-turn confirmation, and not in English.
+  // 1. A turn heard in Urdu is answered in Urdu, once the call has moved there.
   const ur = await run([
     { text: URDU, language: "ur" },
     { text: URDU2, language: "ur" },
@@ -78,7 +79,7 @@ async function main() {
   }));
   const urReplies = ur.spoken.filter((s) => s.locale === "ur");
   assert.ok(urReplies.length > 0,
-    "a turn heard in Urdu must be answered in Urdu, got: " + JSON.stringify(ur.spoken.map(s => [s.locale, s.line])));
+    "a call that has confirmed Urdu must be answered in Urdu, got: " + JSON.stringify(ur.spoken.map(s => [s.locale, s.line])));
   for (const r of urReplies) {
     // Predominantly non-Latin, not "contains zero ASCII" - a trailing full stop
     // is fine, an English sentence is not.
@@ -87,6 +88,34 @@ async function main() {
     assert.ok(ascii / Math.max(1, stripped.length) < 0.3,
       "the Urdu reply must be in Urdu, not English: " + r.line);
   }
+
+  // 1b. ONE short clip must never move a whole call. On the 18:44Z call the
+  // recognizer returned "Oke, itu..." for an English "Okay, that's...", and the
+  // agent spent the rest of the call speaking Indonesian to an English speaker.
+  const singleClip = await run([
+    { text: "Yes, I can hear you.", language: "en" },
+    { text: "Oke, itu...", language: "id" },
+    { text: "Yes, ten trucks in the fleet.", language: "en" },
+    BYE,
+  ], async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ text: "Great, thanks. How many trucks do you run?" }) }));
+  assert.equal(singleClip.out.locale, "en",
+    "one Indonesian clip must not move an English call to Indonesian");
+  assert.ok(
+    !singleClip.spoken.some((s) => /Terima kasih|Apakah sekarang|waktu yang tepat/i.test(s.line)),
+    "the agent must not speak Indonesian after a single clip: " + JSON.stringify(singleClip.spoken.map(s => s.line))
+  );
+  assert.ok(
+    !singleClip.out.timeline.some((t) => t.event === "language-switch"),
+    "a single unconfirmed detection must not emit a language switch"
+  );
+
+  // 1c. Non-Latin text on a non-Latin call is CORRECT and must be spoken. The
+  // controller's guard fired on any non-Latin text regardless of locale, so a
+  // call correctly switched to Urdu had the agent go silent for 25 seconds
+  // instead of speaking the Urdu it had been given.
+  const ctrl = fs.readFileSync(path.resolve(__dirname, "local-call-controller.js"), "utf8");
+  assert.match(ctrl, /isMostlyNonLatin\(spoken\)\s*&&\s*!NON_LATIN_LOCALE\.has\(/,
+    "the non-Latin guard must only fire when the current voice cannot speak the script");
 
   // 2. Urdu, then one short clip misread as English, then Urdu: the call must
   //    still move to Urdu. That is exactly the 20:40Z pattern (ur, en, ur).
@@ -97,6 +126,34 @@ async function main() {
     BYE,
   ], async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ text: "اچھا، شکریہ۔" }) }));
   assert.equal(mixed.out.locale, "ur", "ur,en,ur must still reach Urdu");
+
+  // 2. The 18:44Z call, replayed. It is the call that could not sell: asked who
+  //    was calling and never told, asked "is this a good time" three times, went
+  //    25 seconds silent, and flipped to Indonesian on one short clip.
+  const brainSays = async (line) => async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ text: line }) });
+  const asked = await run([
+    { text: "Who is this?", language: "en" },
+    { text: "Thank you.", language: "en" },
+    { text: "Who is this?", language: "en" },
+    { text: "Oke, itu...", language: "id" },
+    { text: "Yes, ten trucks.", language: "en" },
+    BYE,
+  ], await brainSays("This is Atlas with Zaz Logistics. Is now a good time to talk?"));
+  const said = asked.spoken.map((s) => s.line);
+  const introTurn = said.find((l) => /who|Atlas/i.test(l) || l === said[1]);
+  assert.ok(
+    said.some((l) => /Atlas/i.test(l)),
+    "asked \"Who is this?\" - the agent must give its name. Said: " + JSON.stringify(said)
+  );
+  const openerRepeats = said.filter((l) => /\b(?:is (?:now )?(?:this|it) a good time|good time to talk)\b/i.test(l));
+  assert.ok(
+    openerRepeats.length <= 1,
+    "\"is this a good time to talk\" is an opener, not a mid-call line. Said " + openerRepeats.length + " times: " + JSON.stringify(said)
+  );
+  assert.ok(
+    !said.some((l) => /Terima kasih|Apakah|waktu yang tepat/i.test(l)),
+    "one Indonesian clip must not move the call: " + JSON.stringify(said)
+  );
 
   // 3. A meta line is never spoken, whatever the model returns.
   const meta = await run([
