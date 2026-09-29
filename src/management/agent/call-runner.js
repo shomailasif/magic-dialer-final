@@ -404,13 +404,20 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
           && /\b(?:is (?:now )?(?:this|it) a good time|good time to (?:talk|chat))\b/i.test(line)) {
           line = unusableReply(loc);
         }
-      // The brain likes to mirror whatever script the prospect used, even on a
-      // call configured for another language. That put Devanagari and Arabic
-      // through an English voice on the 21:05Z call. Do not speak a script we
-      // have no voice for; RTP keep-alive holds the line and the next turn is
-      // generated in the configured language.
+      /* The brain sometimes mirrors the prospect's script even on a call
+       * configured for another language, and the current voice cannot speak it.
+       * That is real, and on the 21:05Z call it put Devanagari through an
+       * English voice.
+       *
+       * But it must never be silent. On the 19:22Z call the prospect spoke Urdu,
+       * the brain replied in Urdu, and this dropped the line with no log line at
+       * all - so the prospect heard nothing for the remaining thirty seconds of
+       * the call and we could not see why. If we are going to refuse the reply,
+       * we owe the turn a usable line in the language the call is in, and the
+       * refusal has to be visible. */
       if (!NON_LATIN_LOCALE.has(loc) && isMostlyNonLatin(line)) {
-        line = "";
+        console.log(`[brain] reply was in a script the ${loc} voice cannot speak (${line.length} chars); answering in ${loc} instead`);
+        line = unusableReply(loc);
       }
     if (!line) return;
     // Never repeat a line. The 18:51Z call said "The line is connected and

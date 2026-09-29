@@ -68,17 +68,26 @@ export async function POST(r: Request) {
   if (!device) return fail("Unauthorized", "device-auth", "UNAUTHORIZED", 401);
 
   const answers = (b.answers && typeof b.answers === "object" ? b.answers : {}) as Record<string, unknown>;
+  /* A call is not a lead because it happened. The agent sends goodLead, and
+   * this route ignored it - so a 73-second call where the prospect said hello
+   * and hung up was stored as a Lead and emailed as "NEW QUALIFIED LEAD".
+   * Reporting is still worth doing either way; a lead is not. */
+  const goodLead = b.goodLead === undefined ? false : Boolean(b.goodLead);
   const leadName = answerValue(answers, "NAME", "LEAD NAME", "FULL NAME") || firstString(b.summary) || "New lead";
   const company = answerValue(answers, "COMPANY NAME", "COMPANY", "Company") || "";
   const phone = firstString(b.destination) || answerValue(answers, "PHONE", "PHONE NUMBER") || "";
   const transcript = typeof b.transcript === "string" ? b.transcript.slice(0, 4000) : "";
   const product = firstString(b.product);
   const summary = firstString(b.summary);
-  const qualified = b.qualified === undefined ? true : Boolean(b.qualified);
   const aiAgentName = firstString(b.persona) || "AI Agent";
 
-  // 1. Store it. A lead that is recorded survives any email trouble.
+  // 1. Store it. A lead that is recorded survives any email trouble - but only
+  //    if it really is one.
   let leadId = "";
+  if (!goodLead) {
+    console.log(`call-result: call reported but not a lead (goodLead=false), nothing stored or emailed. summary=${JSON.stringify(summary.slice(0, 80))}`);
+    return NextResponse.json({ ok: true, lead: false, emailed: [], requestId, callId });
+  }
   try {
     const lead = await prisma.lead.create({
       data: {
@@ -86,7 +95,7 @@ export async function POST(r: Request) {
         name: leadName,
         phone: phone || null,
         company: company || null,
-        extraData: JSON.stringify({ answers, product, summary, callId, qualified }),
+        extraData: JSON.stringify({ answers, product, summary, callId }),
         status: "PENDING",
       },
     });

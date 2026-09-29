@@ -242,9 +242,29 @@ async function scenarioRemoteHangup(logs) {
   assert.ok(logs.some(l => l.includes("remote hangup")), "remote hangup must be logged");
 }
 
-async function main() {
-  const logs = [];
-  await scenarioSpeechBargeIn(logs);
+  async function main() {
+    const logs = [];
+    // A truncated opening is worse than a plain one. On the 19:21Z call the brain
+    // returned "Hi," and the customer heard two words, then the agent had to
+    // re-introduce itself once the ringback cleared. And "PHONE RINGS" was not
+    // recognised as a ringback, so it became a lead turn and cost another one.
+    {
+      const src = require("node:fs").readFileSync(require.resolve("./local-call-controller"), "utf8");
+      assert.match(src, /function isUsableOpening\(/, "the opening must be validated before it is spoken");
+      assert.match(src, /isUsableOpening\(openingText, config\)/, "a bad opening must be caught where it is fetched");
+      assert.match(src, /s\.length < 25/, "a too-short opening must be rejected");
+      const i = src.indexOf("function isJunkUtterance");
+      const j = src.indexOf("/** Push one voiced level", i);
+      // eslint-disable-next-line no-new-func
+      const isJunkUtterance = new Function(src.slice(i, j) + "; return isJunkUtterance;")();
+      for (const t of ["PHONE RINGS", "phone rings", "phone ringing.", "the phone is ringing", "ringing."]) {
+        assert.equal(isJunkUtterance(t), true, JSON.stringify(t) + " is a ringback tone, not a prospect");
+      }
+      for (const t of ["Yes, ten trucks.", "Hello.", "My name is Jaswinder."]) {
+        assert.equal(isJunkUtterance(t), false, JSON.stringify(t) + " is real speech and must be kept");
+      }
+    }
+    await scenarioSpeechBargeIn(logs);
 
   let engineAttempted = false;
   await assert.rejects(

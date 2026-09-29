@@ -31,7 +31,7 @@ function isJunkUtterance(text) {
   // Not a word: ".", ",", "...". A lone "." reached the brain as a real turn
   // in a live call and made the agent answer silence.
   if (s.replace(/[^\p{L}\p{N}]/gu, "").length < 2) return true;
-  return /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ringing\.?|phone ringing\.?|the phone is ringing\.?|voicemail\.?|voice mail\.?|please leave a message.*|leave a message.*|at the tone.*|click\.?|noise\.?|static\.?|hum\.?|zzz\.?|\[.*\]|\(beep\)|dtmf\.?|test\.?)$/.test(s)
+  return /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ringing\.?|the phone is ringing\.?|phone ringing\.?|phone rings|ringback|voicemail\.?|voice mail\.?|please leave a message.*|leave a message.*|at the tone.*|click\.?|noise\.?|static\.?|hum\.?|zzz\.?|\[.*\]|\(beep\)|dtmf\.?|test\.?)$/.test(s)
     || /^(beep|tone|click|noise|static)[\s.!]*$/.test(s);
 }
 
@@ -129,6 +129,29 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
   };
   let activeLocale = config.lang && config.lang !== "auto" ? normalizeLanguage(config.lang) : "en";
   const openingFn = deps.opening || opening;
+  const pick = (v, keys) => {
+    let x = v;
+    if (x && typeof x === "object") {
+      for (const k of keys) if (typeof x[k] === "string" && x[k].trim()) { x = x[k]; break; }
+      if (typeof x !== "string") x = "";
+    }
+    const s = String(x == null ? "" : x).trim();
+    return !s || s === "[object Object]" ? "" : s;
+  };
+
+  /* An opening has to introduce somebody and say why. Anything shorter, or that
+   * never names the agent or the company, is a truncated response and is not
+   * worth speaking - the customer hears a couple of words and then silence. */
+  function isUsableOpening(text, cfg) {
+    const s = String(text || "").trim();
+    if (s.length < 25) return false;
+    const agentName = pick(cfg && cfg.persona, ["name", "agentName", "firstName"]);
+    const company = pick(cfg && cfg.companyName, ["name", "companyName", "company"]);
+    if (agentName && s.toLowerCase().includes(agentName.toLowerCase())) return true;
+    if (company && s.toLowerCase().includes(company.toLowerCase())) return true;
+    // Names in full or in part are fine; it only has to be one real sentence.
+    return /\b(i am|i'm|my name is|this is|speaking|calling)\b/i.test(s) && s.split(/[.!?]/).filter((x) => x.trim().length > 12).length >= 1;
+  }
   const brainConfig = {
     product: config.product,
     leadFields: config.leadFields || [],
@@ -178,19 +201,19 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
      * talking. The 20:10Z call was refused outright on one 502: the brain
      * preflight and the opening run in parallel, the preflight got a clean
      * READY and the opening got the 502, and the call never rang. */
-    const pick = (v, keys) => {
-      let x = v;
-      if (x && typeof x === "object") {
-        for (const k of keys) if (typeof x[k] === "string" && x[k].trim()) { x = x[k]; break; }
-        if (typeof x !== "string") x = "";
-      }
-      const s = String(x == null ? "" : x).trim();
-      return !s || s === "[object Object]" ? "" : s;
-    };
+    openingText = `Hi, this is ${pick(config.persona, ["name", "agentName", "firstName"]) || "Atlas"} with ${pick(config.companyName, ["name", "companyName", "company"]) || "Zaz Logistics"}. Is now a good time to talk?`;
+    onLog(`[local-media-v2] AI opening unavailable (${(first && first.error) || "no text"}); using the local fallback opening`);
+  } else if (!isUsableOpening(openingText, config)) {
+    /* A truncated opening is worse than a plain one. On the 19:21Z call the
+     * brain returned "Hi," and the customer heard two words - "Hi,." - followed
+     * by the agent re-introducing itself once the ringback cleared. The four
+     * live samples taken straight afterwards all returned full sentences, so
+     * this is a bad response rather than a bad prompt, and it has to be caught
+     * where it happens. */
     const agentName = pick(config.persona, ["name", "agentName", "firstName"]) || "Atlas";
     const company = pick(config.companyName, ["name", "companyName", "company"]) || "Zaz Logistics";
+    onLog(`[local-media-v2] AI opening was unusable (${JSON.stringify(openingText.slice(0, 40))}); using the local opening`);
     openingText = `Hi, this is ${agentName} with ${company}. Is now a good time to talk?`;
-    onLog(`[local-media-v2] AI opening unavailable (${(first && first.error) || "no text"}); using the local fallback opening`);
   }
   const openingAudio = await tts(openingText, { locale: activeLocale, style: config.voiceStyle || "friendly" });
   if (!openingAudio || !Buffer.isBuffer(openingAudio.buffer) || openingAudio.buffer.length < 160) {
