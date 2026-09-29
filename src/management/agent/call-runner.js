@@ -357,15 +357,13 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     return lines.find((l) => !spokenLines.has(normalizeSpoken(l))) || lines[0];
   };
 
-  /* Said when the brain re-asks something already asked. It must not ask
-   * anything itself, or it becomes the fourth version of the same question. */
-  const advanceLine = (loc) => {
-    const lines = loc === "en"
-      ? ["Thanks, got it.", "Understood.", "Sure, let's keep going.",
-         "Okay - and what brings you in today?"]
-      : ["Thanks, got it.", "Understood.", "Sure, let's keep going."];
-    return lines.find((l) => !spokenLines.has(normalizeSpoken(l))) || lines[0];
-  };
+  /* No canned filler anywhere. Every version of this file that substituted a
+   * stored line for the brain's own - "Thanks, got it.", "Before I forget...",
+   * "Is now a good time to talk?" - made the call worse, because the brain was
+   * already producing a better answer and we were overwriting it. The 19:03Z
+   * call opened, then said "Thanks, got it." with the prospect having said
+   * nothing, then answered "Who is this?" with a question about truck types.
+   * If the brain has nothing usable, hold the turn. */
 
   const agent = async (text, opts = {}) => {
       /* The language of the turn is not always the call's default language. On
@@ -393,32 +391,18 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         else if (askedWhoIsThis) {
           // On the 18:44Z call the prospect asked "Who is this?" and the guard
           // removed "This is Atlas with Zaz Logistics" for being a repeat
-          // introduction, so the prospect heard "Is now a good time to talk?" in
-          // reply to asking who was calling. Skip the strip entirely here.
+          // introduction. Skip the strip when they ask who is calling.
         } else {
-          // A repeat introduction may only be dropped once the opening has actually
-          // been said. On the 19:09Z call the brain was asked to restate the opener,
-          // did exactly that, and the guard then deleted the whole line for being a
-          // restatement - the agent said nothing for 14 seconds. A guard that makes
-          // us go quiet is worse than the repetition it prevents.
           const trimmed = lastSpokenLine ? stripRepeatedAsks(line, askedFor) : line;
           if (trimmed) line = trimmed;
-          else if (lastSpokenLine) {
-            /* stripRepeatedAsks returns "" when the whole line is a question we
-             * have already asked. Keeping the original then said the same question
-             * anyway, so the guard did nothing: on the 20:40Z call the agent asked
-             * for the name three times running - "your name to start", "let me know
-             * your name", "what's your name". Move the conversation on instead. */
-            line = advanceLine(loc);
-          }
         }
-        // "Is this a good time to talk?" is only ever an opener. Said again
-        // mid-call it is the sound of a machine, and on the 18:44Z call the
-        // prospect heard it three times in ninety seconds.
-        if (openingAsked && /\b(?:is (?:now )?(?:this|it) a good time|good time to (?:talk|chat))\b/i.test(line)) {
-          line = loc === "en"
-            ? "Before I forget - what kind of trucks do you run, and how many?"
-            : advanceLine(loc);
+        // "Is this a good time to talk?" is only ever an opener - but the brain
+        // is allowed to say it when they have just asked who is calling, and an
+        // earlier version of this rule replaced the agent's name with a canned
+        // question in exactly that case. Never override a reply to that question.
+        if (openingAsked && !askedWhoIsThis
+          && /\b(?:is (?:now )?(?:this|it) a good time|good time to (?:talk|chat))\b/i.test(line)) {
+          line = unusableReply(loc);
         }
       // The brain likes to mirror whatever script the prospect used, even on a
       // call configured for another language. That put Devanagari and Arabic
@@ -437,15 +421,16 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
       if (spokenLines.has(normalizeSpoken(line))) {
         if (opts && opts.noRetry) {
-          /* A quiet window or a closing has already spent a round trip, and the
-           * prospect is waiting. Do not spend a second one just to avoid a
-           * repeated filler line - rotate instead. */
-          line = advanceLine(loc);
-        } else {
-        /* The brain repeated itself. Rather than substitute an English sentence
-         * into a foreign-language call, or go silent, give it one more go with
-         * an explicit instruction - this is rare, and one round trip beats both
-         * wrong-language output and dead air. */
+          /* A quiet window or a closing has already spent a round trip. Saying
+           * canned filler here is what produced the bare "Thanks, got it." on the
+           * 19:03Z call - a line with no question in it, with the prospect
+           * having said nothing at all. Hold the turn instead. A moment of
+           * quiet is recoverable; a meaningless filler is not. */
+          return;
+        }
+        /* The brain repeated itself. Give it one more go with an explicit
+         * instruction - this is rare, and one round trip beats both wrong-language
+         * output and dead air. */
         const fresh = await askBrain({
           transcript: [
             ...transcript,
@@ -457,18 +442,9 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         const retry = isMetaLine(fresh && fresh.text) ? "" : String((fresh && fresh.text) || "");
         if (retry && !spokenLines.has(normalizeSpoken(capTurnLength(retry)))) {
           line = capTurnLength(retry);
-        } else if (loc !== "en") {
-          // Still stuck, and we have no trustworthy line in this language.
-          return;
         } else {
-          const subs = [
-            "Sorry, I did not quite catch that - could you tell me a bit more?",
-            "Sorry, you cut out for a second - what did you say?",
-            "Could you say that again, a little louder?",
-            "Sorry, I missed that. What would you like to ask about?",
-          ];
-          line = subs.find((s) => !spokenLines.has(normalizeSpoken(s))) || subs[0];
-        }
+          // Still nothing usable. Do not fill the gap with filler - say nothing.
+          return;
         }
       }
       spokenLines.add(normalizeSpoken(line));
@@ -653,8 +629,10 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     lead(heard, detected);
     leadSpeech.push(heard);
     // "Who is this?" has to be answered with the name, and "is this a good time"
-    // is an opener only. Both are tracked so the guards know.
-    if (WHO_IS_THIS_RE.test(heard)) askedWhoIsThis = true;
+    // is an opener only. Both apply to the reply right now, and the identity
+    // question is one-shot: leaving it set made the opener check stay disabled
+    // for the rest of the call once they had ever asked.
+    askedWhoIsThis = WHO_IS_THIS_RE.test(heard);
     if (openingSpoken) openingAsked = true;
     stopRequested = STOP_RE.test(heard);
     humanRequested = HUMAN_RE.test(heard) && /\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
