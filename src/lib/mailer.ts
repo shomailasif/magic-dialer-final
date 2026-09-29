@@ -60,6 +60,24 @@ function getTransporter(): nodemailer.Transporter | null {
   return transporterCache;
 }
 
+/** The address the mail claims to come from.
+ *
+ *  It must not default to a domain that publishes a strict DMARC policy while
+ *  the actual sending happens somewhere else - the receivers would reject
+ *  everything. The old default was no-reply@autodial.ai, which is exactly that
+ *  case, and the operator configured only the five SMTP values and not this one.
+ *  So: if SMTP_FROM is set, use it. Otherwise fall back to the sending account
+ *  itself, which is always consistent with the signature. */
+function defaultFrom(): string {
+  const explicit = process.env.MAIL_FROM || process.env.SMTP_FROM;
+  if (explicit && explicit.trim()) return explicit.trim();
+  const user = String(process.env.SMTP_USER || "").trim();
+  if (user && !user.endsWith("@smtp-brevo.com") && !user.endsWith("@smtp-mail.com")) {
+    return `Magic Dialer <${user}>`;
+  }
+  return "Magic Dialer <noreply@brevo.com>";
+}
+
 /**
  * Send a sales outcome notification email to a business admin.
  * Persists a Notification row and attempts delivery. On failure the email
@@ -95,7 +113,7 @@ export async function sendNotification(payload: MailPayload): Promise<void> {
     return;
   }
 
-  const from = process.env.SMTP_FROM || "AutoDial AI <no-reply@autodial.ai>";
+  const from = defaultFrom();
   try {
     await transporter.sendMail({
       from,
