@@ -6,6 +6,9 @@ const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("
 const { getResearch: getCachedResearch, researchBlock } = require("./sales-research");
 const qual = require("./qualification");
 
+/* A goodbye, in the words people actually use on a phone call. */
+const FAREWELL_RE = /\b(bye[\s-]?bye|goodbye|good[\s-]?bye|that'?s (?:all|it|everything)|nothing else|no[,\s]+that'?s (?:all|it)|we'?re done|i'?m done|have a (?:good|nice) (?:day|morning|afternoon|evening|night)|take care|we'?ll talk later|in touch)\b/i;
+
 // Asking who is calling is a request for the introduction, not small talk. On
 // the 18:44Z call the prospect asked "Who is this?" and the repeat-introduction
 // guard removed the agent's name from the reply, so they were answered with
@@ -237,6 +240,11 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // Set when the agent has already said goodbye, so we never talk over a
   // farewell with a second one.
   let closingSpoken = false;
+  // A callback promise is made once. Repeating it is how one call produced
+  // ""shortly"", ""105 minutes"" and ""115 minutes"".
+  let closingPromiseSpoken = false;
+  // The prospect said they are ready and waiting; there is nothing left to qualify.
+  let noMoreQuestions = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
   const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId, learning: learning || {} };
@@ -347,6 +355,75 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   const alreadyPromisesCallback = (line, loc) => {
     const re = CALLBACK_MEANS[loc];
     return re ? re.test(line) : false;
+  };
+
+  /* "within the next one zero and five minutes" - the transcript from 3:07 shows
+   * the agent promising a callback "shortly", then "within 105 minutes", then
+   * "within 115 minutes". Three promises, two of them absurd, and the prospect
+   * had to choose which one to believe.
+   *
+   * A callback window is ours to set, not the model's. Any window it invents is
+   * replaced with the 30 minutes we actually mean, and once a callback has been
+   * promised in a call it is not promised again. */
+  const CALLBACK_MINUTES = 30;
+  const normaliseCallbackWindow = (line) => String(line || "")
+    // "105 minutes", "1 15 minutes", "an hour and a half" and friends.
+    .replace(/\b\d{2,4}\s*(?:minutes?|mins?)\b/gi, `${CALLBACK_MINUTES} minutes`)
+    .replace(/\b(?:an hour and a half|two hours|90 minutes|60 minutes)\b/gi, `${CALLBACK_MINUTES} minutes`)
+    .replace(/\bshortly\b/gi, `within the next ${CALLBACK_MINUTES} minutes`)
+    .replace(/\bwithin the next\s+the next\b/gi, "within the next")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  /* "Safe travels" is what you say to someone on a flight. It came up twice on
+   * a call with a trucker, and no one boarding a truck wishes anyone a safe
+   * flight. The closing must also not keep offering to help. */
+  const WRONG_CLOSING_IDIOM_RE = /\b(?:safe travels|have a good (?:flight|journey)|bon voyage|travel safe)\b/i;
+  const READY_NOW_RE = /\b(?:call (?:me )?(?:right away|right now|back|asap|as soon as possible)|i'?ll (?:be )?waiting|waiting for (?:the|your) call|get it (?:moving|started)|sounds good|go ahead)\b/i;
+
+  /* "Safe travels" is what you say to someone on a flight. It came up twice to
+   * a trucker on the 3:07 call, and "have a good journey" is no better. */
+  const stripWrongClosingIdiom = (line) => String(line || "")
+    .replace(WRONG_CLOSING_IDIOM_RE, "have a good day")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+  /* A short line that asks nothing, for when everything has been collected. It
+   * is only used when a promise has already been made and the model has nothing
+   * left to say - never to replace a real answer. */
+  const advanceLineSafe = (loc) => {
+    const table = {
+      en: "Thanks for your time, and have a good one.",
+      ur: "شکریہ، اچھا رہیں۔",
+      es: "Gracias por su tiempo.",
+      ru: "Спасибо за время.",
+      fr: "Merci pour votre temps.",
+      it: "Grazie per il suo tempo.",
+      zh: "感谢您的时间。",
+      hi: "आपका समय देने के लिए धन्यवाद।",
+    };
+    return table[loc] || table.en;
+  };
+
+  const closingLine = (loc, captured) => {
+    const cb = callbackSentence(loc, captured);
+    const text = cb ? `${thanksLine(loc)} ${cb(captured)}` : thanksLine(loc);
+    return normaliseCallbackWindow(text);
+  };
+  const farewellLine = (loc) => normaliseCallbackWindow(thanksLine(loc));
+
+  const thanksLine = (loc) => {
+    const table = {
+      en: "Thanks for your time, and have a good one.",
+      ur: "شکریہ، اچھا رہیں۔",
+      es: "Gracias por su tiempo, que le vaya bien.",
+      ru: "Спасибо за время, хорошего дня.",
+      fr: "Merci pour votre temps, bonne journée.",
+      it: "Grazie per il suo tempo, buona giornata.",
+      zh: "感谢您的时间，祝您顺利。",
+      hi: "आपका समय देने के लिए धन्यवाद।",
+    };
+    return table[loc] || table.en;
   };
 
   const normalizeSpoken = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
@@ -647,6 +724,23 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     if (lastAskedField) Object.assign(collected, qual.attribute(lastAskedField, heard));
     Object.assign(collected, qual.extract(heard, leadFields));
     lastAskedField = "";
+
+    /* They said goodbye. Say goodbye and stop.
+     *
+     * The transcript at 3:07 shows what used to happen: the prospect said "Bye
+     * bye" at 3:14 and the agent kept going until 3:39 - "Glad I could help",
+     * then "if anything else comes up, whether it's another load, a question
+     * about rates, or anything else, just let me know", then "Alright", then
+     * "Feel free to reach out anytime", then "Safe travels" a second time.
+     * Twenty-five seconds of a call that had already ended. Someone who says
+     * goodbye has hung up in every sense but the physical one. */
+    if (FAREWELL_RE.test(heard) || closingPromiseSpoken && noMoreQuestions) {
+      closingSpoken = true;
+      const captured = capturePhoneNumber(leadSpeech.join(" ")) || callbackNumber;
+      await agent(closingPromiseSpoken ? farewellLine(activeLocale) : closingLine(activeLocale, captured),
+        { intent: "closing", noRetry: true });
+      break;
+    }
     // "Who is this?" has to be answered with the name, and "is this a good time"
     // is an opener only. Both apply to the reply right now, and the identity
     // question is one-shot: leaving it set made the opener check stay disabled
@@ -689,10 +783,14 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
      * configuration, the model simply knew what a freight call sounds like. */
     const checklist = qual.checklistBlock(collected, leadFields);
     if (checklist) {
-      transcript.push({
-        role: "user",
-        content: `${checklist}\nAsk for exactly ONE item from STILL NEEDED, in one short natural sentence. Never ask for anything in ALREADY COLLECTED. Never invent a field the customer has not asked you for.`,
-      });
+      let instruction = `${checklist}\nAsk for exactly ONE item from STILL NEEDED, in one short natural sentence. Never ask for anything in ALREADY COLLECTED. Never invent a field the customer has not asked you for.`;
+      /* One promise, once. The transcript at 1:46-2:43 has four: "right away",
+       * "right away", a scheduling question, then "shortly" - and the window it
+       * gave was read back to us by the customer as "10:20 minutes". */
+      if (closingPromiseSpoken) {
+        instruction += "\nYou have ALREADY promised that a manager will call back. Do not promise it again, do not restate a time for it, and do not ask when to call. Just move the conversation on.";
+      }
+      transcript.push({ role: "user", content: instruction });
     }
     const turnLocale = activeLocale;
 
@@ -700,8 +798,29 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     // A meta line is not an answer. It is also not a question, so it must not
     // become the "waiting on this" question the next quiet window re-asks.
     const aiText = isMetaLine(ai.text) ? "" : String(ai.text || "");
-    lastAgentAsked = aiText ? (extractQuestion(aiText) || null) : lastAgentAsked;
-    await agent(aiText || unusableReply(turnLocale), { intent: turnIntent(heard, aiText), locale: turnLocale });
+    let finalText = normaliseCallbackWindow(stripWrongClosingIdiom(aiText));
+    // A promise made is a promise kept once. The rest of the turn survives; only
+    // the second promise is removed.
+    if (closingPromiseSpoken && CALLBACK_MEANS[activeLocale] && CALLBACK_MEANS[activeLocale].test(finalText)) {
+      finalText = finalText
+        .replace(CALLBACK_MEANS[activeLocale], "")
+        .replace(/\b(?:shortly|as soon as possible|right away)\b/gi, "")
+        .replace(/\s{2,}/g, " ")
+        .replace(/[.,;]\s*$/, "")
+        .trim();
+      // If that emptied the line, they have everything and there is nothing left
+      // to say but thank you.
+      if (!/[a-z]{3}/i.test(finalText)) finalText = advanceLineSafe(turnLocale);
+    }
+    if (finalText && CALLBACK_MEANS[activeLocale] && CALLBACK_MEANS[activeLocale].test(finalText)) {
+      closingPromiseSpoken = true;
+    }
+    lastAgentAsked = finalText ? (extractQuestion(finalText) || null) : lastAgentAsked;
+    await agent(finalText || unusableReply(turnLocale), { intent: turnIntent(heard, finalText), locale: turnLocale });
+
+    // "give me a call right away", "I'll be waiting" - they are engaged and
+    // there is nothing left to qualify, so the next pause is a goodbye.
+    if (READY_NOW_RE.test(heard)) noMoreQuestions = true;
 
     // Repeated AI failure must not silently turn the universal agent back into
     // a rigid industry script. End safely and leave a human-follow-up result.

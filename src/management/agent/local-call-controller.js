@@ -49,9 +49,9 @@ function isJunkUtterance(text) {
  * to 400ms and this short hold absorbs the gap where someone resumes: their
  * resumed speech is appended to the same utterance instead of starting a new
  * turn, so we answer quickly without cutting anyone off. */
-const SPEECH_HOLD_MS = 220;
+  const SPEECH_HOLD_MS = 120;
 
-const BARGE_YIELD_MS = 700;
+  const BARGE_YIELD_MS = 400;
 
 function trackBargeLevel(state, level) {
   const w = state.bargeLevels || (state.bargeLevels = []);
@@ -326,7 +326,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     if (!state) {
       let release;
       const ended = new Promise((r) => { release = r; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 400 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 140, endSilenceMs: 250 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     let out;
     if (isOpening) {
@@ -367,7 +367,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 400 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
+      state = { vad: makeVad({ minSpeechMs: 140, endSilenceMs: 250 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -400,7 +400,7 @@ async function runLocalCallBody({ config, number, onLog = () => {}, onMode = () 
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 400 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 140, endSilenceMs: 250 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     // A prospect who has stopped talking is answered in well under a second by
     // a human. The old 15s ceiling left 15s of dead air on the line before the
