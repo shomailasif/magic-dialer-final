@@ -40,7 +40,7 @@ function dialable(lead) {
 async function fetchDueLeads({ portal, token, limit = 10, deviceToken }) {
   const base = String(portal || "").replace(/\/+$/, "");
   const auth = { "Content-Type": "application/json" };
-  if (deviceToken) auth["x-device-token"] = deviceToken;
+  if (deviceToken) auth["Authorization"] = "Bearer " + deviceToken;
   /* /api/leads is the dashboard route and wants a browser session cookie. The
    * engine holds a device token and no cookie, so it asks the engine route
    * instead - authenticated like every other engine route, and it already drops

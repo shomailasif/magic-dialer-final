@@ -22,10 +22,15 @@ export async function GET(request: Request) {
   const requestId = diagnosticId(request.headers.get("x-request-id"));
   const fail = (error: string, stage: string, code: string, status: number) =>
     NextResponse.json({ error, ...safeDiagnostic(stage, code, status, requestId) }, { status });
-
-  const bearer = engineBearerToken(request);
   const url = new URL(request.url);
-  const device = await authorizeActiveEngineDevice(bearer || url.searchParams.get("deviceToken"));
+
+  /* Accept every way the engine identifies itself. sales-research.js already
+   * sends Bearer; the queue sends the same header, and x-device-token is kept
+   * for callers that set it. */
+  const bearer = engineBearerToken(request)
+    || request.headers.get("x-device-token")
+    || url.searchParams.get("deviceToken");
+  const device = await authorizeActiveEngineDevice(bearer || "");
   if (!device) return fail("Unauthorized", "device-auth", "UNAUTHORIZED", 401);
 
   let take = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
