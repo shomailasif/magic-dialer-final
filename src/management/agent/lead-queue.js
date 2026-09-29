@@ -41,12 +41,16 @@ async function fetchDueLeads({ portal, token, limit = 10, deviceToken }) {
   const base = String(portal || "").replace(/\/+$/, "");
   const auth = { "Content-Type": "application/json" };
   if (deviceToken) auth["x-device-token"] = deviceToken;
-  const res = await fetch(base + "/api/leads?limit=" + limit, { headers: auth });
+  /* /api/leads is the dashboard route and wants a browser session cookie. The
+   * engine holds a device token and no cookie, so it asks the engine route
+   * instead - authenticated like every other engine route, and it already drops
+   * do-not-call rows and suppressed numbers before the engine ever sees them. */
+  const res = await fetch(base + "/api/engine/leads?limit=" + limit, { headers: auth });
   if (!res.ok) throw new Error("could not read the lead list (HTTP " + res.status + ")");
   const body = await res.json().catch(() => null);
   const rows = Array.isArray(body) ? body : (body && (body.leads || body.data)) || [];
   return rows
-    .filter((l) => l && !l.archived && l.status !== "CALLED" && l.status !== "CONVERTED")
+    .filter((l) => l && l.status !== "CALLED" && l.status !== "CONVERTED")
     .filter(dialable)
     .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
 }
