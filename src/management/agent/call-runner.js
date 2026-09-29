@@ -4,6 +4,7 @@ const { normalizeLanguage, languageName } = require("./language");
 const { capTurnLength, splitSentences } = require("./turn-length");
 const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("./script-guard");
 const { getResearch: getCachedResearch, researchBlock } = require("./sales-research");
+const qual = require("./qualification");
 
 // Asking who is calling is a request for the introduction, not small talk. On
 // the 18:44Z call the prospect asked "Who is this?" and the repeat-introduction
@@ -229,6 +230,10 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // How many times we have already asked a prospect to repeat themselves, so the
   // apology is not the same sentence every time.
   let askedUnheard = 0;
+  // The brain has no memory of what it has already collected, so it re-asks.
+  // The engine tracks it, and tells the brain on every turn.
+  const collected = {};
+  let lastAskedField = '';
   // Set when the agent has already said goodbye, so we never talk over a
   // farewell with a second one.
   let closingSpoken = false;
@@ -456,6 +461,8 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       }
       spokenLines.add(normalizeSpoken(line));
       lastSpokenLine = line;
+      const f = qual.fieldAskedAbout(line, leadFields);
+      if (f) lastAskedField = f;
       transcript.push({ role: "agent", text: line, locale: loc });
       await speak(line, { locale: loc, intent: opts.intent });
     };
@@ -635,6 +642,11 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
 
     lead(heard, detected);
     leadSpeech.push(heard);
+    // Attribute the answer to the field we just asked for, and to any field the
+    // words themselves fill in ("26 feet bucks" answers both truck fields).
+    if (lastAskedField) Object.assign(collected, qual.attribute(lastAskedField, heard));
+    Object.assign(collected, qual.extract(heard, leadFields));
+    lastAskedField = "";
     // "Who is this?" has to be answered with the name, and "is this a good time"
     // is an opener only. Both apply to the reply right now, and the identity
     // question is one-shot: leaving it set made the opener check stay disabled
@@ -669,6 +681,19 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
      * The call-level switch still needs two detections within three turns, and it
      * now actually gets heard, because the per-turn path no longer competes with
      * it. */
+    /* The brain is told what is already collected and what is still missing, on
+     * every turn. Without it it has no way of knowing, so it re-asks: on the
+     * 20:21Z call the prospect said "26 feet bucks" and the agent asked the
+     * equipment type again, then twice more. It also invented a "delivery
+     * destination" the customer cannot have - a field that is not even in their
+     * configuration, the model simply knew what a freight call sounds like. */
+    const checklist = qual.checklistBlock(collected, leadFields);
+    if (checklist) {
+      transcript.push({
+        role: "user",
+        content: `${checklist}\nAsk for exactly ONE item from STILL NEEDED, in one short natural sentence. Never ask for anything in ALREADY COLLECTED. Never invent a field the customer has not asked you for.`,
+      });
+    }
     const turnLocale = activeLocale;
 
     const ai = await askBrain({ transcript, ...config(turnLocale) });

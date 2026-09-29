@@ -120,6 +120,21 @@ function stripSpokenArtifacts(text) {
   // Unbalanced quote left dangling mid-sentence, e.g. 'services." is now...'
   s = s.replace(/[“”"]\s+(?=(?:is|are|was|were|do|does|did|can|could|will|would|and|so|but)\b)/g, " ");
   s = s.replace(/\s{2,}/g, " ").trim();
+  /* The model sometimes starts a list and gets cut off by the turn cap, leaving
+   * "I just need a couple more quick details: 1." - which the customer hears as
+   * the agent giving up mid-sentence. An opening number is never speech. */
+  s = s.replace(/[,:;]\s*\d\s*[.)]?\s*$/, ".").replace(/\.\s*\d\s*[.)]?\s*$/, ".");
+  s = s.replace(/\b(?:firstly|secondly|thirdly|1\)|2\)|3\))\b,?\s*/gi, "");
+  s = s.replace(/\s{2,}/g, " ").trim();
+  /* A turn that stops on a function word was cut off mid-thought, and the
+   * customer hears the agent stop talking. "What type of truck do you." is
+   * worse than not saying it - drop the fragment and keep what came before. */
+  s = s.replace(/\s+[^.!?]*\b(?:you|the|a|an|to|of|for|and|or|with|from|at|on|in|is|are|was|were|my|your|our|their|that|this|it)\s*[.?!]?\s*$/i, "");
+  s = s.replace(/\.{2,}/g, ".").replace(/\s{2,}/g, " ").trim();
+  // Normalise a trailing comma or colon into a full stop, but never touch a
+  // question or an exclamation - a question has to stay a question.
+  s = s.replace(/[,;:]\s*$/, ".");
+  if (s && !/[.?!]$/.test(s)) s += ".";
   return s;
 }
 
