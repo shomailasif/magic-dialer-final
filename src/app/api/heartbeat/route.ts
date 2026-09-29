@@ -39,22 +39,49 @@ export async function POST(req:Request){
   await prisma.engineDevice.update({where:{id:d.id},data:{lastSeenAt:now}});
 
   // 2. Lease claim, best effort. A rejected lease is a real answer (409) and is
-  //    reported as such. A database failure here is not a rejection - it is our
-  //    problem, and the engine must keep the call alive.
-  let leaseHeld=true;
-  try{
-   const leaseUntil=new Date(Date.now()+2*60*1000);
-   const renewed=await prisma.user.updateMany({
-    where:{id:d.userId,OR:[{activeEngineMachineId:d.machineId},{activeEngineMachineId:null},{engineLeaseUntil:null},{engineLeaseUntil:{lte:now}}]},
-    data:{activeEngineMachineId:d.machineId,engineLeaseUntil:leaseUntil}
-   });
-   leaseHeld=renewed.count===1;
-   if(leaseHeld) await prisma.engineDevice.update({where:{id:d.id},data:{leaseUntil}});
-  }catch(e){
+  //    reported as such - unless the machine holding it is gone.
+  //
+  //    A lease that cannot be taken over locks the account out forever. The
+  //    lease lasts two minutes, so a PC that has stopped should release it
+  //    automatically - but only if nothing renews it. This account was refused
+  //    with 409 continuously, with no agent running anywhere on this machine and
+  //    the two-minute window elapsed many times over, so a device row exists
+  //    whose lease is being kept alive by something that is not a live call.
+  //
+  //    So: if the holder is a registered device that has not been seen for
+  //    STALE_HOLDER_MS, it is dead and this PC takes over. A genuinely live
+  //    second PC is seen every few seconds, so this can never steal from one.
+  const STALE_HOLDER_MS = 5 * 60 * 1000;
+  let leaseHeld = true;
+  try {
+   const leaseUntil = new Date(Date.now() + 2 * 60 * 1000);
+   const claim = { id: d.userId, OR: [{ activeEngineMachineId: d.machineId }, { activeEngineMachineId: null }, { engineLeaseUntil: null }, { engineLeaseUntil: { lte: now } }] };
+   const renewed = await prisma.user.updateMany({ where: claim, data: { activeEngineMachineId: d.machineId, engineLeaseUntil: leaseUntil } });
+   leaseHeld = renewed.count === 1;
+   if (!leaseHeld) {
+    const holder = await prisma.engineDevice.findFirst({
+     where: { userId: d.userId, machineId: { not: d.machineId } },
+     orderBy: { lastSeenAt: "desc" },
+     select: { machineId: true, lastSeenAt: true, leaseUntil: true },
+    });
+    const lastSeen = holder?.lastSeenAt ? new Date(holder.lastSeenAt).getTime() : 0;
+    const stale = !holder || !lastSeen || Date.now() - lastSeen > STALE_HOLDER_MS;
+    console.error(`heartbeat lease held by machine=${holder?.machineId || "unknown"} lastSeen=${holder?.lastSeenAt || "never"} stale=${stale}`);
+    if (stale) {
+     const takeover = await prisma.user.updateMany({
+      where: { id: d.userId, activeEngineMachineId: holder?.machineId ?? "__none__" },
+      data: { activeEngineMachineId: d.machineId, engineLeaseUntil: leaseUntil },
+     });
+     leaseHeld = takeover.count === 1;
+     console.error(`heartbeat lease takeover by stale holder: ${leaseHeld ? "granted" : "refused"}`);
+    }
+   }
+   if (leaseHeld) await prisma.engineDevice.update({ where: { id: d.id }, data: { leaseUntil } });
+  } catch (e) {
    // The lease table is unavailable. Last-seen was already recorded, so the
    // device is still known-good; do not tear down a live call over a lease
    // bookkeeping write. Report it, do not fail the heartbeat.
-   console.error("heartbeat lease renewal failed",e);
+   console.error("heartbeat lease renewal failed", e);
   }
   if(!leaseHeld) return NextResponse.json({error:"Account active on another PC"},{status:409});
 
