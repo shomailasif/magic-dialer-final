@@ -33,40 +33,45 @@ export async function POST(request: Request) {
   }
 
   try {
-    const config = await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } });
-    if (!config) {
+    const command = action === "start" ? JSON.stringify({ action: "start", maxCalls }) : JSON.stringify({ action: "stop" });
+
+    /* Raw SQL throughout, deliberately.
+     *
+     * The typed Prisma client is generated from schema.prisma at build time, so
+     * a column added to the schema is not necessarily known to the client that
+     * is actually deployed. That mismatch is invisible until a write fails, and
+     * the failure looked identical to "no such column in the database". Raw SQL
+     * does not care what the generated client believes, and it repairs the
+     * database in place, so this works whether or not the client was
+     * regenerated. */
+    const rows = await prisma.$queryRawUnsafe<{ id: string }[]>(
+      `SELECT "id" FROM "AIAgentConfig" WHERE "userId" = ? LIMIT 1`,
+      user.id,
+    );
+    const configId = rows && rows[0] ? rows[0].id : null;
+    if (!configId) {
       return NextResponse.json(
         { error: "Set up your agent first, then start calling.", ...safeDiagnostic("config", "NO_AGENT_CONFIG", 400, requestId) },
         { status: 400 },
       );
     }
-    const command = action === "start" ? JSON.stringify({ action: "start", maxCalls }) : JSON.stringify({ action: "stop" });
+
     try {
-      await prisma.aIAgentConfig.update({ where: { id: config.id }, data: { queueCommand: command } as any });
+      await prisma.$executeRawUnsafe(
+        `UPDATE "AIAgentConfig" SET "queueCommand" = ? WHERE "id" = ?`,
+        command,
+        configId,
+      );
     } catch (writeError) {
-      /* A missing column must not be reported as "cannot reach your PC", which
-       * sends the customer looking at their computer when the problem is ours.
-       * Additive SQL is attempted once so a deployment that outran the database
-       * repairs itself, and the real reason is reported if it still cannot. */
-      try {
-        await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueCommand" TEXT`);
-        await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueState" TEXT`);
-        await prisma.aIAgentConfig.update({ where: { id: config.id }, data: { queueCommand: command } as any });
-        console.warn("[queue-command] added the missing queue columns on demand");
-      } catch (repairError) {
-        /* The real reason is returned, because guessing has cost this customer a
-         * day. It is a database error with no secrets in it, and without it
-         * every fix is another guess. */
-        console.error("[queue-command] could not write the command:", writeError, "| repair:", repairError);
-        return NextResponse.json(
-          {
-            error: "The dialer control is not ready on this server yet. Your agent is fine - please try again in a moment.",
-            reason: String((repairError as any)?.message || repairError).slice(0, 300),
-            ...safeDiagnostic("db", "QUEUE_COMMAND_UNAVAILABLE", 503, requestId),
-          },
-          { status: 503 },
-        );
-      }
+      // The column is missing. Add it, then write.
+      await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueCommand" TEXT`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueState" TEXT`);
+      await prisma.$executeRawUnsafe(
+        `UPDATE "AIAgentConfig" SET "queueCommand" = ? WHERE "id" = ?`,
+        command,
+        configId,
+      );
+      console.warn("[queue-command] added the missing queue columns on demand");
     }
     return NextResponse.json({
       ok: true,
@@ -91,9 +96,13 @@ export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   try {
-    const config = await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } });
     let state: unknown = null;
-    try { state = config?.queueState ? JSON.parse(config.queueState) : null; } catch { state = null; }
+    try {
+      const rows = await prisma.$queryRawUnsafe<{ queueState: string | null }[]>(
+        `SELECT "queueState" FROM "AIAgentConfig" WHERE "userId" = ? LIMIT 1`, user.id,
+      );
+      state = rows && rows[0] && rows[0].queueState ? JSON.parse(rows[0].queueState) : null;
+    } catch { state = null; }
     return NextResponse.json({ ok: true, running: Boolean((state as any)?.running), state });
   } catch {
     return NextResponse.json({ error: "Could not read dialer progress." }, { status: 503 });
