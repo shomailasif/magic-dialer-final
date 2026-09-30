@@ -126,7 +126,6 @@ async function main() {
   runPrisma(["migrate", "deploy"]);
   runPrisma(["migrate", "status"]);
   console.log("[db-bootstrap] Legacy database adoption complete.");
-  reconcileSchema();
 }
 
 /* Bring the live database in line with the schema, additively.
