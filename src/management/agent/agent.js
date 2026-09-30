@@ -48,6 +48,7 @@ const { ensurePhoneSession } = require("./call-start");
 const { runLocalCall } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
 const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate, _test: autoUpdateState } = require("./auto-update");
+const { reEnrollSelf: reEnrollSelfImpl } = require("./self-reenroll");
 const { safeLog } = require("./safe-diagnostic");
 
 /**
@@ -264,7 +265,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.53";
+const VERSION = "1.4.54";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -294,7 +295,10 @@ function scheduleAutoUpdate() {
     }, 1500);
   }).catch((e) => log("Auto-update check failed safely: " + safeLog(e)));
   setTimeout(run, 15000);
-  const timer = setInterval(run, 6 * 60 * 60 * 1000);
+    /* Every 6 hours was too slow to ship a fix: a customer could keep dialling
+     * with a bad agent for half a day after it was corrected. 30 minutes reaches
+     * a running PC quickly, and the check is one small metadata request. */
+    const timer = setInterval(run, 30 * 60 * 1000);
   if (timer.unref) timer.unref();
 }
 
@@ -928,28 +932,22 @@ function queueIsRunning() { return Boolean(queueControl && queueControl.running)
  * its enrolment ticket can simply enrol again and get a fresh token. Returns
  * true when the PC is authorised again. Never throws: a failure here must not
  * take the agent down.
- */
-async function reEnrollSelf(cfgPath, liveConfig, reason) {
-  try {
-    if (!cfgPath) return false;
-    const cfg = loadConfig(cfgPath) || {};
-    const ticket = String(cfg.enrollmentTicket || "").trim();
-    const base = String(cfg.portalUrl || "").replace(/\/+$/, "");
-    const machineId = cfg.machineId || crypto.randomUUID();
-    if (!ticket || !base) return false;          // enrolled by hand, nothing to reuse
-    const r = await post(base + "/api/engine/enroll", { ticket, machineId });
-    if (r.status !== 200 || !r.body || !r.body.deviceToken) return false;
-    cfg.deviceToken = r.body.deviceToken;
-    cfg.machineId = machineId;
-    cfg.portalUrl = base;
-    delete cfg.token;
-    saveConfig(cfg, cfgPath);
-    if (liveConfig) { liveConfig.deviceToken = cfg.deviceToken; liveConfig.machineId = machineId; }
-    return true;
-  } catch (e) {
-    try { supervisorNote(`self-re-enroll failed (${reason}): ${safeLog(e)}`); } catch {}
-    return false;
-  }
+ *
+ * The implementation lives in self-reenroll.js. It sat inline here first, which
+ * made it impossible to test: requiring agent.js installs a process-wide
+ * uncaughtException handler that exits the process and takes the watchdog lock,
+ * so a unit test could not load the file to reach this function. As its own
+ * side-effect-free module it is covered for real by self-reenroll.test.js. */
+function reEnrollSelf(cfgPath, liveConfig, reason) {
+  return reEnrollSelfImpl({
+    loadConfig: (p) => loadConfig(p),
+    saveConfig: (c, p) => saveConfig(c, p),
+    post,
+    configPath: cfgPath,
+    liveConfig,
+    reason,
+    log: (m) => { try { log(m); } catch {} },
+  });
 }
   // Normal agent lifetime is owned by the one heartbeat task above.
   await heartbeatTask;

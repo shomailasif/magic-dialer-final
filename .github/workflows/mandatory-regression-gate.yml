@@ -47,9 +47,19 @@ on:
       - "src/app/robots.ts"
   workflow_dispatch: {}
 
+concurrency:
+  group: mandatory-regression-gate
+  cancel-in-progress: true
+
 jobs:
   regression:
     runs-on: windows-latest
+    # This gate was flickering red for reasons unrelated to the code: it died at
+    # checkout, at "Set up job", and after npm ci on different runs, and once
+    # took 1m23s to fail before any project step ran. A superseded run is
+    # pointless work, so a newer commit cancels the older one, and the job gets
+    # room for a slow runner instead of being killed mid-install.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

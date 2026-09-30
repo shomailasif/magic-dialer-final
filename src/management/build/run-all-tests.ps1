@@ -10,6 +10,7 @@ $tests = @(
   "agent\latency-language.test.js",
   "agent\qualification.test.js",
   "agent\lead-queue.test.js",
+  "agent\self-reenroll.test.js",
   "agent\portal-queue.test.js",
   "agent\local-ringcentral-engine.pacing.test.js",
   "agent\engine-health.behavior.test.js",

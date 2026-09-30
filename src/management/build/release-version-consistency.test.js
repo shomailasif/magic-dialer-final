@@ -36,9 +36,15 @@ for (const [label, value] of Object.entries({installerVersion, launcherAssembly,
   assert.equal(value, agentVersion, label + " must equal agent version " + agentVersion);
 }
 
-assert.equal((agent.match(/setInterval\(run, 6 \* 60 \* 60 \* 1000\)/g) || []).length, 1,
-  "production updater interval must be exactly six hours and declared once");
-assert.equal((agent.match(/setInterval\(run, 5 \* 60 \* 1000\)/g) || []).length, 0,
-  "temporary five-minute updater interval must not remain in production");
+  /* The updater used to poll every 6 hours, which meant a customer could keep
+   * dialling with a bad agent for half a day after a fix shipped. It now polls
+   * every 30 minutes. The point of this guard is unchanged: exactly one interval
+   * must be declared, and no temporary debug interval may survive. */
+  assert.equal((agent.match(/setInterval\(run, 30 \* 60 \* 1000\)/g) || []).length, 1,
+    "production updater interval must be exactly thirty minutes and declared once");
+  assert.equal((agent.match(/setInterval\(run, 5 \* 60 \* 1000\)/g) || []).length, 0,
+    "temporary five-minute updater interval must not remain in production");
+  assert.equal((agent.match(/setInterval\(run, 6 \* 60 \* 60 \* 1000\)/g) || []).length, 0,
+    "superseded six-hour updater interval must not remain in production");
 
-console.log("release version consistency: PASS " + agentVersion + " / updater 6h");
+  console.log("release version consistency: PASS " + agentVersion + " / updater 30m");
