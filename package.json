@@ -19,7 +19,7 @@
     "bcryptjs": "^3.0.3",
     "exceljs": "^4.4.0",
     "mpg123-decoder": "^1.0.3",
-    "next": "16.3.4",
+    "next": "^16.3.8",
     "next-intl": "^4.14.2",
     "nodemailer": "^10.0.13",
     "papaparse": "^5.7.0",
@@ -47,6 +47,7 @@
     "typescript": "^5"
   },
   "overrides": {
-    "deepmerge-ts": "8.0.2"
+    "deepmerge-ts": "8.0.2",
+    "uuid": "11.1.1"
   }
 }
