@@ -2,6 +2,7 @@ import createMiddleware from "next-intl/middleware";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { routing, locales, defaultLocale } from "./i18n/routing";
+import { sessionCookieIsValid } from "@/lib/session-check";
 
 const SESSION_COOKIE = "autodial_session";
 
@@ -46,17 +47,26 @@ export default function proxy(request: NextRequest) {
   }
 
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE)?.value);
+  /* Whether the cookie merely EXISTS is not whether the session is usable. A
+   * cookie left behind by an expired or signed-out session made /login bounce
+   * the visitor to /dashboard, the dashboard rejected the dead session and sent
+   * them back, and the browser looped until it gave up with
+   * ERR_TOO_MANY_REDIRECTS - the whole site unreachable on a stale cookie. The
+   * token is checked properly now: signed and unexpired, or treated as signed
+   * out. */
+  const signedIn = sessionCookieIsValid(request.cookies.get(SESSION_COOKIE)?.value);
   const isPublic = PUBLIC_PATHS.some(
     (p) => clean === p || clean.startsWith(`${p}/`),
   );
 
-  // Authenticated user visiting a public-only page -> redirect to portal.
-  if (hasSession && isPublic && (clean === "/login" || clean === "/register")) {
-    return NextResponse.redirect(new URL(`/${locale}/dashboard`, request.url));
-  }
+/* Signed-in visitors reaching /login are left there on purpose. The login form
+ * navigates to the dashboard itself once it has verified a password, so this
+ * bounce bought nothing - and it was the other half of the redirect loop: a
+ * cookie that was signed but no longer had a live database session looked valid
+ * here, bounced /login to /dashboard, and the dashboard sent it straight back. */
 
-  // Unauthenticated user hitting a protected page -> redirect to login.
-  if (!isPublic && !hasSession) {
+// Unauthenticated user hitting a protected page -> redirect to login.
+if (!isPublic && !signedIn) {
     const loginUrl = new URL(`/${locale}/login`, request.url);
     loginUrl.searchParams.set("next", clean);
     return NextResponse.redirect(loginUrl);

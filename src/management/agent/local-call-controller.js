@@ -86,8 +86,15 @@ function noteSteadyTone(state, onLog) {
   }
 }
 
-async function preflightLocalSip(config, deps = {}) {
-  const v = config && config.voip || {};
+/* Did the portal reject this device, as opposed to the AI provider being briefly
+ * unavailable? Only the first means "this PC must not dial". */
+function isAuthFailure(err) {
+  const e = String(err || "").toLowerCase();
+  if (!e) return false;
+  return /\bunauthori[sz]ed\b|\b401\b|\b403\b|\bforbidden\b|not a registered customer|unregistered|\b409\b/.test(e);
+}
+
+async function preflightLocalSip(config, deps = {}) {  const v = config && config.voip || {};
   if (!v.ready || !v.username || !v.sipPassword || !v.number) throw new Error("VOIP configuration incomplete");
   const reg = deps.registerSession || registerSession;
   const result = await reg(sipOptions(v));
@@ -113,6 +120,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
   const makeVad = deps.createVad || createVad;
   const tts = deps.speakToBuffer || speakToBuffer;
   const sttAuto = deps.transcribeAuto || transcribeAuto;
+  const sttAuthorisedFn = deps.sttAuthorised || require("./stt-preflight").sttAuthorised;
   const callBrain = deps.voiceCall || voiceCall;
   const v = config.voip || {};
   if (!v.ready || !v.username || !v.sipPassword || !v.number) throw new Error("VOIP configuration incomplete");
@@ -193,6 +201,20 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     ]);
   } catch { /* the deterministic tactic floor covers this */ }
   let openingText = String(first && first.text || "").trim();
+  /* An engine that is not authorised cannot think and cannot hear. It must never
+   * dial. A gateway blip is worth retrying, but a rejected device is not a blip:
+   * every call it placed reached a real prospect as an agent that could not
+   * understand them and could not answer - "Could.", "How?", "You cut out for a
+   * second there". Falling back to a canned line and dialling anyway is what
+   * turned one unenrolled PC into bad calls at the customer's customers. */
+  const brainError = String((first && first.error) || "").trim();
+  if (!openingText && isAuthFailure(brainError)) {
+    throw new Error(
+      "This PC is not authorised by the portal (the AI brain rejected it: " + brainError + "). " +
+      "The agent cannot hold a conversation without it, so no call was placed. " +
+      "Re-enrol this PC from the dashboard, then the queue will work again.",
+    );
+  }
   if (!openingText) {
     /* A gateway blip must not stop the call being placed. The preflight exists
      * to stop us ringing someone and saying nothing - refusing to dial is a
@@ -218,6 +240,17 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
   const openingAudio = await tts(openingText, { locale: activeLocale, style: config.voiceStyle || "friendly" });
   if (!openingAudio || !Buffer.isBuffer(openingAudio.buffer) || openingAudio.buffer.length < 160) {
     throw new Error("Opening TTS preflight failed; refusing to place call");
+  }
+  /* Same rule for hearing: an agent that cannot transcribe cannot hold a
+   * conversation, and it used to find that out after ringing a real person. */
+  if (sttAuthorisedFn) {
+    const hear = await sttAuthorisedFn({ portal: config.portalUrl, deviceToken: config.deviceToken });
+    if (hear && hear.fatal) {
+      throw new Error(
+        "This PC is not authorised by the portal (" + hear.reason + "). The agent would not be " +
+        "able to hear the prospect, so no call was placed. Re-enrol this PC from the dashboard.",
+      );
+    }
   }
   onLog(`[local-media-v2] opening pre-render passed (${openingAudio.engine || "unknown"}, ${openingAudio.buffer.length} bytes PCMU/8000)`);
   const engine = makeEngine({
