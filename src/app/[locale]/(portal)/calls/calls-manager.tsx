@@ -78,23 +78,41 @@ export function CallsManager({
   async function runCampaign() {
     setCampaignMsg(null);
     setCampaigning(true);
-    const res = await fetch("/api/campaign", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ limit: 20 }),
-    });
-    const data = await res.json();
-    setCampaigning(false);
-    if (!res.ok) {
-      setCampaignMsg({ type: "error", text: data.error || t("campaignError") });
-      return;
+    try {
+      const res = await fetch("/api/campaign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit: 20 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setCampaignMsg({ type: "error", text: data.error || t("campaignError") });
+        return;
+      }
+      /* The campaign runs in the background, so this returns at once instead of
+       * holding the button until every call is finished. The old version waited
+       * for the whole run, which on an account with 500 leads meant the button
+       * spun until the proxy gave up and nothing was ever shown. */
+      setCampaignMsg({
+        type: "success",
+        text: data.message || t("campaignSuccess", { n: 0, m: 0, k: 0 }),
+      });
+      router.refresh();
+      refresh();
+      // Follow the run so the list fills in as calls land.
+      for (let i = 0; i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 5000));
+        try {
+          const p = await (await fetch("/api/campaign?campaignId=" + (data.campaignId || ""))).json();
+          if (p && p.running === false && p.campaign) { router.refresh(); refresh(); break; }
+          refresh();
+        } catch { /* keep polling */ }
+      }
+    } catch (e) {
+      setCampaignMsg({ type: "error", text: e instanceof Error ? e.message : t("campaignError") });
+    } finally {
+      setCampaigning(false);
     }
-    setCampaignMsg({
-      type: "success",
-      text: t("campaignSuccess", { n: data.callsMade, m: data.interested, k: data.converted }),
-    });
-    router.refresh();
-    refresh();
   }
 
   return (
