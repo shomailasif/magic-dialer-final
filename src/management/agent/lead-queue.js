@@ -36,8 +36,13 @@ function dialable(lead) {
 /**
  * Pull leads that are due. Ordered oldest-first so nobody is starved, and
  * filtered here as well as on the portal so a bad number never costs a call.
+ *
+ * The portal pages this list. The queue used to always ask for the first page,
+ * so an account with more leads than one page could only ever have those dialled
+ * and the rest were silently never reached. It now walks the pages in order and
+ * only stops when the portal says there is nothing left.
  */
-async function fetchDueLeads({ portal, token, limit = 10, deviceToken }) {
+async function fetchDueLeads({ portal, token, limit = 200, deviceToken, offset = 0 }) {
   const base = String(portal || "").replace(/\/+$/, "");
   const auth = { "Content-Type": "application/json" };
   if (deviceToken) auth["Authorization"] = "Bearer " + deviceToken;
@@ -45,14 +50,15 @@ async function fetchDueLeads({ portal, token, limit = 10, deviceToken }) {
    * engine holds a device token and no cookie, so it asks the engine route
    * instead - authenticated like every other engine route, and it already drops
    * do-not-call rows and suppressed numbers before the engine ever sees them. */
-  const res = await fetch(base + "/api/engine/leads?limit=" + limit, { headers: auth });
+  const res = await fetch(base + "/api/engine/leads?limit=" + limit + "&offset=" + offset, { headers: auth });
   if (!res.ok) throw new Error("could not read the lead list (HTTP " + res.status + ")");
   const body = await res.json().catch(() => null);
   const rows = Array.isArray(body) ? body : (body && (body.leads || body.data)) || [];
-  return rows
+  const leads = rows
     .filter((l) => l && l.status !== "CALLED" && l.status !== "CONVERTED")
     .filter(dialable)
     .sort((a, b) => String(a.createdAt || "").localeCompare(String(b.createdAt || "")));
+  return { leads, hasMore: Boolean(body && body.hasMore), offset, limit };
 }
 
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -72,12 +78,15 @@ async function runQueue({
    * when we look again, and without this the queue re-reads the same list and
    * calls the same first lead forever. */
   const seen = new Set();
+  /* Page cursor. Without it the queue re-read the first page forever and an
+   * account with more leads than one page never got past them. */
+  let offset = 0;
   log("Dial queue started.");
 
   while (summary.attempted < maxCalls && !shouldStop()) {
-    let leads;
+    let page;
     try {
-      leads = await fetchDueLeads({ portal, token, limit: 10, deviceToken });
+      page = await fetchDueLeads({ portal, token, limit: 200, deviceToken, offset });
     } catch (e) {
       // The portal being briefly unreachable must not end a campaign.
       summary.errors++;
@@ -86,11 +95,19 @@ async function runQueue({
       continue;
     }
 
+    let leads = page.leads;
     if (leadFilter) leads = leads.filter(leadFilter);
     const fresh = leads.filter((l) => l && !seen.has(String(l.id)));
+
     if (!fresh.length) {
-      const remaining = leads.length;
-      log(remaining
+      if (page.hasMore) {
+        /* Nothing on this page can be dialled, so the cursor has to move past
+         * the whole page. Leaving it put re-reads the same unusable page for
+         * ever, which is the one way this loop can spin without doing work. */
+        offset += page.limit;
+        continue;
+      }
+      log(leads.length
         ? "Every lead in the list has been called. Queue finished."
         : "No more leads to call. Queue finished.");
       onProgress(summary);
@@ -101,10 +118,14 @@ async function runQueue({
     let progressed = false;
     for (const lead of fresh) {
       if (shouldStop() || summary.attempted >= maxCalls) break;
-      if (!dialable(lead)) { summary.skipped++; seen.add(String(lead.id)); continue; }
+      if (!dialable(lead)) { summary.skipped++; seen.add(String(lead.id)); offset++; continue; }
 
       summary.attempted++;
       seen.add(String(lead.id));
+      /* The cursor counts leads consumed, not pages read. Only one call is made
+       * per read so the portal can record it, so advancing by a whole page here
+       * would skip every lead between here and the end of that page. */
+      offset++;
       progressed = true;
       const label = lead.name || lead.company || digits(lead.phone);
       log("Calling " + label + " (" + lead.phone + ") - " + summary.attempted + ".");

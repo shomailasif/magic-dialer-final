@@ -33,13 +33,20 @@ export async function GET(request: Request) {
   const device = await authorizeActiveEngineDevice(bearer || "");
   if (!device) return fail("Unauthorized", "device-auth", "UNAUTHORIZED", 401);
 
-  let take = Math.min(200, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+  /* Paginated rather than capped. The old route fetched 500 rows and returned at
+   * most 200, so an account with more leads silently could only ever have the
+   * first 200 dialled - the queue reported "no more leads" while hundreds sat
+   * untouched, which is the worst possible failure for someone paying to be
+   * called. The queue now walks the list a page at a time until it is empty. */
+  const take = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 200));
+  const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
 
   try {
     const rows = await prisma.lead.findMany({
       where: { userId: device.userId },
       orderBy: { createdAt: "asc" },
-      take: 500,
+      take: take + 1,
+      skip: offset,
       select: {
         id: true, name: true, phone: true, email: true, company: true,
         status: true, doNotCall: true, consentStatus: true,
@@ -62,10 +69,23 @@ export async function GET(request: Request) {
       .filter((l) => {
         const d = phoneDigits(l.phone);
         return d.length >= 7 && d.length <= 15;
-      })
-      .slice(0, take);
+      });
 
-    return NextResponse.json({ ok: true, count: leads.length, leads, requestId });
+    // One extra row was fetched purely to answer "is there another page", so a
+    // queue that has worked the whole list is told to stop instead of looping
+    // on the final page.
+    const hasMore = rows.length > take;
+    const page = hasMore ? leads.slice(0, take) : leads;
+
+    return NextResponse.json({
+      ok: true,
+      count: page.length,
+      hasMore,
+      offset,
+      limit: take,
+      leads: page,
+      requestId,
+    });
   } catch (e) {
     console.error("engine leads list failed", e);
     return fail("Could not read the lead list", "db", "DB_UNAVAILABLE", 503);
