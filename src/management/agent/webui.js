@@ -586,7 +586,13 @@ async function startWebUi(opts) {
         if (typeof opts.startQueue !== "function") { sendJson(res, 503, { ok: false, error: "Queue control unavailable." }); return; }
         try {
           const body = await readJson(req);
-          const maxCalls = Math.min(Number(body && body.maxCalls) || 0, 5000);
+          /* No upper cap. A customer with 7000 leads must be able to start the
+           * queue and have it work the whole list; clamping to 5000 stopped the
+           * run at 5000 and reported it as finished. 0 (or nothing) means "keep
+           * going until the queue is empty, or until it is stopped, or until the
+           * app is closed" - which is what the button promises. */
+          const raw = Number(body && body.maxCalls);
+          const maxCalls = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
           const r = await opts.startQueue({ maxCalls });
           sendJson(res, 200, { ok: true, ...r });
         } catch (e) {
