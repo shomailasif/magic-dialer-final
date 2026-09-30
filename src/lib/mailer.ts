@@ -1,4 +1,5 @@
 import nodemailer from "nodemailer";
+import type { Transporter, TransportOptions } from "nodemailer";
 import { prisma } from "@/lib/db";
 import type { NotificationStatus } from "@prisma/client";
 
@@ -9,7 +10,7 @@ export interface MailPayload {
   html?: string;
 }
 
-let transporterCache: nodemailer.Transporter | null = null;
+let transporterCache: Transporter | null = null;
 
 /** Raised when the SMTP server refused the credentials. This is permanent: no
  *  number of retries will fix a wrong password, and a ProtonMail account with
@@ -45,7 +46,7 @@ function isConfigured(): boolean {
   return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER);
 }
 
-function getTransporter(): nodemailer.Transporter | null {
+function getTransporter(): Transporter | null {
   if (!isConfigured()) return null;
   if (transporterCache) return transporterCache;
   transporterCache = nodemailer.createTransport({
@@ -56,7 +57,7 @@ function getTransporter(): nodemailer.Transporter | null {
       user: process.env.SMTP_USER,
       pass: process.env.SMTP_PASS,
     },
-  } as nodemailer.TransportOptions);
+  } as TransportOptions);
   return transporterCache;
 }
 
