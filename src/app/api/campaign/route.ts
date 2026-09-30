@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, requireUser } from "@/lib/auth";
 import { runCampaign } from "@/lib/orchestration";
 import { diagnosticId, safeDiagnostic, redactDiagnostic } from "@/lib/safe-diagnostic";
 
@@ -19,7 +19,10 @@ export async function GET(request: Request) {
   const wanted = url.searchParams.get("campaignId");
   try {
     const runs = await prisma.callCampaign.findMany({
-      where: wanted ? { id: wanted } : {},
+      /* Scoped to this account. Without the userId filter this returned the most
+       * recent campaign belonging to ANY customer, so one account could see
+       * another's campaign status, name and call count. */
+        where: { userId: (await requireUser()).id, ...(wanted ? { id: wanted } : {}) },
       orderBy: { startedAt: "desc" },
       take: 1,
     });
@@ -58,33 +61,26 @@ export async function POST(request: Request) {
 
   const locale = localeFrom(request);
 
-  /* The campaign runs in the background and this returns immediately.
+  /* The campaign is awaited, because a detached background job does not survive
+   * the response on this host: the worker is frozen the moment the reply is sent,
+   * so the run never actually began and every account sat at RUNNING with zero
+   * calls forever. Running it inline is the only thing that places calls here.
    *
-   * It used to be awaited inside the request, which only ever worked for a
-   * handful of leads. Two accounts had 500 each: the request stayed open making
-   * calls for hours, the proxy eventually dropped it, and the Launch button spun
-   * forever with nothing on screen. The third account failed fast and appeared to
-   * work, which is exactly why this looked intermittent and was hard to catch.
-   *
-   * Nothing waits for a campaign to finish, so the request must not hold it. */
-  void (async () => {
-    try {
-      const result = await runCampaign(user.id, limit, locale);
-      if (!result.ok) {
-        // Recorded on the run itself so the UI can show what went wrong.
-        console.error("[campaign] run failed:", result.error);
-      }
-    } catch (err) {
-      console.error("[campaign] background run crashed:", err instanceof Error ? err.stack : redactDiagnostic(err));
+   * The limit is small on purpose. A short run returns in a couple of minutes; a
+   * long one held the request open until the proxy dropped it and the button spun
+   * forever. Long runs are the PC queue's job, not a browser button's. */
+  try {
+    const result = await runCampaign(user.id, limit, locale);
+    if (!result.ok) {
+      return NextResponse.json(
+        { error: result.error, detail: (result as any).detail, failedLeads: (result as any).failedLeads },
+        { status: 400 },
+      );
     }
-  })();
-
-  return NextResponse.json({
-    ok: true,
-    started: true,
-    limit,
-    message:
-      `Campaign started with up to ${limit} lead${limit === 1 ? "" : "s"}. It runs in the ` +
-      `background - you can close this page. Progress is shown on the campaign list.`,
-  });
+    return NextResponse.json({ ...result, started: true, message: `Campaign finished: ${result.callsMade} call(s) made.` });
+  } catch (err: unknown) {
+    const requestId=diagnosticId(request.headers.get("x-request-id"));
+    console.error("[campaign] error", requestId, err instanceof Error ? err.stack : redactDiagnostic(err));
+    return NextResponse.json({ error:"Campaign failed unexpectedly.", diagnostic:safeDiagnostic("campaign","CAMPAIGN_FAILED",500,requestId) }, { status: 500 });
+  }
 }
