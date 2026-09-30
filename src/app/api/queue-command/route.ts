@@ -41,7 +41,29 @@ export async function POST(request: Request) {
       );
     }
     const command = action === "start" ? JSON.stringify({ action: "start", maxCalls }) : JSON.stringify({ action: "stop" });
-    await prisma.aIAgentConfig.update({ where: { id: config.id }, data: { queueCommand: command } as any });
+    try {
+      await prisma.aIAgentConfig.update({ where: { id: config.id }, data: { queueCommand: command } as any });
+    } catch (writeError) {
+      /* A missing column must not be reported as "cannot reach your PC", which
+       * sends the customer looking at their computer when the problem is ours.
+       * Additive SQL is attempted once so a deployment that outran the database
+       * repairs itself, and the real reason is reported if it still cannot. */
+      try {
+        await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueCommand" TEXT`);
+        await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueState" TEXT`);
+        await prisma.aIAgentConfig.update({ where: { id: config.id }, data: { queueCommand: command } as any });
+        console.warn("[queue-command] added the missing queue columns on demand");
+      } catch {
+        console.error("[queue-command] could not write the command:", writeError);
+        return NextResponse.json(
+          {
+            error: "The dialer control is not ready on this server yet. Your agent is fine - try again in a minute.",
+            ...safeDiagnostic("db", "QUEUE_COMMAND_UNAVAILABLE", 503, requestId),
+          },
+          { status: 503 },
+        );
+      }
+    }
     return NextResponse.json({
       ok: true,
       action,
@@ -54,7 +76,7 @@ export async function POST(request: Request) {
   } catch (err) {
     console.error("[queue-command] failed", err);
     return NextResponse.json(
-      { error: "Could not reach your PC. Is the Magic Dialer app running on it?", ...safeDiagnostic("db", "DB_UNAVAILABLE", 503, requestId) },
+      { error: "Could not start the dialer just now. Your agent is fine - please try again in a moment.", ...safeDiagnostic("db", "DB_UNAVAILABLE", 503, requestId) },
       { status: 503 },
     );
   }
