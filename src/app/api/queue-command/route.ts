@@ -62,7 +62,6 @@ export async function POST(request: Request) {
           {
             error: "The dialer control is not ready on this server yet. Your agent is fine - please try again in a moment.",
             reason: String((repairError as any)?.message || repairError).slice(0, 300),
-            code: String((repairError as any)?.code || "").slice(0, 40),
             ...safeDiagnostic("db", "QUEUE_COMMAND_UNAVAILABLE", 503, requestId),
           },
           { status: 503 },
