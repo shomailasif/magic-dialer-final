@@ -542,6 +542,12 @@ async function runAgent(opts = {}) {
         if (r.status !== 200 || !r.body || !r.body.deviceToken) throw new Error("Account enrollment rejected");
         live.portalUrl = String(portal).replace(/\/+$/, "");
         live.deviceToken = r.body.deviceToken;
+        /* Keep the ticket. The portal re-enrols idempotently by
+         * {userId, machineId}, so a PC that holds its ticket can repair itself
+         * forever without a human. Losing the token used to mean the agent could
+         * never think or hear again, and the only cure was the customer sending
+         * us a log. */
+        live.enrollmentTicket = ticket;
         delete live.token;
         saveConfig(live, cfgPath);
         Object.assign(config, live);
@@ -718,9 +724,21 @@ async function runAgent(opts = {}) {
         log(hl);
         ui({ status: "ONLINE", mode: config.mode || "on", line: hl });
       } else if (res.status === 401 || res.status === 403 || res.status === 409) {
-        // A real answer from the portal: this PC is not allowed to run right now.
-        log(`heartbeat rejected (status ${res.status}) - not a registered customer.`);
-        ui({ status: "OFFLINE", mode: config.mode || "on", line: "Heartbeat rejected - reconnect this PC from the portal." });
+        /* The portal has forgotten this device, or the account it belonged to is
+         * gone. Before this, the PC sat here logging "not a registered customer"
+         * forever: deaf and brainless, unable to repair itself, with the only
+         * cure being the customer sending us a log. If this PC still holds its
+         * enrolment ticket it can re-enrol by itself, because the portal
+         * upserts the device by {userId, machineId}. Self-healing, so it works
+         * for every existing PC and every future one with nobody involved. */
+        const healed = await reEnrollSelf(cfgPath, config, "heartbeat rejected with status " + res.status);
+        if (healed) {
+          log("This PC re-enrolled itself with the portal and is working again.");
+          ui({ status: "ONLINE", mode: config.mode || "on", line: "Reconnected to your account automatically." });
+        } else {
+          log(`heartbeat rejected (status ${res.status}) - not a registered customer.`);
+          ui({ status: "OFFLINE", mode: config.mode || "on", line: "Heartbeat rejected - reconnect this PC from the portal." });
+        }
       } else {
         /* The portal is unwell, not us. A 503 means its database was briefly
          * unavailable - not that this PC should be told to reconnect, and
@@ -825,6 +843,16 @@ async function runAgent(opts = {}) {
           maxCalls: limit,
           shouldStop: () => Boolean(queueControl && queueControl.stop),
           placeCall: async (lead) => {
+            /* A PC that has lost its authorisation repairs itself before ringing
+             * anyone, rather than dialling deaf. */
+            try {
+              const probe = await post(String(portal).replace(/\/+$/, "") + "/api/heartbeat", {
+                deviceToken: config.deviceToken || config.token, voipReady: !!(config.voip && config.voip.ready), sync: null,
+              });
+              if (probe.status === 401 || probe.status === 403 || probe.status === 409) {
+                await reEnrollSelf(cfgPath, config, "pre-dial authorisation check");
+              }
+            } catch { /* the pre-dial gate below still refuses to dial */ }
             /* The same local call path the dashboard's call button uses, which is
              * the path this account actually dials on - the portal session route
              * is not what makes these calls. voiceCall inside it still posts the
@@ -886,6 +914,43 @@ function readQueueStatus() {
 }
 function stopQueue() { if (queueControl) queueControl.stop = true; }
 function queueIsRunning() { return Boolean(queueControl && queueControl.running); }
+
+/**
+ * Repair this PC's authorisation without a human.
+ *
+ * The device token can stop being accepted - the row is lost, the account is
+ * recreated, the lease lapses and is not renewed. The brain and speech-to-text
+ * both check that same token, so a PC in this state is simultaneously deaf and
+ * unable to think, and it was telling the customer "Could." and "You cut out for
+ * a second there" on a live call.
+ *
+ * The portal re-enrols idempotently by {userId, machineId}, so a PC that kept
+ * its enrolment ticket can simply enrol again and get a fresh token. Returns
+ * true when the PC is authorised again. Never throws: a failure here must not
+ * take the agent down.
+ */
+async function reEnrollSelf(cfgPath, liveConfig, reason) {
+  try {
+    if (!cfgPath) return false;
+    const cfg = loadConfig(cfgPath) || {};
+    const ticket = String(cfg.enrollmentTicket || "").trim();
+    const base = String(cfg.portalUrl || "").replace(/\/+$/, "");
+    const machineId = cfg.machineId || crypto.randomUUID();
+    if (!ticket || !base) return false;          // enrolled by hand, nothing to reuse
+    const r = await post(base + "/api/engine/enroll", { ticket, machineId });
+    if (r.status !== 200 || !r.body || !r.body.deviceToken) return false;
+    cfg.deviceToken = r.body.deviceToken;
+    cfg.machineId = machineId;
+    cfg.portalUrl = base;
+    delete cfg.token;
+    saveConfig(cfg, cfgPath);
+    if (liveConfig) { liveConfig.deviceToken = cfg.deviceToken; liveConfig.machineId = machineId; }
+    return true;
+  } catch (e) {
+    try { supervisorNote(`self-re-enroll failed (${reason}): ${safeLog(e)}`); } catch {}
+    return false;
+  }
+}
   // Normal agent lifetime is owned by the one heartbeat task above.
   await heartbeatTask;
 }
