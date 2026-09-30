@@ -135,7 +135,34 @@ function stripSpokenArtifacts(text) {
   // question or an exclamation - a question has to stay a question.
   s = s.replace(/[,;:]\s*$/, ".");
   if (s && !/[.?!]$/.test(s)) s += ".";
+  /* A turn can be a complete sentence and still say nothing. "Could.", "How?",
+   * "Great.", "Sure." - what a model emits when it has nothing to say. A caller
+   * hears the agent say the word "could" and hangs up, and it burns a turn, so
+   * the prospect's next real sentence lands against a non-question and gets
+   * ignored. Returned empty so the caller can be given a real line instead. */
+  if (s && isContentlessTurn(s)) return "";
   return s;
+}
+
+/** Filler, bare function words and stubs: nothing a caller needs to hear. */
+const CONTENTLESS = new Set([
+  "hi", "hey", "hello", "oh", "okay", "ok", "sure", "great", "good", "fine",
+  "thanks", "thank you", "yes", "yeah", "yep", "no", "nope", "right", "got it",
+  "understood", "alright", "bye", "goodbye", "how", "what", "why", "who", "when",
+  "where", "could", "would", "should", "can", "do", "did", "is", "are", "was",
+  "i", "me", "my", "we", "it", "that", "this", "and", "but", "so", "well",
+  "of course", "absolutely", "certainly", "exactly", "totally", "cool", "nice",
+  "hello there", "good morning", "good evening", "one moment", "hold on",
+  "i appreciate it", "i appreciate that", "sounds good",
+]);
+
+function isContentlessTurn(s) {
+  const bare = String(s || "").toLowerCase().replace(/[.!?,;:]+$/g, "").trim();
+  if (!bare) return true;
+  if (CONTENTLESS.has(bare)) return true;
+  if (/^(?:could|would|should|can|do|did|will|may|might)\s+(?:you|i|we|they|he|she)?$/i.test(bare)) return true;
+  if (/^(?:i am|i'm|we are|we're|you are|you're|that is|that's|it is|it's)$/i.test(bare)) return true;
+  return false;
 }
 
 module.exports = { MAX_TURN_CHARS, MAX_TURN_OVERSHOOT, splitSentences, capTurnLength, stripSpokenArtifacts };
