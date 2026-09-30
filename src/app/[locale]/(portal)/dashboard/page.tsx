@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { Card, StatCard, Badge, Button } from "@/components/ui";
 import { CallOutcome, LeadStatus } from "@prisma/client";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -40,7 +40,7 @@ export default async function DashboardPage({
   const t = await getTranslations("dashboard");
   const te = await getTranslations("enums");
   const tc = await getTranslations("common");
-  const user = await getCurrentUser();
+  const user = await requireUser();
   if (!user) {
     return (
       <div className="space-y-6">

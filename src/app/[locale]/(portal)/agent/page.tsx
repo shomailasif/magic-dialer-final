@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { AgentForm } from "./agent-form";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { routing } from "@/i18n/routing";
@@ -16,7 +16,7 @@ export default async function AgentPage({
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations("agent");
-  const user = await getCurrentUser();
+  const user = await requireUser();
   const config = user ? await prisma.aIAgentConfig.findUnique({ where: { userId: user.id } }) : null;
   const active = user?.subscription?.status === "ACTIVE";
 

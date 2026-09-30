@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { CallsManager } from "./calls-manager";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { routing } from "@/i18n/routing";
@@ -16,7 +16,7 @@ export default async function CallsPage({
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations("calls");
-  const user = await getCurrentUser();
+  const user = await requireUser();
   const active = user?.subscription?.status === "ACTIVE";
 
   const calls = (await prisma.call.findMany({

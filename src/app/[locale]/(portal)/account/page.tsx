@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { PLAN_BY_ID } from "@/lib/constants";
 import { AccountClient } from "./account-client";
 import { getTranslations, setRequestLocale } from "next-intl/server";
@@ -19,7 +19,7 @@ export default async function AccountPage({
   const t = await getTranslations("account");
   const tpl = await getTranslations("plans");
   const te = await getTranslations("enums");
-  const user = await getCurrentUser();
+  const user = await requireUser();
 
   const [subscription, history, notifications] = await Promise.all([
     prisma.subscription.findUnique({ where: { userId: user!.id } }),

@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { getCurrentUser } from "@/lib/auth";
+import { requireUser } from "@/lib/auth";
 import { DialerSettings } from "./dialer-settings";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { routing } from "@/i18n/routing";
@@ -16,7 +16,7 @@ export default async function DialerPage({
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations("dialer");
-  const user = await getCurrentUser();
+  const user = await requireUser();
   const config = user ? await prisma.dialerConfig.findUnique({ where: { userId: user.id } }) : null;
   const active = user?.subscription?.status === "ACTIVE";
 
