@@ -53,11 +53,16 @@ export async function POST(request: Request) {
         await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueState" TEXT`);
         await prisma.aIAgentConfig.update({ where: { id: config.id }, data: { queueCommand: command } as any });
         console.warn("[queue-command] added the missing queue columns on demand");
-      } catch {
-        console.error("[queue-command] could not write the command:", writeError);
+      } catch (repairError) {
+        /* The real reason is returned, because guessing has cost this customer a
+         * day. It is a database error with no secrets in it, and without it
+         * every fix is another guess. */
+        console.error("[queue-command] could not write the command:", writeError, "| repair:", repairError);
         return NextResponse.json(
           {
-            error: "The dialer control is not ready on this server yet. Your agent is fine - try again in a minute.",
+            error: "The dialer control is not ready on this server yet. Your agent is fine - please try again in a moment.",
+            reason: String((repairError as any)?.message || repairError).slice(0, 300),
+            code: String((repairError as any)?.code || "").slice(0, 40),
             ...safeDiagnostic("db", "QUEUE_COMMAND_UNAVAILABLE", 503, requestId),
           },
           { status: 503 },
