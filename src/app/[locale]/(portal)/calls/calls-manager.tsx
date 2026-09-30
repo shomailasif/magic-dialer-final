@@ -58,6 +58,8 @@ export function CallsManager({
   const [status, setStatus] = useState("ALL");
   const [loading, setLoading] = useState(false);
   const [campaigning, setCampaigning] = useState(false);
+  const [dialerBusy, setDialerBusy] = useState(false);
+  const [dialerMsg, setDialerMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [campaignMsg, setCampaignMsg] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [selected, setSelected] = useState<CallView | null>(null);
 
@@ -75,6 +77,30 @@ export function CallsManager({
     setLoading(false);
   }
 
+  /* One click for the customer: the button on the website starts the dialer on
+   * their own PC, which is where the agent, their VOIP line and the live media
+   * actually are. They pay a subscription and they never open a terminal. */
+  async function controlQueue(action: "start" | "stop") {
+    setDialerBusy(true);
+    setDialerMsg(null);
+    try {
+      const res = await fetch("/api/queue-command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, maxCalls: 0 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDialerMsg({ type: "error", text: data.error || "Could not reach your PC. Is the Magic Dialer app running?" });
+        return;
+      }
+      setDialerMsg({ type: "success", text: data.message });
+    } catch (e) {
+      setDialerMsg({ type: "error", text: e instanceof Error ? e.message : "Could not reach your PC." });
+    } finally {
+      setDialerBusy(false);
+    }
+  }
   async function runCampaign() {
     setCampaignMsg(null);
     setCampaigning(true);
@@ -147,7 +173,20 @@ export function CallsManager({
           </div>
           <Button variant="secondary" onClick={refresh} loading={loading}>{t("filterButton")}</Button>
         </div>
-        <Button onClick={runCampaign} loading={campaigning} disabled={!active}>
+        {/* The button a paying customer actually uses. It starts the dialer on
+         * their own PC - the only place the agent, their VOIP line and the live
+         * media exist - and it keeps working through the whole lead list. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => controlQueue("start")} loading={dialerBusy} disabled={!active}>
+            Start calling my leads
+          </Button>
+          <Button variant="secondary" onClick={() => controlQueue("stop")} disabled={dialerBusy}>
+            Stop
+          </Button>
+        </div>
+        {dialerMsg && (
+          <Alert tone={dialerMsg.type === "error" ? "error" : "success"}>{dialerMsg.text}</Alert>
+        )}        <Button onClick={runCampaign} loading={campaigning} disabled={!active}>
           {active ? t("launchCampaign") : t("subscriptionRequired")}
         </Button>
       </div>

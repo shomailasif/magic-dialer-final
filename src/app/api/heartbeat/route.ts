@@ -124,8 +124,24 @@ export async function POST(req:Request){
    ready:true
   }:undefined;
   const config={companyName:full.user.companyName||"",product:full.user.agentConfig?.productName||"",persona:"Atlas",lang:full.user.agentConfig?.defaultLanguage||"en",...(voip?{voip}:{})};
-  cacheConfig(d.id,{disabled,config});
-  return NextResponse.json({ok:true,disabled,config});
+    cacheConfig(d.id,{disabled,config});
+    /* Queue commands, so the website can run the customer's dialer.
+     *
+     * The campaign button on the website cannot place a sales call itself: the AI
+     * agent, the customer's own VOIP line and the live media all live on their PC.
+     * What the website can do is tell that PC what to do, and the PC already
+     * phones home every few seconds. So the button sets a command here, this
+     * heartbeat carries it down, and the PC starts or stops its own queue.
+     * That is what makes it one click for the customer instead of a support
+     * ticket, and it is the only path that reaches the leads at all. */
+    const q = full.user.agentConfig as any;
+    const command = q?.queueCommand || null;
+    const queueState = q?.queueState || null;
+    /* A command is handed over exactly once. Repeating it every three seconds
+     * would restart the queue over and over, so it is cleared as it is sent. */
+    if (q && command) {
+      await prisma.aIAgentConfig.update({ where: { id: q.id }, data: { queueCommand: null } as any }).catch(() => undefined);    }
+    return NextResponse.json({ok:true,disabled,config,queue:{command,state:queueState}});
  }catch(e){
   // Never an unhandled 500: this route is load-bearing for a live call. A clean
   // 503 with a diagnostic the agent can log beats an HTML error page that reads

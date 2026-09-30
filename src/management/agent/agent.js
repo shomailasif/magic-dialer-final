@@ -265,7 +265,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.56";
+const VERSION = "1.4.57";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -719,6 +719,28 @@ async function runAgent(opts = {}) {
           process.exit(0);
         }
         applyPortalConfig(config, res.body.config, cfgPath);
+        /* Obey the website. The customer pays a subscription and clicks a button
+         * on the site; they never run anything by hand. The portal cannot place a
+         * call itself - the agent, their VOIP line and the live media are all here
+         * on this PC - so the button hands us an instruction and we act on it the
+         * moment it arrives, then report our progress back the same way. */
+        if (res.body.queue && res.body.queue.state) {
+          config.queueState = res.body.queue.state;
+          saveConfig(config, cfgPath);
+        }
+        const cmd = res.body.queue && res.body.queue.command;
+        if (cmd) {
+          let instruction = null;
+          try { instruction = typeof cmd === "string" ? JSON.parse(cmd) : cmd; } catch { instruction = null; }
+          if (instruction && instruction.action === "start" && !queueIsRunning()) {
+            log("Website asked this PC to start calling its lead list.");
+            ui({ line: "Starting your lead list from the website." });
+            startQueueInProcess(Number(instruction.maxCalls) || 0);
+          } else if (instruction && instruction.action === "stop" && queueIsRunning()) {
+            log("Website asked this PC to stop calling.");
+            stopQueue();
+          }
+        }
         config.portalSyncedAt = new Date().toISOString();
         saveConfig(config, cfgPath);
         // Process sync acknowledgements from portal

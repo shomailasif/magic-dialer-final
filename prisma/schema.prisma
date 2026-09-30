@@ -167,6 +167,13 @@ model AIAgentConfig {
   followUpIntervalHours Int   @default(24)
 
   learningNotes     String?
+
+  // Instructions the website hands to this PC through the heartbeat, and the queue
+  // progress reported back. The site cannot place a call itself - the agent, the
+  // customer own VOIP line and the live media are all on their PC - so this is how
+  // the button on the website actually reaches their leads.
+  queueCommand     String?
+  queueState       String?
   updatedAt         DateTime  @updatedAt
   createdAt         DateTime  @default(now())
 }
