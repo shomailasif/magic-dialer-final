@@ -11,6 +11,7 @@ $tests = @(
   "agent\qualification.test.js",
   "agent\lead-queue.test.js",
   "agent\lead-queue-paging.test.js",
+  "agent\answer-the-question.test.js",
   "agent\self-reenroll.test.js",
   "agent\portal-queue.test.js",
   "agent\local-ringcentral-engine.pacing.test.js",

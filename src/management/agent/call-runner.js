@@ -15,7 +15,33 @@ const FAREWELL_RE = /\b(bye[\s-]?bye|goodbye|good[\s-]?bye|that'?s (?:all|it|eve
 // "Is now a good time to talk?".
 const WHO_IS_THIS_RE = /\b(who(?:'s| is) this|who(?:'s| are) (?:this|you)|what(?:'s| is) (?:this|that)|kaun (?:ho|hai)|koi hai)\b/i;
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
-const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
+  const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
+
+  /* Was the prospect's last turn a question? Asking for something is the most
+   * common thing a prospect does, and it has to produce an answer. */
+  const PROSPECT_QUESTION_RE = /\?|\b(?:can|could|will|would|do|does|did|are|is|should|have|has)\s+(?:you|your|we|us|they|he|she|it|that|there|anyone|anybody|someone|somebody)\b[^.!?]*$|\b(?:why|what|when|where|who|how|which)\b/i;
+  function prospectAskedQuestion(text) {
+    const s = String(text || "").trim();
+    if (!s || s.length > 300) return false;
+    if (/\?/.test(s)) return true;
+    return PROSPECT_QUESTION_RE.test(s);
+  }
+
+  /* A reply that is only an acknowledgment: no information in it. These are what
+   * the agent said instead of answering "can your dispatcher call me now". */
+  const ACKNOWLEDGMENT_ONLY_RE = /^(?:thanks?|thank you( very much)?|okay|ok|sure( thing)?|got it|understood|alright|all right|no problem|you'?re welcome|great|good|perfect|absolutely|certainly|of course|noted|yes|yeah|yep|no|nope|right|cool|nice|i appreciate( that| it)?|sounds good|makes sense|will do|my apologies|apologies|sorry|i did not catch that( clearly)?|could you say that again|i lost that|you cut out|hello|hi)[.! ]*$/i;
+  /* "Thanks for sharing that", "Thanks for sharing the domain", "Thanks for your
+   * time" carry no information either. They open with filler and then only restate
+   * what the prospect already said, which is what made the agent sound like it was
+   * not listening. */
+  const ACKNOWLEDGMENT_CLAUSE_RE = /^(?:thanks?|thank you|i appreciate( that| it)?|got it|okay|ok|sure|understood|noted)\b[^?!.]*\b(?:that|this|it|your time|the (?:domain|email|address|name|number|info|information))\b\s*[.!]*$/i;
+  function isAcknowledgmentOnly(line) {
+    const s = String(line || "").trim().replace(/\s+/g, " ");
+    if (!s) return true;
+    if (ACKNOWLEDGMENT_ONLY_RE.test(s)) return true;
+    return ACKNOWLEDGMENT_CLAUSE_RE.test(s);
+  }
+
 const JUNK_LEAD_RE = /^(beep\.?|tone\.?|busy signal\.?|dial tone\.?|ring\.?|ringing\.?|phone ringing\.?|the phone is ringing\.?|voicemail\.?|voice mail\.?|please leave a message.*|leave a message.*|at the tone.*|click\.?|noise\.?|static\.?|\[.*\]|\(beep\))$/i;
 
 function isJunkLead(text) {
@@ -447,6 +473,12 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
    * nothing, then answered "Who is this?" with a question about truck types.
    * If the brain has nothing usable, hold the turn. */
 
+  /* The prospect's most recent words, and whether they were a question. Asking
+   * for something has to produce an answer - see the unanswered-question guard
+   * where the reply is produced. */
+  let lastProspectTurn = "";
+  let lastProspectAskedQuestion = false;
+
   const agent = async (text, opts = {}) => {
       /* The language of the turn is not always the call's default language. On
        * the 20:40Z call the prospect spoke Urdu - the recognizer heard it
@@ -466,6 +498,51 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
        * through a closing or a quiet window still reached the voice on the
        * 20:40Z call. Nothing that admits to being a machine is ever spoken. */
       if (isMetaLine(line)) line = "";
+      /* A prospect who asks a question is asking to be answered.
+       *
+       * On the test call the prospect asked "Will your dispatcher be able to call
+       * me now?" three separate times. The agent replied "Thanks for sharing the
+       * domain", then "Thanks for your time", then closed with a callback
+       * promise, and he ended the call with "I don't want to work with you." It
+       * was not a tone problem and not a latency problem: every reply was an
+       * acknowledgment or another question, and never an answer. The single most
+       * common thing a prospect does is ask something, so this is the defect
+       * that decides whether the call is worth anything.
+       *
+       * So when the prospect's last turn was a question, a reply that is itself a
+       * question, or that is only an acknowledgment, is not spoken. The brain is
+       * asked again with the requirement spelled out. */
+      if (line && lastProspectAskedQuestion) {
+        const askedQuestion = /\?\s*$/.test(line) || /\?\s/.test(line);
+        const onlyAcknowledged = ACKNOWLEDGMENT_ONLY_RE.test(line);
+        if (askedQuestion || onlyAcknowledged) {
+          try { log("[unanswered-question] the prospect asked a question; the reply was not an answer - retrying"); } catch {}
+          const retry = await askBrain({
+            ...config(),
+            transcript: [
+              ...transcript,
+              { role: "lead", text: String(lastProspectTurn || "") },
+              {
+                role: "lead",
+                text:
+                  "Answer my question directly. I asked whether your dispatcher can call me now. " +
+                  "Give me a real answer - yes or no and why - in one or two sentences. Do not ask " +
+                  "me anything back, and do not just thank me.",
+              },
+            ],
+          }).catch(() => null);
+          const retryLine = retry && retry.text ? capTurnLength(String(retry.text).trim()) : "";
+          // Only accept the retry if it is genuinely an answer.
+          if (retryLine && !/\?\s*$/.test(retryLine) && !ACKNOWLEDGMENT_ONLY_RE.test(retryLine)) {
+            line = retryLine;
+          } else {
+            // Last resort: say plainly that it is being checked and a human will
+            // answer, which is at least honest and always better than silence or
+            // a second question.
+            line = "Let me get you a straight answer to that - I will have someone call you back with it.";
+          }
+        }
+      }
         // Never re-introduce after the opening, and never re-ask for something
         // already asked - EXCEPT when the prospect asks who is calling, because
         // then repeating it is the only correct answer.
@@ -548,6 +625,8 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     if (!line) return;
     if (!line.startsWith("(silence)")) heardSomething = true;
     transcript.push({ role: "lead", text: line, locale: detected || activeLocale });
+    lastProspectTurn = line;
+    lastProspectAskedQuestion = prospectAskedQuestion(line);
   };
 
   /* Research must be gathered BEFORE the call, not during it.
@@ -918,4 +997,4 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   };
 }
 
-module.exports = { runCall };
+module.exports = { runCall, prospectAskedQuestion, isAcknowledgmentOnly };
