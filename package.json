@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "node scripts/production-db-bootstrap.cjs && next start",
+    "start": "node scripts/auto-migrate-to-postgres.mjs && node scripts/production-db-bootstrap.cjs && next start",
     "lint": "eslint",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
