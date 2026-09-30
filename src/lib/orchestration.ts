@@ -77,9 +77,12 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     orderBy: { createdAt: "asc" },
   });
 
-  let callsMade = 0;
-  let interested = 0;
-  let converted = 0;
+let callsMade = 0;
+let interested = 0;
+let converted = 0;
+/* Leads that could not be processed. Kept so a run is diagnosable from the screen
+ * rather than only from a server log nobody is watching. */
+const failedLeads: { leadId: string; phone: string | null; reason: string }[] = [];
 
   const staleBefore=new Date(Date.now()-2*60*60*1000);
   await prisma.callCampaign.updateMany({where:{userId,status:"RUNNING",startedAt:{lt:staleBefore}},data:{status:"COMPLETED",endedAt:new Date()}});
@@ -95,6 +98,13 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
 
   try {
   for (const lead of dueLeads) {
+   /* One lead must never be able to fail the whole campaign. A single bad row,
+    * a transient database error or a provider hiccup on lead 40 of 200 was
+    * throwing out of the loop and ending the run, and the operator was told
+    * only "Campaign execution failed" with no idea which lead or why. A campaign
+    * is worth nothing if one row stops it, so each lead is isolated and the
+    * reason is recorded. */
+   try {
     const normalizedPhone=normalizePhoneForSuppression(lead.phone);
     const tenantSuppression=normalizedPhone?await prisma.phoneSuppression.findUnique({where:{userId_normalizedPhone:{userId,normalizedPhone}}}):null;
     const compliance = decideCallCompliance({doNotCall:lead.doNotCall||!!tenantSuppression,phone:lead.phone,consentStatus:tenantSuppression?"DENIED":lead.consentStatus});
@@ -237,11 +247,25 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
         otherData: { transcript },
       }, locale); } catch(e){ console.error("[campaign] outcome notification failed:", redactDiagnostic(e)); }
     }
+   } catch (leadError) {
+    /* Recorded and stepped over. The campaign keeps going. */
+    failedLeads.push({ leadId: lead.id, phone: lead.phone, reason: String((leadError && (leadError as any).message) || leadError).slice(0, 200) });
+    console.error("[campaign] lead " + lead.id + " failed, continuing:", redactDiagnostic(leadError));
+   }
   }
   } catch(e) {
     await prisma.callCampaign.update({where:{id:campaign.id},data:{status:"COMPLETED",callsMade,endedAt:new Date(),name:campaign.name+" [FAILED]"}}).catch(()=>undefined);
-    console.error("[campaign] run failed:", redactDiagnostic(e));
-    return {ok:false as const,error:"Campaign execution failed.",campaignId:campaign.id,callsMade,interested,converted};
+    console.error("[campaign] run failed:", e instanceof Error ? (e.stack || e.message) : String(e));
+    /* The operator is told "Campaign execution failed" and nothing else, which is
+     * the same as no information at all. Give them the reason and the leads that
+     * were already skipped so the run can be diagnosed from the screen. */
+    return {
+      ok: false as const,
+      error: "Campaign execution failed: " + String((e && (e as any).message) || e).slice(0, 300),
+      detail: e instanceof Error && e.stack ? e.stack.slice(0, 1200) : undefined,
+      campaignId: campaign.id, callsMade, interested, converted,
+      failedLeads: failedLeads.slice(0, 25),
+    };
   }
 
   const stats = await prisma.callCampaign.update({
@@ -260,6 +284,7 @@ export async function runCampaign(userId: string, limit = 20, locale = "en") {
     interested,
     converted,
     stats,
+    failedLeads: failedLeads.slice(0, 25),
   };
 }
 
