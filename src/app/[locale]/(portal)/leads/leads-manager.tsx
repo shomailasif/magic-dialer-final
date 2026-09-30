@@ -74,12 +74,31 @@ export function LeadsManager({
     const fd = new FormData();
     fd.append("file", file);
     try {
-      const res = await fetch("/api/leads", { method: "POST", body: fd });
-      const data = await res.json();
+      /* Read the body as text first. A server-side failure returns an HTML
+       * error page, and `res.json()` on that throws "Unexpected token '<'",
+       * which told the user nothing and looked like the upload was broken
+       * forever. Text first means we can show what actually went wrong, and a
+       * blip is worth one automatic retry before bothering anyone. */
+      let res = await fetch("/api/leads", { method: "POST", body: fd });
+      if (res.status >= 500) {
+        await new Promise((r) => setTimeout(r, 1200));
+        res = await fetch("/api/leads", { method: "POST", body: fd });
+      }
+      const raw = await res.text();
+      let data: { error?: string; imported?: number; failed?: number } = {};
+      try {
+        data = raw ? JSON.parse(raw) : {};
+      } catch {
+        throw new Error(
+          res.status >= 500
+            ? "The server had a problem saving your file. Please try again."
+            : "The upload was rejected before it was saved. Please try again.",
+        );
+      }
       if (!res.ok) throw new Error(data.error || t("importError"));
       setNotice({
         type: "success",
-        text: t("importSuccess", { n: data.imported, m: data.failed }),
+        text: t("importSuccess", { n: String(data.imported ?? 0), m: String(data.failed ?? 0) }),
       });
       router.refresh();
       setTimeout(() => window.location.reload(), 600);

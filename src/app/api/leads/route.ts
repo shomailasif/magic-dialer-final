@@ -5,6 +5,18 @@ import { parseAndImportLeads } from "@/lib/leads";
 import type { LeadStatus } from "@prisma/client";
 
 export async function GET(request: Request) {
+  try {
+    return await listLeads(request);
+  } catch (err) {
+    // Never let this route answer with an HTML error page: the dashboard does
+    // res.json() on the response and a 500 page surfaced to the user as
+    // "Unexpected token '<'" instead of anything actionable.
+    console.error("GET /api/leads failed", err);
+    return NextResponse.json({ error: "Could not load your leads. Please try again." }, { status: 503 });
+  }
+}
+
+async function listLeads(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -42,6 +54,20 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  try {
+    return await uploadLeads(request);
+  } catch (err) {
+    // As above: an HTML error page here is what every account saw when it
+    // uploaded a file. Always answer JSON.
+    console.error("POST /api/leads failed", err);
+    return NextResponse.json(
+      { error: "Could not save your file. Please try again." },
+      { status: 503 },
+    );
+  }
+}
+
+async function uploadLeads(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 

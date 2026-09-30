@@ -145,6 +145,26 @@ export async function touchSession(
 }
 
 export async function getCurrentUser(): Promise<AuthUser | null> {
+  try {
+    return await getCurrentUserUnsafe();
+  } catch (err) {
+    /* A database blip must never become an HTML 500 page. Every portal route
+     * calls this, and a caller that blindly does res.json() on the response
+     * then dies with `Unexpected token '<'` - which is what stopped every
+     * account uploading leads. Returning null turns it into a clean 401 the UI
+     * can act on, and the session check is retried once because these blips are
+     * momentary. */
+    console.error("getCurrentUser failed", err);
+    try {
+      return await getCurrentUserUnsafe();
+    } catch (err2) {
+      console.error("getCurrentUser failed on retry", err2);
+      return null;
+    }
+  }
+}
+
+async function getCurrentUserUnsafe(): Promise<AuthUser | null> {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
