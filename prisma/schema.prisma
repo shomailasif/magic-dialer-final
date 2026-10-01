@@ -6,12 +6,15 @@ generator client {
 }
 
 datasource db {
-  // PostgreSQL, not SQLite. The database was a single file that locked up
-  // whenever more than one thing wrote to it - every customer PC checks in
-  // every few seconds, calls are recorded and leads are imported - which took
-  // the site down more than once. SQLite allows one writer at a time; this
-  // allows many, and gives real backups and a real connection pool.
-  provider = "postgresql"
+  // SQLite for now, deliberately.
+  //
+  // The file locks up under concurrent writes, which took the site down, and
+  // PostgreSQL is the fix - the schema and a real Postgres instance are both
+  // proven and waiting. But the live DATABASE_URL still points at this file,
+  // and pointing a PostgreSQL schema at a SQLite file simply crashes the app.
+  // The customer accounts and leads live in that file, so it stays until the
+  // switch is done as one deliberate step with the file verified first.
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
