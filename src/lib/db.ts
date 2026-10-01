@@ -28,9 +28,15 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
 if (!globalForPrisma.prismaReady) {
   globalForPrisma.prismaReady = (async () => {
     try {
-      await prisma.$executeRawUnsafe(`PRAGMA journal_mode = WAL;`);
-      await prisma.$executeRawUnsafe(`PRAGMA busy_timeout = 10000;`);
-      await prisma.$executeRawUnsafe(`PRAGMA synchronous = NORMAL;`);
+      /* WAL and the busy timeout are SQLite settings. The database is
+       * PostgreSQL now, and PRAGMA is a syntax error there, so these are only
+       * sent when this connection is actually a SQLite file. Running them
+       * unconditionally failed every build and every query on Postgres. */
+      if (/^file:/.test(String(process.env.DATABASE_URL || ""))) {
+        await prisma.$executeRawUnsafe(`PRAGMA journal_mode = WAL;`);
+        await prisma.$executeRawUnsafe(`PRAGMA busy_timeout = 10000;`);
+        await prisma.$executeRawUnsafe(`PRAGMA synchronous = NORMAL;`);
+      }
     } catch (e) {
       // Never fatal: a database that refuses a pragma must still serve traffic.
       console.error("Could not set SQLite pragmas:", e instanceof Error ? e.message : e);
