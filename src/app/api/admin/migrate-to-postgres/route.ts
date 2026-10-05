@@ -29,13 +29,17 @@ export const maxDuration = 300;
  *     deliberate step, so a failure here can never take the site down.
  */
 
-/* Parents before children. A row that points at another row cannot be inserted
- * first: Call references both CallCampaign and Lead, so both must already be in
- * place or the insert is refused on the foreign key. */
+/* Every real table. Children may appear before their parents here on purpose:
+ * referential checks are suspended for the duration of the copy (see below), so
+ * the order does not matter and no table is missed. _prisma_migrations is the
+ * SQLite bookkeeping table and has no equivalent here. */
 const TABLES = [
-  "User", "CallCampaign", "Lead", "PhoneSuppression", "Call",
-  "Subscription", "AIAgentConfig", "DialerConfig", "Session",
-  "EngineDevice", "EngineEnrollmentTicket", "AIQuotaBucket",
+  "User", "Subscription", "SubscriptionHistory", "AIAgentConfig", "DialerConfig",
+  "Session", "EngineDevice", "EngineEnrollmentTicket", "AIQuotaBucket",
+  "Lead", "LeadImport", "AILeadGeneration", "PasswordReset", "Notification",
+  "PlatformSetting", "PhoneSuppression", "ProductKnowledge", "SalesStrategy",
+  "SalesExperiment", "CallCampaign", "Call", "CallAttribution",
+  "StrategyLearningEvent", "PortalAdmin",
 ];
 
 async function sourceCount(legacy: PrismaClient, table: string) {
@@ -78,6 +82,12 @@ export async function POST(request: Request) {
     result.sourceTables = seen.length;
 
     await pg.connect();
+    /* Chasing parents-before-children one refused constraint at a time is slow
+     * and easy to get wrong: several tables point at others across the schema.
+     * Referential checks are suspended for the copy instead, so rows land in any
+     * order. Integrity is not assumed - it is checked afterwards by counting
+     * orphaned references directly against the target. */
+    await pg.query(`SET session_replication_role = replica`);
 
     let remaining = BUDGET;
     const progress: Record<string, unknown> = {};
@@ -156,6 +166,7 @@ export async function POST(request: Request) {
     );
   } finally {
     await legacy.$disconnect().catch(() => {});
+    await pg.query(`SET session_replication_role = origin`).catch(() => {});
     await pg.end().catch(() => {});
   }
 
