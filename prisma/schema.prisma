@@ -14,7 +14,7 @@ datasource db {
   // and pointing a PostgreSQL schema at a SQLite file simply crashes the app.
   // The customer accounts and leads live in that file, so it stays until the
   // switch is done as one deliberate step with the file verified first.
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
