@@ -29,7 +29,10 @@ const TABLES = [
 ];
 
 async function countOf(client: PrismaClient, table: string) {
-  const r = (await client.$queryRawUnsafe(`SELECT COUNT(*)::int AS n FROM "${table}"`)) as { n: number }[];
+  /* No `::int` here. That is a PostgreSQL cast and SQLite rejects it outright
+   * with "unrecognized token", which is why the first run copied nothing while
+   * still reporting success. Both engines return COUNT(*) as a number already. */
+  const r = (await client.$queryRawUnsafe(`SELECT COUNT(*) AS n FROM "${table}"`)) as Record<string, unknown>[];
   return Number(r[0].n);
 }
 
