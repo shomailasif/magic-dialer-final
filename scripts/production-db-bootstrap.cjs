@@ -90,7 +90,33 @@ async function verifyIntegrity() {
   if (values.length !== 1 || values[0].toLowerCase() !== "ok") throw new Error("SQLite integrity_check failed after legacy adoption.");
 }
 
+const isPostgres = /^postgres(ql)?:/i.test(String(process.env.DATABASE_URL || ""));
+
+/* PostgreSQL has no sqlite_schema, and PRAGMA is a syntax error there, so the
+ * legacy adoption below cannot run against it. The database was populated and
+ * verified separately, so startup only confirms it is reachable and carries the
+ * expected tables. Nothing is pushed or altered: a verified database must not be
+ * modified on the way up. */
+async function confirmPostgresReady() {
+  const rows = await prisma.$queryRawUnsafe(
+    "SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public'"
+  );
+  const tables = Number(rows[0].n);
+  if (!tables) throw new Error("PostgreSQL is reachable but has no tables in public.");
+  const app = await prisma.$queryRawUnsafe(
+    `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('User','Lead')`
+  );
+  if (Number(app[0].n) < 2) throw new Error("PostgreSQL is missing the application tables.");
+  console.log(`[db-bootstrap] PostgreSQL ready with ${tables} tables; left untouched.`);
+}
+
 async function main() {
+  if (isPostgres) {
+    await confirmPostgresReady();
+    await prisma.$disconnect();
+    return;
+  }
+
   const tables = await tableNames();
   const hasHistory = tables.has("_prisma_migrations");
   const appTables = [...tables].filter((name) => !name.startsWith("sqlite_") && name !== "_prisma_migrations");
