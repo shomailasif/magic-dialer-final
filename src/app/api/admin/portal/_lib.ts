@@ -60,7 +60,14 @@ function unauthorized(): Response {
 
 async function tableExists(): Promise<boolean> {
   try {
-    const rows: any[] = await prisma.$queryRawUnsafe(`SELECT name FROM sqlite_master WHERE type='table' AND name='PortalAdmin' LIMIT 1`);
+    /* sqlite_master does not exist in PostgreSQL. Querying it there throws, the
+     * catch turns that into "no table", and the admin portal then tries to
+     * initialize itself on every request and still cannot log in. */
+    const isPostgres = /^postgres(ql)?:/i.test(String(process.env.DATABASE_URL || ""));
+    const sql = isPostgres
+      ? `SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'PortalAdmin' LIMIT 1`
+      : `SELECT name FROM sqlite_master WHERE type='table' AND name='PortalAdmin' LIMIT 1`;
+    const rows: any[] = await prisma.$queryRawUnsafe(sql);
     return rows.length > 0;
   } catch { return false; }
 }

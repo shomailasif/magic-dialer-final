@@ -31,7 +31,7 @@ export async function POST() {
 
     // Idempotently add voipShared column if it doesn't exist
     try {
-      const cols: any[] = await prisma.$queryRawUnsafe(`SELECT name FROM pragma_table_info('DialerConfig') WHERE name = 'voipShared'`);
+      const cols: any[] = await prisma.$queryRawUnsafe(`SELECT column_name AS name FROM information_schema.columns WHERE table_name = 'DialerConfig' AND column_name = 'voipShared'`);
       if (!cols.length) {
         await prisma.$executeRawUnsafe(`ALTER TABLE "DialerConfig" ADD COLUMN "voipShared" INTEGER NOT NULL DEFAULT 0`);
       }
@@ -76,7 +76,7 @@ export async function POST() {
     }
 
     const allCustomers: any[] = await prisma.$queryRawUnsafe(`SELECT u."id", u."email" FROM "User" u JOIN "Subscription" s ON s."userId" = u."id" WHERE u."role" = 'BUSINESS_ADMIN'`);
-    await prisma.$executeRawUnsafe(`UPDATE "Subscription" SET "status" = 'ACTIVE', "startedAt" = datetime('now') WHERE "status" != 'ACTIVE'`);
+    await prisma.$executeRawUnsafe(`UPDATE "Subscription" SET "status" = 'ACTIVE', "startedAt" = now() WHERE "status" != 'ACTIVE'`);
     const settings: any[] = await prisma.$queryRawUnsafe(`SELECT "rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId" FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
     const s = settings[0];
     for (const c of allCustomers) {
@@ -95,7 +95,7 @@ export async function POST() {
       if (!s || !s.rcSipUsername || !s.rcSipPassword) continue;
       await prisma.$executeRawUnsafe(`
         INSERT INTO "DialerConfig" ("id","userId","provider","sipUsername","sipPassword","sipAuthId","sipDomain","sipProxy","sipPort","outboundNumber","validated","updatedAt")
-        SELECT ?, ?, 'RINGCENTRAL', ?, ?, ?, ?, ?, ?, ?, 1, datetime('now')
+        SELECT ?, ?, 'RINGCENTRAL', ?, ?, ?, ?, ?, ?, ?, 1, now()
         WHERE NOT EXISTS (SELECT 1 FROM "DialerConfig" WHERE "userId" = ?)
       `, crypto.randomUUID(), c.id, s.rcSipUsername, s.rcSipPassword, s.rcSipAuthId || s.rcSipUsername, s.rcSipDomain || 'sip.ringcentral.com', s.rcSipProxy || 'sip40.ringcentral.com', s.rcSipPort || '5096', s.rcCallerId || s.rcSipUsername, c.id).catch(() => {});
       await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "sipUsername" = ?, "sipPassword" = ?, "sipAuthId" = ?, "sipDomain" = ?, "sipProxy" = ?, "sipPort" = ?, "outboundNumber" = ?, "validated" = 1, "provider" = 'RINGCENTRAL' WHERE "userId" = ?`, s.rcSipUsername, s.rcSipPassword, s.rcSipAuthId || s.rcSipUsername, s.rcSipDomain || 'sip.ringcentral.com', s.rcSipProxy || 'sip40.ringcentral.com', s.rcSipPort || '5096', s.rcCallerId || s.rcSipUsername, c.id).catch(() => {});
