@@ -113,7 +113,6 @@ export async function POST(request: Request) {
       {
         error: "Copy did not finish. The site is unaffected and still serving normally.",
         detail: raw.replace(/\s+/g, " ").slice(0, 400),
-        code,
         driverMessage: driverMsg.trim().slice(0, 300),
         ...result,
         ...safeDiagnostic("migrate", "COPY_INCOMPLETE", 500, requestId),
