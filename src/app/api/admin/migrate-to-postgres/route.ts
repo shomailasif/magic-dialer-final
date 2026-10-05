@@ -29,10 +29,13 @@ export const maxDuration = 300;
  *     deliberate step, so a failure here can never take the site down.
  */
 
+/* Parents before children. A row that points at another row cannot be inserted
+ * first: Call references both CallCampaign and Lead, so both must already be in
+ * place or the insert is refused on the foreign key. */
 const TABLES = [
-  "User", "Subscription", "AIAgentConfig", "DialerConfig", "Session",
-  "EngineDevice", "EngineEnrollmentTicket", "Lead", "PhoneSuppression",
-  "Call", "CallCampaign", "AIQuotaBucket", "AiQuotaBucket",
+  "User", "CallCampaign", "Lead", "PhoneSuppression", "Call",
+  "Subscription", "AIAgentConfig", "DialerConfig", "Session",
+  "EngineDevice", "EngineEnrollmentTicket", "AIQuotaBucket",
 ];
 
 async function sourceCount(legacy: PrismaClient, table: string) {
