@@ -80,7 +80,7 @@ export async function ensureInit(): Promise<void> {
 
 export async function verifyAdmin(email: string, password: string): Promise<{ id: string } | null> {
   await ensureInit();
-  const rows: any[] = await prisma.$queryRawUnsafe(`SELECT id, passwordHash, passwordSalt FROM "PortalAdmin" WHERE email = ? LIMIT 1`, email);
+  const rows: any[] = await prisma.$queryRawUnsafe(`SELECT id, passwordHash, passwordSalt FROM "PortalAdmin" WHERE email = $1 LIMIT 1`, email);
   if (rows.length === 0) return null;
   const row = rows[0];
   const valid = verifyPassword(password, row.passwordHash, row.passwordSalt);

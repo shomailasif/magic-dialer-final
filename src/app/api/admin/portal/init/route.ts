@@ -42,16 +42,16 @@ export async function POST() {
       { email: "admin2@autodial.ai", password: "Admin2Pass!", name: "Admin 2" },
     ];
     for (const a of admins) {
-      const existing: any[] = await prisma.$queryRawUnsafe(`SELECT id FROM "PortalAdmin" WHERE email = ? LIMIT 1`, a.email);
+      const existing: any[] = await prisma.$queryRawUnsafe(`SELECT id FROM "PortalAdmin" WHERE email = $1 LIMIT 1`, a.email);
       if (existing.length === 0) {
         const { hash, salt } = hashPassword(a.password);
-        await prisma.$executeRawUnsafe(`INSERT INTO "PortalAdmin" ("id", "email", "passwordHash", "passwordSalt", "displayName") VALUES (?, ?, ?, ?, ?)`, crypto.randomUUID(), a.email, hash, salt, a.name);
+        await prisma.$executeRawUnsafe(`INSERT INTO "PortalAdmin" ("id", "email", "passwordHash", "passwordSalt", "displayName") VALUES ($1, $2, $3, $4, $5)`, crypto.randomUUID(), a.email, hash, salt, a.name);
       }
     }
 
     const existingSetting: any[] = await prisma.$queryRawUnsafe(`SELECT id FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
     if (existingSetting.length === 0) {
-      await prisma.$executeRawUnsafe(`INSERT INTO "PlatformSetting" ("id","rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId") VALUES ('platform',?,?,?,?,?,?,?)`,
+      await prisma.$executeRawUnsafe(`INSERT INTO "PlatformSetting" ("id","rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId") VALUES ('platform',$1,$2,$3,$4,$5,$6,$7)`,
         process.env.RC_SIP_USERNAME || "14807166685",
         process.env.RC_SIP_PASSWORD || "TOdYS",
         process.env.RC_SIP_AUTH_ID || "805626843019",
@@ -65,9 +65,9 @@ export async function POST() {
     const firstAdmin: any[] = await prisma.$queryRawUnsafe(`SELECT id FROM "PortalAdmin" ORDER BY "createdAt" ASC LIMIT 1`);
     if (firstAdmin.length > 0) {
       const aid = firstAdmin[0].id;
-      await prisma.$executeRawUnsafe(`UPDATE "User" SET "createdByAdminId" = ? WHERE ("createdByAdminId" IS NULL OR "createdByAdminId" = '') AND "role" = 'BUSINESS_ADMIN'`, aid);
+      await prisma.$executeRawUnsafe(`UPDATE "User" SET "createdByAdminId" = $1 WHERE ("createdByAdminId" IS NULL OR "createdByAdminId" = '') AND "role" = 'BUSINESS_ADMIN'`, aid);
       await prisma.$executeRawUnsafe(`
-        UPDATE "User" SET "createdByAdminId" = ?
+        UPDATE "User" SET "createdByAdminId" = $1
         WHERE "role" = 'BUSINESS_ADMIN'
           AND "createdByAdminId" IS NOT NULL
           AND "createdByAdminId" != ''
@@ -81,12 +81,12 @@ export async function POST() {
     const s = settings[0];
     for (const c of allCustomers) {
       const shared = isSharedRcEmail(c.email);
-      await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, shared ? 1 : 0, c.id).catch(() => {});
+      await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = $1 WHERE "userId" = $2`, shared ? 1 : 0, c.id).catch(() => {});
       if (!shared) {
         if (s?.rcSipUsername) {
           await prisma.$executeRawUnsafe(
             `UPDATE "DialerConfig" SET "sipUsername" = '', "sipPassword" = '', "sipAuthId" = '', "sipProxy" = '', "outboundNumber" = '', "validated" = 0
-             WHERE "userId" = ? AND "sipUsername" = ?`,
+             WHERE "userId" = $1 AND "sipUsername" = $2`,
             c.id, s.rcSipUsername
           ).catch(() => {});
         }
@@ -95,10 +95,10 @@ export async function POST() {
       if (!s || !s.rcSipUsername || !s.rcSipPassword) continue;
       await prisma.$executeRawUnsafe(`
         INSERT INTO "DialerConfig" ("id","userId","provider","sipUsername","sipPassword","sipAuthId","sipDomain","sipProxy","sipPort","outboundNumber","validated","updatedAt")
-        SELECT ?, ?, 'RINGCENTRAL', ?, ?, ?, ?, ?, ?, ?, 1, now()
-        WHERE NOT EXISTS (SELECT 1 FROM "DialerConfig" WHERE "userId" = ?)
+        SELECT $1, $2, 'RINGCENTRAL', $3, $4, $5, $6, $7, $8, $9, 1, now()
+        WHERE NOT EXISTS (SELECT 1 FROM "DialerConfig" WHERE "userId" = $10)
       `, crypto.randomUUID(), c.id, s.rcSipUsername, s.rcSipPassword, s.rcSipAuthId || s.rcSipUsername, s.rcSipDomain || 'sip.ringcentral.com', s.rcSipProxy || 'sip40.ringcentral.com', s.rcSipPort || '5096', s.rcCallerId || s.rcSipUsername, c.id).catch(() => {});
-      await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "sipUsername" = ?, "sipPassword" = ?, "sipAuthId" = ?, "sipDomain" = ?, "sipProxy" = ?, "sipPort" = ?, "outboundNumber" = ?, "validated" = 1, "provider" = 'RINGCENTRAL' WHERE "userId" = ?`, s.rcSipUsername, s.rcSipPassword, s.rcSipAuthId || s.rcSipUsername, s.rcSipDomain || 'sip.ringcentral.com', s.rcSipProxy || 'sip40.ringcentral.com', s.rcSipPort || '5096', s.rcCallerId || s.rcSipUsername, c.id).catch(() => {});
+      await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "sipUsername" = $1, "sipPassword" = $2, "sipAuthId" = $3, "sipDomain" = $4, "sipProxy" = $5, "sipPort" = $6, "outboundNumber" = $7, "validated" = 1, "provider" = 'RINGCENTRAL' WHERE "userId" = $8`, s.rcSipUsername, s.rcSipPassword, s.rcSipAuthId || s.rcSipUsername, s.rcSipDomain || 'sip.ringcentral.com', s.rcSipProxy || 'sip40.ringcentral.com', s.rcSipPort || '5096', s.rcCallerId || s.rcSipUsername, c.id).catch(() => {});
     }
 
     return NextResponse.json({ ok: true, message: "Database initialized with admin accounts, RC credentials, and all customers activated" });

@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Shared RingCentral is only available for the designated accounts." }, { status: 403 });
   }
   if (voipShared !== undefined) {
-    await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, voipShared ? 1 : 0, userId);
+    await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = $1 WHERE "userId" = $2`, voipShared ? 1 : 0, userId);
     if (voipShared) {
       const settings: any[] = await prisma.$queryRawUnsafe(`SELECT "rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId" FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
       const s = settings[0];

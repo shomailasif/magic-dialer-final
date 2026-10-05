@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     const dc = u.dialerConfig;
     let voipShared = false;
     try {
-      const rows: any[] = await prisma.$queryRawUnsafe(`SELECT "voipShared" FROM "DialerConfig" WHERE "userId" = ? LIMIT 1`, u.id);
+      const rows: any[] = await prisma.$queryRawUnsafe(`SELECT "voipShared" FROM "DialerConfig" WHERE "userId" = $1 LIMIT 1`, u.id);
       voipShared = rows[0]?.voipShared === 1;
     } catch {}
     const voipReady = !!(dc?.validated && dc.sipUsername && dc.sipPassword && dc.outboundNumber) || voipShared;

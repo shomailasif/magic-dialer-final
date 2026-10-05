@@ -51,7 +51,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     voipTouched = true;
     try {
-      await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = ? WHERE "userId" = ?`, parsed.data.voipShared ? 1 : 0, id);
+      await prisma.$executeRawUnsafe(`UPDATE "DialerConfig" SET "voipShared" = $1 WHERE "userId" = $2`, parsed.data.voipShared ? 1 : 0, id);
     } catch {}
     if (parsed.data.voipShared) {
       const settings: any[] = await prisma.$queryRawUnsafe(`SELECT "rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId" FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);

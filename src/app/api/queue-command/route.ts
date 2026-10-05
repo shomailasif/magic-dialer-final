@@ -45,7 +45,7 @@ export async function POST(request: Request) {
      * database in place, so this works whether or not the client was
      * regenerated. */
     const rows = await prisma.$queryRawUnsafe<{ id: string }[]>(
-      `SELECT "id" FROM "AIAgentConfig" WHERE "userId" = ? LIMIT 1`,
+      `SELECT "id" FROM "AIAgentConfig" WHERE "userId" = $1 LIMIT 1`,
       user.id,
     );
     const configId = rows && rows[0] ? rows[0].id : null;
@@ -58,7 +58,7 @@ export async function POST(request: Request) {
 
     try {
       await prisma.$executeRawUnsafe(
-        `UPDATE "AIAgentConfig" SET "queueCommand" = ? WHERE "id" = ?`,
+        `UPDATE "AIAgentConfig" SET "queueCommand" = $1 WHERE "id" = $2`,
         command,
         configId,
       );
@@ -67,7 +67,7 @@ export async function POST(request: Request) {
       await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueCommand" TEXT`);
       await prisma.$executeRawUnsafe(`ALTER TABLE "AIAgentConfig" ADD COLUMN "queueState" TEXT`);
       await prisma.$executeRawUnsafe(
-        `UPDATE "AIAgentConfig" SET "queueCommand" = ? WHERE "id" = ?`,
+        `UPDATE "AIAgentConfig" SET "queueCommand" = $1 WHERE "id" = $2`,
         command,
         configId,
       );
@@ -99,7 +99,7 @@ export async function GET() {
     let state: unknown = null;
     try {
       const rows = await prisma.$queryRawUnsafe<{ queueState: string | null }[]>(
-        `SELECT "queueState" FROM "AIAgentConfig" WHERE "userId" = ? LIMIT 1`, user.id,
+        `SELECT "queueState" FROM "AIAgentConfig" WHERE "userId" = $1 LIMIT 1`, user.id,
       );
       state = rows && rows[0] && rows[0].queueState ? JSON.parse(rows[0].queueState) : null;
     } catch { state = null; }
