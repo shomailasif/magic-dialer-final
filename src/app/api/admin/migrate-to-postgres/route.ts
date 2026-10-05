@@ -46,7 +46,15 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const legacyUrl = process.env.LEGACY_DATABASE_URL || "file:/app/data/magicdialer.db";
-  const targetUrl = process.env.TARGET_DATABASE_URL || "";
+  /* Supabase's direct host is IPv6-only, and most hosts, Suga included, cannot
+   * reach it. The pooler host is plain IPv4 and works from anywhere, so the
+   * caller may supply it here for a one-time move. It is used for this request
+   * only, never written anywhere, and never logged. */
+  let targetUrl = process.env.TARGET_DATABASE_URL || "";
+  if (!targetUrl) {
+    const body = (await request.json().catch(() => ({}))) as { targetUrl?: string };
+    targetUrl = (body.targetUrl || "").trim();
+  }
   const file = legacyUrl.replace(/^file:/, "");
   if (!targetUrl) return NextResponse.json({ error: "No PostgreSQL target configured." }, { status: 503 });
   if (!existsSync(file)) return NextResponse.json({ error: `No database file at ${file}.` }, { status: 503 });
