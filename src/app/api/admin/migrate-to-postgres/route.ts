@@ -48,13 +48,12 @@ export async function POST(request: Request) {
   const legacyUrl = process.env.LEGACY_DATABASE_URL || "file:/app/data/magicdialer.db";
   /* Supabase's direct host is IPv6-only, and most hosts, Suga included, cannot
    * reach it. The pooler host is plain IPv4 and works from anywhere, so the
-   * caller may supply it here for a one-time move. It is used for this request
-   * only, never written anywhere, and never logged. */
-  let targetUrl = process.env.TARGET_DATABASE_URL || "";
-  if (!targetUrl) {
-    const body = (await request.json().catch(() => ({}))) as { targetUrl?: string };
-    targetUrl = (body.targetUrl || "").trim();
-  }
+   * caller may supply it here for a one-time move. A supplied value wins over
+   * the environment variable, which is left pointing at the direct host that is
+   * unreachable from here. It is used for this request only, never stored and
+   * never logged. */
+  const body = (await request.json().catch(() => ({}))) as { targetUrl?: string };
+  const targetUrl = (body.targetUrl || "").trim() || process.env.TARGET_DATABASE_URL || "";
   const file = legacyUrl.replace(/^file:/, "");
   if (!targetUrl) return NextResponse.json({ error: "No PostgreSQL target configured." }, { status: 503 });
   if (!existsSync(file)) return NextResponse.json({ error: `No database file at ${file}.` }, { status: 503 });
