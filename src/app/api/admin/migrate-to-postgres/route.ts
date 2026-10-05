@@ -103,10 +103,21 @@ export async function POST(request: Request) {
   } catch (err) {
     // The site is untouched either way: it is still reading the original file.
     console.error("[migrate] failed", err instanceof Error ? err.stack : err);
+    /* Prisma's error message truncates at the useful part, so the code and the
+     * driver's own message are pulled out and returned. Every guess about this
+     * failure has cost a deploy; it has to report what actually happened. */
+    const raw = String((err as Error)?.message || err);
+    const code = String((err as any)?.code || "");
+    const driverMsg = (raw.match(/Message:\s*([\s\S]{0,300})/) || [])[1] || "";
     return NextResponse.json(
-      { error: "Copy did not finish. The site is unaffected and still serving normally.",
-        detail: String((err as Error)?.message || err).slice(0, 300), ...result,
-        ...safeDiagnostic("migrate", "COPY_INCOMPLETE", 500, requestId) },
+      {
+        error: "Copy did not finish. The site is unaffected and still serving normally.",
+        detail: raw.replace(/\s+/g, " ").slice(0, 400),
+        code,
+        driverMessage: driverMsg.trim().slice(0, 300),
+        ...result,
+        ...safeDiagnostic("migrate", "COPY_INCOMPLETE", 500, requestId),
+      },
       { status: 500 },
     );
   } finally {
