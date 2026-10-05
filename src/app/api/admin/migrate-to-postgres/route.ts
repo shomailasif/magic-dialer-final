@@ -52,8 +52,14 @@ export async function POST(request: Request) {
    * the environment variable, which is left pointing at the direct host that is
    * unreachable from here. It is used for this request only, never stored and
    * never logged. */
-  const body = (await request.json().catch(() => ({}))) as { targetUrl?: string };
+  const body = (await request.json().catch(() => ({}))) as { targetUrl?: string; budget?: number };
   const targetUrl = (body.targetUrl || "").trim() || process.env.TARGET_DATABASE_URL || "";
+  /* One request must finish well inside the gateway's 120s limit, so each call
+   * moves a bounded number of rows and the caller repeats until it reports done.
+   * Resuming needs no stored cursor: the target's own row count says how far the
+   * previous call got, because rows are always inserted in source order. */
+  const BUDGET = Math.min(Math.max(Number(body.budget) || 1500, 100), 5000);
+  const CHUNK = 200;
   const file = legacyUrl.replace(/^file:/, "");
   if (!targetUrl) return NextResponse.json({ error: "No PostgreSQL target configured." }, { status: 503 });
   if (!existsSync(file)) return NextResponse.json({ error: `No database file at ${file}.` }, { status: 503 });
@@ -70,7 +76,11 @@ export async function POST(request: Request) {
 
     await pg.connect();
 
+    let remaining = BUDGET;
+    const progress: Record<string, unknown> = {};
+
     for (const table of TABLES) {
+      if (remaining <= 0) { progress.stopped = "budget"; break; }
       let from: number;
       try {
         from = await sourceCount(legacy, table);
@@ -81,9 +91,6 @@ export async function POST(request: Request) {
       }
       if (!from) continue;
 
-      const rows = (await legacy.$queryRawUnsafe(`SELECT * FROM "${table}"`)) as Record<string, unknown>[];
-      // Read the target's own column list, so a column the old file happens to
-      // carry is not sent to a table that has no such column.
       const info = await pg.query(
         `SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1`,
         [table]
@@ -91,32 +98,46 @@ export async function POST(request: Request) {
       const targetCols = new Set(info.rows.map((r: { column_name: string }) => r.column_name));
       if (!targetCols.size) { result.failed = `${table}: no such table in PostgreSQL`; break; }
 
-      await pg.query(`DELETE FROM "${table}"`);
-      let written = 0;
-      for (const row of rows) {
-        const cols = Object.keys(row).filter((c) => targetCols.has(c));
-        if (!cols.length) continue;
-        const list = cols.map((c) => `"${c}"`).join(", ");
-        const marks = cols.map((_c, i) => "$" + (i + 1)).join(", ");
-        const values = cols.map((c) => {
-          const v = row[c];
-          if (v === undefined || v === null) return null;
-          if (typeof v === "boolean") return v ? 1 : 0;
-          if (v instanceof Date) return v.toISOString();
-          if (typeof v === "object") return JSON.stringify(v);
-          if (Buffer.isBuffer(v)) return v;
-          return v;
-        });
-        // ON CONFLICT DO NOTHING so a re-run cannot fail on a duplicate.
-        await pg.query(
-          `INSERT INTO "${table}" (${list}) VALUES (${marks}) ON CONFLICT DO NOTHING`, values
-        );
-        written++;
+      let to = Number((await pg.query(`SELECT COUNT(*) AS n FROM "${table}"`)).rows[0].n);
+
+      /* Rows already copied are skipped by counting what the target holds, so an
+       * interrupted run continues instead of starting over or duplicating. */
+      while (to < from && remaining > 0) {
+        const size = Math.min(CHUNK, from - to, remaining);
+        const rows = (await legacy.$queryRawUnsafe(
+          `SELECT * FROM "${table}" LIMIT ${size} OFFSET ${to}`
+        )) as Record<string, unknown>[];
+        if (!rows.length) break;
+
+        for (let i = 0; i < rows.length; i += CHUNK) {
+          const part = rows.slice(i, i + CHUNK);
+          const sets: string[] = [];
+          const params: unknown[] = [];
+          for (const row of part) {
+            const cols = Object.keys(row).filter((c) => targetCols.has(c));
+            if (!cols.length) continue;
+            const marks = cols.map((c) => "$" + (params.push(row[c]), params.length));
+            sets.push(`(${marks.join(", ")})`);
+          }
+          if (!sets.length) continue;
+          const cols = Object.keys(rows[0]).filter((c) => targetCols.has(c));
+          await pg.query(
+            `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(", ")}) VALUES ${sets.join(", ")} ON CONFLICT DO NOTHING`,
+            params
+          );
+        }
+        const now = Number((await pg.query(`SELECT COUNT(*) AS n FROM "${table}"`)).rows[0].n);
+        remaining -= size;
+        if (now <= to) { result.failed = `${table}: no progress at ${to}/${from}`; break; }
+        to = now;
       }
-      const to = Number((await pg.query(`SELECT COUNT(*) AS n FROM "${table}"`)).rows[0].n);
+      progress[table] = `${to}/${from}`;
       (result.tables as Record<string, unknown>)[table] = { from, to };
-      if (to < from) { result.failed = `${table}: expected ${from}, wrote ${to}`; break; }
     }
+    result.progress = progress;
+    /* Not done if the budget cut it short or a table failed; the caller repeats
+     * until it reports done, at which point every source row is in the target. */
+    result.done = !result.failed && progress.stopped === undefined;
   } catch (err) {
     // The site is untouched either way: it is still reading the original file.
     console.error("[migrate] failed", err instanceof Error ? err.stack : err);
