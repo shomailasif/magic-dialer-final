@@ -50,12 +50,25 @@ export async function POST(request: Request) {
 
   const legacy = new PrismaClient({ datasources: { db: { url: legacyUrl } } });
   const target = new PrismaClient({ datasources: { db: { url: targetUrl } } });
-  const result: { tables: Record<string, { from: number; to: number }>; failed?: string } = { tables: {} };
+  const result: { tables: Record<string, { from: number; to: number }>; failed?: string; skipped?: Record<string,string>; source?: { file: string; tables: string[] } } = { tables: {} };
 
   try {
+    const seen = (await legacy.$queryRawUnsafe(
+      `SELECT name FROM sqlite_master WHERE type='table'`
+    )) as { name: string }[];
+    result.source = {
+      file,
+      tables: seen.map((s) => s.name),
+    };
     for (const table of TABLES) {
       let from: number;
-      try { from = await countOf(legacy, table); } catch { continue; }
+      try {
+        from = await countOf(legacy, table);
+      } catch (e) {
+        result.skipped = result.skipped || {};
+        result.skipped[table] = String((e as Error)?.message || e).slice(0, 120);
+        continue;
+      }
       if (!from) { result.tables[table] = { from: 0, to: 0 }; continue; }
       try { await target.$executeRawUnsafe(`DELETE FROM "${table}"`); } catch {}
       const rows = (await legacy.$queryRawUnsafe(`SELECT * FROM "${table}"`)) as Record<string, unknown>[];
