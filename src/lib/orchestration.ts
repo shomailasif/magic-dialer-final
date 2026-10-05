@@ -255,7 +255,7 @@ const failedLeads: { leadId: string; phone: string | null; reason: string }[] = 
   }
   } catch(e) {
     await prisma.callCampaign.update({where:{id:campaign.id},data:{status:"COMPLETED",callsMade,endedAt:new Date(),name:campaign.name+" [FAILED]"}}).catch(()=>undefined);
-    console.error("[campaign] run failed:", e instanceof Error ? (e.stack || e.message) : String(e));
+    console.error("[campaign] run failed:", redactDiagnostic(e));
     /* The operator is told "Campaign execution failed" and nothing else, which is
      * the same as no information at all. Give them the reason and the leads that
      * were already skipped so the run can be diagnosed from the screen. */

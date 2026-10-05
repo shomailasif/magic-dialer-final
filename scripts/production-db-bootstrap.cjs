@@ -154,26 +154,6 @@ async function main() {
   console.log("[db-bootstrap] Legacy database adoption complete.");
 }
 
-/* Bring the live database in line with the schema, additively.
- *
- * A column added to schema.prisma is not enough: the live database only changes
- * when a migration is applied, and this deployment's migration history is not
- * something to rely on. The queue-command columns are what the website's Launch
- * button writes to, so without them the button failed with "Cannot reach your
- * PC" on a database that was perfectly healthy.
- *
- * `db push` without --accept-data-loss refuses anything destructive, so this can
- * only ever add what is missing. It runs after migrate deploy, and a failure
- * here is logged rather than fatal - the site must still come up. */
-function reconcileSchema() {
-  try {
-    runPrisma(["db", "push", "--skip-generate"], [0, 1]);
-    console.log("[db-bootstrap] Schema reconciled with the live database.");
-  } catch (e) {
-    console.error("[db-bootstrap] Schema reconcile did not complete:", e instanceof Error ? e.message : String(e));
-  }
-}
-
 main().catch(async (error) => {
   try { await prisma.$disconnect(); } catch {}
   console.error("[db-bootstrap] Database readiness failed; application will not start:", error instanceof Error ? error.message : String(error));
