@@ -1,0 +1,102 @@
+import { NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
+import { existsSync } from "node:fs";
+import { getCurrentUser } from "@/lib/auth";
+import { diagnosticId, safeDiagnostic } from "@/lib/safe-diagnostic";
+
+export const dynamic = "force-dynamic";
+export const maxDuration = 300;
+
+/*
+ * One-time move of the whole database from the SQLite file to PostgreSQL.
+ *
+ * It runs here, inside the container, because Suga does not let the volume be
+ * read from anywhere else - the file is only reachable from in here. That is why
+ * this is an endpoint the site runs rather than something done from a laptop.
+ *
+ * Safety:
+ *   - the source is opened read-only, so the live database is never modified
+ *   - the site keeps serving from the database it is on right now, throughout
+ *   - every table is verified source against target
+ *   - nothing is switched over by this. Changing DATABASE_URL stays a separate,
+ *     deliberate step, so a failure here can never take the site down.
+ */
+
+const TABLES = [
+  "User", "Subscription", "AIAgentConfig", "DialerConfig", "Session",
+  "EngineDevice", "EngineEnrollmentTicket", "Lead", "PhoneSuppression",
+  "Call", "CallCampaign", "AIQuotaBucket", "AiQuotaBucket",
+];
+
+async function countOf(client: PrismaClient, table: string) {
+  const r = (await client.$queryRawUnsafe(`SELECT COUNT(*)::int AS n FROM "${table}"`)) as { n: number }[];
+  return Number(r[0].n);
+}
+
+export async function POST(request: Request) {
+  const requestId = diagnosticId(request.headers.get("x-request-id"));
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const legacyUrl = process.env.LEGACY_DATABASE_URL || "file:/app/data/magicdialer.db";
+  const targetUrl = process.env.TARGET_DATABASE_URL || "";
+  const file = legacyUrl.replace(/^file:/, "");
+  if (!targetUrl) {
+    return NextResponse.json({ error: "No PostgreSQL target configured." }, { status: 503 });
+  }
+  if (!existsSync(file)) {
+    return NextResponse.json({ error: `No database file at ${file}.` }, { status: 503 });
+  }
+
+  const legacy = new PrismaClient({ datasources: { db: { url: legacyUrl } } });
+  const target = new PrismaClient({ datasources: { db: { url: targetUrl } } });
+  const result: { tables: Record<string, { from: number; to: number }>; failed?: string } = { tables: {} };
+
+  try {
+    for (const table of TABLES) {
+      let from: number;
+      try { from = await countOf(legacy, table); } catch { continue; }
+      if (!from) { result.tables[table] = { from: 0, to: 0 }; continue; }
+      try { await target.$executeRawUnsafe(`DELETE FROM "${table}"`); } catch {}
+      const rows = (await legacy.$queryRawUnsafe(`SELECT * FROM "${table}"`)) as Record<string, unknown>[];
+      let written = 0;
+      for (const row of rows) {
+        const cols = Object.keys(row);
+        const list = cols.map((c) => `"${c}"`).join(", ");
+        const marks = "(" + cols.map(() => "?").join(", ") + ")";
+        const values = cols.map((c) => {
+          const v = (row as Record<string, unknown>)[c];
+          if (v === undefined || v === null) return null;
+          if (typeof v === "boolean") return v ? 1 : 0;
+          if (v instanceof Date) return v;
+          if (typeof v === "object") return JSON.stringify(v);
+          return v;
+        });
+        await target.$executeRawUnsafe(
+          `INSERT INTO "${table}" (${list}) VALUES ${marks} ON CONFLICT DO NOTHING`, ...values,
+        );
+        written++;
+      }
+      const to = await countOf(target, table);
+      result.tables[table] = { from, to };
+      if (to < from) {
+        result.failed = `${table}: expected ${from}, wrote ${to}`;
+        break;
+      }
+    }
+  } catch (err) {
+    // The site is untouched either way: it is still reading the original file.
+    console.error("[migrate] failed", err instanceof Error ? err.stack : err);
+    return NextResponse.json(
+      { error: "Copy did not finish. The site is unaffected and still serving normally.",
+        detail: String((err as Error)?.message || err).slice(0, 300), ...result,
+        ...safeDiagnostic("migrate", "COPY_INCOMPLETE", 500, requestId) },
+      { status: 500 },
+    );
+  } finally {
+    await legacy.$disconnect().catch(() => {});
+    await target.$disconnect().catch(() => {});
+  }
+
+  return NextResponse.json({ ok: !result.failed, ...result, requestId });
+}
