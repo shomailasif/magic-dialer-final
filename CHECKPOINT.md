@@ -2,7 +2,7 @@
 
 Repo: `C:\Users\USER\Documents\Default Project\autodial-ai`
 Branch: `build/local-call-engine-v2` → push `final HEAD:main`. Never `origin`. No amend, no force-push.
-Latest pushed commit: **47673e3**
+Latest deployed commit: **edefee6** — deployed on `final/main`. It is `47673e3` (dead-air fix) plus this doc and nothing else, so both are live and the deployed code is `47673e3`.
 Required check before any push:
 `powershell -NoProfile -ExecutionPolicy Bypass -File src\management\build\run-all-tests.ps1`
 must end `ALL REQUIRED REGRESSION SUITES PASSED`. It does, as of 47673e3.
