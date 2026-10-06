@@ -51,14 +51,34 @@ export async function POST() {
 
     const existingSetting: any[] = await prisma.$queryRawUnsafe(`SELECT id FROM "PlatformSetting" WHERE id = 'platform' LIMIT 1`);
     if (existingSetting.length === 0) {
+      /* Seed the default platform line from the environment, never from a literal.
+       *
+       * These used to fall back to hardcoded values, including the SIP password
+       * "TOdYS". On a deployment where RC_SIP_PASSWORD was not set, the database
+       * was silently populated with a credential belonging to one specific
+       * customer, every new account inherited it, and the row then read as
+       * configured - so a broken line looked healthy instead of empty. A wrong
+       * credential must be absent, because absent is visible and wrong is not.
+       *
+       * Only the two values that are genuinely provider defaults are kept: every
+       * one of these is set per account, and a customer supplies their own. */
+      const line = {
+        username: process.env.RC_SIP_USERNAME || "",
+        password: process.env.RC_SIP_PASSWORD || "",
+        authId: process.env.RC_SIP_AUTH_ID || "",
+        domain: process.env.RC_SIP_DOMAIN || "sip.ringcentral.com",
+        proxy: process.env.RC_SIP_PROXY || "sip40.ringcentral.com",
+        port: process.env.RC_SIP_PORT || "5096",
+        callerId: process.env.RC_CALLER_ID || "",
+      };
       await prisma.$executeRawUnsafe(`INSERT INTO "PlatformSetting" ("id","rcSipUsername","rcSipPassword","rcSipAuthId","rcSipDomain","rcSipProxy","rcSipPort","rcCallerId") VALUES ('platform',$1,$2,$3,$4,$5,$6,$7)`,
-        process.env.RC_SIP_USERNAME || "14807166685",
-        process.env.RC_SIP_PASSWORD || "TOdYS",
-        process.env.RC_SIP_AUTH_ID || "805626843019",
-        process.env.RC_SIP_DOMAIN || "sip.ringcentral.com",
-        process.env.RC_SIP_PROXY || "sip40.ringcentral.com",
-        process.env.RC_SIP_PORT || "5096",
-        process.env.RC_CALLER_ID || "14807164508"
+        line.username,
+        line.password,
+        line.authId,
+        line.domain,
+        line.proxy,
+        line.port,
+        line.callerId
       );
     }
 

@@ -77,10 +77,32 @@ assert(!controller.includes("await preflightLocalSip(config, deps);"), "live cal
 const webui = fs.readFileSync(path.join(__dirname, "webui.js"), "utf8");
 assert(webui.includes("function escapHtml(v)") && !webui.includes("async function escapHtml(v)"), "call error HTML escaping must be synchronous");
 
-// Production keeps the previously proven shared/cloud call setup instead of forcing
-// the second local SIP registration path that returned 401 in the live test.
-assert(agent.includes('require("./call")'), "production agent must preserve shared call module");
-assert(agent.includes("voiceCall"), "production agent must preserve shared voice-call integration");
+/* The engine has exactly ONE call path, and it is the local one.
+ *
+ * This used to assert the opposite - that production kept the "shared/cloud call
+ * setup" and avoided the local SIP registration path. That assertion is what
+ * allowed --call to be wired to ensurePhoneSession() and /api/agent/dial, which
+ * exist only in the standalone portal under src/management, a DIFFERENT
+ * application from the deployed one. The deployed app returns 404 for them and
+ * deliberately answers 410 on /api/test-call, so --call could never place a call
+ * on any PC while this test passed and called it correct.
+ *
+ * The engine log shows the local path carrying a real conversation on 2026-09-24:
+ *   [LOCAL DASHBOARD CALL CONTROL: 6234001991]
+ *   [local-media-v2] RingCentral answered; local media active
+ *   [local-media-v2] inbound 19840 bytes PCMU/8000
+ *
+ * So the invariant worth protecting is not which path is preferred. It is that
+ * there is only one, and that no code path depends on the cloud holding a media
+ * channel - which is what makes this work for every enrolled PC, including PCs
+ * created years from now. */
+/* Comments are stripped before checking, so the explanation of why this path was
+ * removed does not itself trip the assertion. */
+const agentCode = agent.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+assert(!/ensurePhoneSession|call-start/.test(agentCode), "production agent must not depend on the cloud /api/agent/dial session route; the deployed portal does not serve it");
+assert(agentCode.includes('require("./local-call-controller")'), "production agent must place calls through the local engine");
+const callSites = (agentCode.match(/runLocalCall\s*\(/g) || []).length;
+assert.ok(callSites >= 2, `the test call and the lead queue must share one call path, found ${callSites}`);
 assert(agent.includes("authId: portalCfg.voip.authId"), "heartbeat SIP authorization ID must survive into local config");
 assert(agent.includes("domain: portalCfg.voip.domain"), "heartbeat SIP domain must survive into local config");
 

@@ -44,7 +44,6 @@ const { startWebUi, writeDashboardUrl, dashboardUrlPath } = require("./webui");
 const localDb = require("./local-db");
 const sync = require("./sync");
 const { emailQualifiedLead } = require("./email");
-const { ensurePhoneSession } = require("./call-start");
 const { runLocalCall } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
 const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate, _test: autoUpdateState } = require("./auto-update");
@@ -265,7 +264,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.58";
+const VERSION = "1.4.59";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -785,34 +784,35 @@ async function runAgent(opts = {}) {
 
   // Optional call runs while the same heartbeat task keeps the single-PC lease alive.
   if (opts.call === true) {
-    let voiceCall;
-    try { ({ voiceCall } = require("./call")); } catch (err) { log("call module unavailable: " + safeLog(err,[enrolledToken])); }
-    if (voiceCall) try {
-      // Bind this conversation to the cloud SIP session that actually owns the
-      // phone audio. Never let a telephone call silently fall back to the PC mic.
-      const phoneSession = await ensurePhoneSession({
-        portal,
-        token: enrolledToken,
-        callList: config.callList,
-        post,
-        log,
-      });
-      const sessionId = phoneSession.sessionId;
-      log("Attaching AI to phone media session " + sessionId);
-      const result = await voiceCall({
-        sessionId,
-        product: config.product,
-        leadFields: config.leadFields || [],
-        persona: config.persona,
-        companyName: config.companyName,
-        callbackNumber: config.callbackNumber,
-        callbackIn: config.callbackIn,
-        contactEmail: config.contactEmail,
-        token: enrolledToken,
-        portal,
-        learning: config.learning,
-        locale: config.lang || "en",
-        voiceStyle: config.voiceStyle || "human",
+    /* One call path, and it is the local one.
+     *
+     * --call used to ask the cloud for a session: ensurePhoneSession() posting to
+     * /api/agent/dial, then binding the conversation to a /ws/media/{id} WebSocket.
+     * Those endpoints exist only in the standalone portal under src/management,
+     * which is a DIFFERENT application from the one actually deployed. The
+     * deployed app answers 404 for them, and its /api/test-call deliberately
+     * answers 410 "cloud call execution disabled". So the flag that every operator
+     * and every customer uses to place a call could never succeed, on any PC, ever.
+     *
+     * Meanwhile the lead queue below and the dashboard's call button both already
+     * dialled correctly through runLocalCall, and the engine log proves it carried
+     * a real conversation on 2026-09-24:
+     *   [LOCAL DASHBOARD CALL CONTROL: 6234001991]
+     *   [local-media-v2] RingCentral answered; local media active
+     *   [local-media-v2] inbound 19840 bytes PCMU/8000
+     *
+     * So this was three call paths in one engine and only two of them worked. Now
+     * there is one, the PC places and carries its own call, and no enrolled machine
+     * - this one, a customer's, or one created years from now - can reach a code
+     * path that depends on the cloud holding a media channel open. */
+    if (runLocalCall) try {
+      const destination = Array.isArray(config.callList)
+        ? config.callList.map((n) => String(n || "").trim()).find(Boolean)
+        : "";
+      const result = await runLocalCall({
+        config,
+        number: destination,
+        lead: { phone: destination },
         onLog: (m) => { log(m); ui({ line: m }); },
         onMode: (m) => ui({ mode: m }),
       });
