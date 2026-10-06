@@ -80,7 +80,15 @@ export async function ensureInit(): Promise<void> {
 
 export async function verifyAdmin(email: string, password: string): Promise<{ id: string } | null> {
   await ensureInit();
-  const rows: any[] = await prisma.$queryRawUnsafe(`SELECT id, passwordHash, passwordSalt FROM "PortalAdmin" WHERE email = $1 LIMIT 1`, email);
+  /* Every column must be quoted, not just the table.
+   *
+   * PostgreSQL folds an unquoted identifier to lower case, so the bare
+   * `passwordHash` became `passwordhash`, which does not exist: the column was
+   * created quoted, and the query failed with
+   *   Raw query failed. Code: 42703. Message: column "passwordhash" does not exist
+   * which surfaced as a 500 on admin login with an empty body. Quoting the table
+   * but not its columns reads as correct SQL and is not. */
+  const rows: any[] = await prisma.$queryRawUnsafe(`SELECT "id", "passwordHash", "passwordSalt" FROM "PortalAdmin" WHERE "email" = $1 LIMIT 1`, email);
   if (rows.length === 0) return null;
   const row = rows[0];
   const valid = verifyPassword(password, row.passwordHash, row.passwordSalt);
