@@ -17,7 +17,57 @@ const WHO_IS_THIS_RE = /\b(who(?:'s| is) this|who(?:'s| are) (?:this|you)|what(?
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
   const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
 
-  /* Was the prospect's last turn a question? Asking for something is the most
+  /* BUCKLED_UP: the prospect is telling us to slow down or stop, and we were not.
+ *
+ * On the 2026-10-06 test call the prospect said "I told you I'm a bit busy right
+ * now" at 2:01 and again at 2:35. The agent apologised - "Sorry." - and carried
+ * on qualifying for another sixty seconds. Two refusals, both heard, both
+ * ignored. An apology that is immediately followed by the next question is the
+ * single most alien thing a caller can do: it says the agent heard the words and
+ * decided they did not apply.
+ *
+ * This is separate from STOP_RE (do not call me) and HUMAN_RE (put me through to
+ * a person). "I'm busy" is neither, and neither pattern matched it, so the call
+ * ran to its normal length. Once someone has said they are busy, the only
+ * correct continuation is to stop asking and close.
+ *
+ * The first form is what the prospect actually says. The rest are the ways it
+ * gets said when the recogniser is imperfect or the prospect is polite about it. */
+const BUSY_RE = new RegExp([
+  "i(?:'m| am| was| told you(?: i'?m| im)?| said) (?:a bit |kind of |pretty |very |really |just )?busy",
+  /* "busy" on its own is how it is actually said once the recogniser has the
+   * sentence - "I am busy right now", "I'm busy", and bare "Busy?". Without
+   * this the pattern below never fires, because a one-word turn cannot match
+   * "I am busy". */
+  "\\bbusy\\b",
+  "(?:a bit |kind of |pretty |very |really |just )?busy (?:right now|at the moment|for a (?:minute|moment|second|bit)|lately|these days)",
+  "i (?:don'?t|do not|cannot|can'?t|really not|can not) have (?:much |any )?time",
+  "i(?:'m| am) (?:in a |on a |in the middle of a )(?:meeting|call|load|delivery|route)",
+  "i (?:need|want) to (?:get back to work|go|keep going|get back to driving|get to work)",
+  "(?:i )?can'?t (?:talk|chat|speak) (?:right now|now)",
+  "(?:i )?have to (?:go|run|get back to work)",
+  "i'?m (?:not )?available right now",
+  "not right now",
+  /* Asking to be called back later is the same message in question form, and it
+   * is what a busy prospect actually says - "Can I call you back later?" was in
+   * the test call and the agent treated it as an ordinary turn and kept going. */
+  "(?:can|should|would|might) i (?:call|phone|ring) (?:you )?back",
+  "(?:can|should|would|might) (?:we|you) (?:call|phone|ring) (?:you )?back (?:later|another time|back)",
+  "call me back later",
+  "right now is (?:not|bad)",
+  /* The Urdu and Hindi ways of saying it. A Roman-script English call never
+   * reaches these, and an Urdu call does nothing else - the patterns above
+   * cannot match a Devanagare or Nastaliq sentence at all. */
+  "\\u0645\\u0635\\u0631\\u0648\\u0641",                                  // masrof (busy)
+  "\\u0628\\u0632\\u06cc",                                              // busy, fa
+  "\\u0648\\u0642\\u062a\\s*\\u0646\\u06c1\\u06cc\\s*\\u0646\\u06c1\\u06cc", // waqt nahi (no time)
+  "\\u0627\\u0628\\u06c1\\u06cc\\s*\\u0628\\u0627\\u062f\\u06be",            // abhi baad (later)
+  "\\u092e\\u0948\\u0902\\u092c\\u093e\\u0926",                            // mehmaad (busy)
+  "\\u092c\\u092e\\u094d\\u092f\\u093e",                                  // busy, hi
+  "\\u0905\\u092d\\u0940\\s*\\u092c\\u093e\\u0926",                          // abhi baad, hi
+].join("|"), "i");
+
+/* Was the prospect's last turn a question? Asking for something is the most
    * common thing a prospect does, and it has to produce an answer. */
   const PROSPECT_QUESTION_RE = /\?|\b(?:can|could|will|would|do|does|did|are|is|should|have|has)\s+(?:you|your|we|us|they|he|she|it|that|there|anyone|anybody|someone|somebody)\b[^.!?]*$|\b(?:why|what|when|where|who|how|which)\b/i;
   function prospectAskedQuestion(text) {
@@ -120,18 +170,18 @@ const ASK_TOPICS = [
   // name", then "could you share your full name" - three times - because only an
   // exact repeat was caught.
   ["name", /\byour (?:full |first |last )?name\b|\bwhat(?:'s| is) your (?:full )?name\b|\bmay i (?:have|get) your\b|\bcan i (?:have|get) your\b|\bwho (?:is|are) (?:this|who)\b|\bwho am i (?:speaking|talking) to\b/i],
-  ["truckType", /\bwhat (?:type|kind) of (?:truck|vehicle)\b|\bwhich (?:type|kind) of (?:truck|vehicle)\b|\bdo you (?:drive|run|operate)\b/i],
-  ["truckSize", /\bhow many trucks\b|\bfleet size\b|\bwhat size\b|\bsize of your (?:fleet|trucks)\b/i],
+  // Equipment, in the words a carrier actually uses. The token comparison in
+  // askTokens/isForbiddenTurnSentence is what makes this list far less
+  // load-bearing than it was; it stays for the exact forms it does describe.
+  /* These must be precise, not generous. An earlier version of truckType
+   * included "do you run", which also matches "How many trucks do you run?" -
+   * so asking fleet size after asking equipment type was deleted as a re-ask and
+   * the prospect heard nothing. The paraphrase coverage lives in askTokens /
+   * sameAskTopic now, which is why this list no longer needs to be broad. */
+  ["truckType", /\b(?:what|which)\s+(?:type|kind|sort|makes?|models?|brands?)\s+(?:of\s+)?(?:truck|trailer|vehicle|equipment|rig|van)s?\b|\bare you (?:a|an)\s+\w+\s+(?:carrier|trucker|hauler|owner|operator)\b|\b(?:reefer|dry van|flatbed|tanker|straight truck|box truck|tractor|sliding tandems?|reefer)\b/i],
+  ["truckSize", /\bhow many trucks\b|\bfleet size\b|\bwhat size\b|\bsize of your (?:fleet|trucks)\b|\bhow (?:many|much)\b[^.?!]{0,24}\b(?:trucks?|trailers?|units?)\b|\bhow (?:big|long|tall)\b/i],
 ];
 
-/** Sentences that must never come out of a live outbound call:
- *  - a repeat introduction, after the opening has already been said
- *  - inbound-receptionist phrasing, which is the single most reliable way an
- *    outbound caller sounds broken. The 21:05Z call and a later simulated call
- *    both produced "How can I help you today?" / "What can I help you with
- *    today?" on a call we placed. The prompt forbids it and the model does it
- *    anyway, so it is enforced here.
- *  - a bare re-ask for something already asked. */
 /** A phone number the prospect actually said out loud, if any. Requires a real
  *  country/trunk prefix or a plausible grouped form, so "one" or a house number
  *  is not mistaken for a number. */
@@ -166,31 +216,197 @@ function extractQuestion(text) {
   return q.length >= 8 ? q : null;
 }
 
-function isForbiddenTurnSentence(sentence, isOpening) {
+/* Paraphrase-proof topic detection.
+ *
+ * The first version of this guard was a list of regexes per topic, and it failed
+ * in the worst possible way: it looked correct. On the 2026-10-06 test call the
+ * agent asked "What type of truck do you operate?", then "what kind of truck you
+ * operate?", then the same question again - three times. Both of those DO match
+ * the truckType regex. The repeat got through for a different reason entirely
+ * (see the falsy-result bug below), which is why widening the regexes alone
+ * would have looked like a fix and changed nothing.
+ *
+ * But the regex list is also genuinely too narrow. Asking about the equipment
+ * has a dozen ways of being phrased and none of them are in the list:
+ *   "Do you haul reefer or dry van?"            -> no topic
+ *   "Is it a straight truck or a tractor?"       -> no topic
+ *   "Are you a flatbed or a reefer carrier?"     -> no topic
+ *   "Could you tell me about the equipment you run?" -> no topic
+ *
+ * So the topic is now the set of *content words* - the question with filler,
+ * politeness and the words that carry no information removed - and two questions
+ * are the same question when their content words overlap enough. That is how a
+ * human recognises "what kind of truck you operate" as a re-ask of "what type of
+ * truck do you operate", and it does not need a regex per phrasing to do it.
+ *
+ * Synonyms collapse first, because the same fact is asked with different nouns
+ * ("truck" / "equipment" / "vehicle", "operate" / "run" / "haul" / "drive"), and
+ * those are the paraphrases that defeat a word-overlap test on its own. */
+const ASK_FILLER = new Set([
+  "a", "an", "the", "of", "to", "for", "in", "on", "at", "and", "or", "is", "are", "was",
+  "were", "be", "been", "do", "does", "did", "you", "your", "yours", "i", "me", "my", "we",
+  "our", "us", "it", "its", "that", "this", "these", "those", "can", "could", "would", "will",
+  "shall", "should", "may", "might", "please", "just", "tell", "know", "want", "need",
+  "like", "get", "give", "have", "has", "had", "about", "with", "from", "any", "some", "there",
+  "here", "sir", "ma", "okay", "ok", "yes", "yeah", "right", "so", "if", "also", "really",
+  "quickly", "quick", "short", "briefly", "again", "more",
+  /* Interrogatives. "What", "which" and "how" are how the question is put, not
+   * what it is asking for, and they survive the filler filter on length alone -
+   * which made two different questions share a token for free. */
+  "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+  /* Verbs of operating, and the words describing what kind of business this is.
+   * "Do you haul reefers" and "What type of equipment do you run" ask about the
+   * same thing, so the verb carries no distinction between them. Keeping it
+   * made them look like different questions. */
+  "operate", "run", "runs", "running", "haul", "hauls", "hauling", "drive", "drives",
+  "driving", "carry", "carries", "carrying", "haulage",
+  "carrier", "trucker", "trucking", "hauler", "owner", "operator", "business", "company",
+  /* "many" and "much" are NOT filler, and must not be made filler to fix the
+   * overlap below: "How many trucks do you run?" and "What type of truck do you
+   * operate?" ask for two different facts while sharing truck and run, and
+   * dropping the counting word made the guard swallow a real question. */
+]);
+
+/* Each group collapses to one token, so the same subject asked with a different
+ * noun is recognisably the same subject. */
+const ASK_SYNONYM_GROUPS = [
+  ["mc", "dot", "usdot", "fmcsa", "carrier", "motor"],
+  ["number", "phone", "mobile", "cell", "telephone", "contact", "reach", "text", "whatsapp"],
+  ["name", "called", "spell"],
+  ["truck", "trucks", "lorry", "vehicle", "vehicles", "equipment", "rig", "unit", "units", "trailer"],
+  ["type", "kind", "sort", "grade", "category"],
+  ["operate", "run", "haul", "drive", "haulage", "carry"],
+  /* Size is a genuinely different question from type - "what type of truck do
+   * you operate" and "how many trucks do you run" share the words truck and
+   * run and ask for two different facts. So the counting and measuring words
+   * carry the distinction, and they must not be filler. */
+  ["size", "fleet", "big", "long", "tall", "many", "much", "count", "length", "feet", "foot"],
+  ["email", "mail"],
+  /* The specific kinds of equipment are all answers to "what type", so they
+   * collapse together: "Do you haul reefer or dry van?" and "Is it a straight
+   * truck or a tractor?" name three different words for the same question. */
+  ["reefer", "refrigerated", "refrigerated", "flatbed", "flat", "tanker", "dry", "straight",
+    "tractor", "box", "semi", "semitrailer", "tandem", "reefer", "van", "bolster", "dump"],
+];
+
+const ASK_SYNONYMS = (() => {
+  const m = new Map();
+  ASK_SYNONYM_GROUPS.forEach((group, i) => {
+    for (const w of group) m.set(w, `t${i}`);
+  });
+  return m;
+})();
+
+/* The tokens for "what type of equipment" and for naming a kind of equipment.
+ * Named so askTokens can link them: the two are the same question. */
+const ASK_TYPE_TOKEN = ASK_SYNONYMS.get("type");
+const ASK_EQUIPMENT_KIND = ASK_SYNONYMS.get("reefer");
+const ASK_VEHICLE_TOKEN = ASK_SYNONYMS.get("truck");
+
+/** Content words of a question, synonym-collapsed, for topic comparison. */
+function askTokens(text) {
+  const raw = String(text || "").toLowerCase().match(/[a-z]+/g) || [];
+  const out = [];
+  for (const w of raw) {
+    if (ASK_FILLER.has(w) || w.length < 3) continue;
+    /* Look the word up before stripping the plural, so a word that genuinely
+     * ends in s ("bus") is not mangled, then again without it. "reefers" and
+     * "reefer" are the same subject and a carrier says both. */
+    out.push(
+      ASK_SYNONYMS.get(w)
+      || ASK_SYNONYMS.get(w.replace(/es$/, ""))
+      || ASK_SYNONYMS.get(w.replace(/s$/, ""))
+      || w
+    );
+  }
+  /* Naming the specific kinds of equipment IS asking the type question -
+   * "Are you a flatbed or a reefer carrier?" offers the answer rather than
+   * asking for it. So it carries the type token too, and duplicates collapse
+   * ("reefer or dry van" is one subject, not three). */
+  const types = out.includes(ASK_EQUIPMENT_KIND);
+  const uniq = [...new Set(out)];
+  if (types) {
+    if (!uniq.includes(ASK_TYPE_TOKEN)) uniq.push(ASK_TYPE_TOKEN);
+    // "Are you a flatbed or a reefer carrier?" never says "truck", but it is
+    // unmistakably about the equipment, and pairing it only with the type token
+    // left it too short to match "What kind of truck do you run?".
+    if (!uniq.includes(ASK_VEHICLE_TOKEN)) uniq.push(ASK_VEHICLE_TOKEN);
+  }
+  return uniq;
+}
+
+/** True when two questions are asking for the same thing.
+ *
+ * Threshold is deliberately generous on overlap and strict on length: a short
+ * question that is entirely contained in a longer one ("Is it a straight truck
+ * or a tractor?" against "What type of truck do you operate?") is a re-ask, but
+ * two long questions that merely share a noun are not ("What type of truck do
+ * you operate?" against "How many trucks do you run?"). */
+function sameAskTopic(aTokens, bTokens) {
+  if (!aTokens.length || !bTokens.length) return false;
+  const setB = new Set(bTokens);
+  let shared = 0;
+  for (const t of aTokens) if (setB.has(t)) shared++;
+  if (!shared) return false;
+  const shorter = Math.min(aTokens.length, bTokens.length);
+  // Contained: every content word of the shorter question is in the longer one.
+  if (shared === shorter) return true;
+  // Otherwise a majority of the shorter question has to overlap, so a shared
+  // noun cannot carry it on its own.
+  return shared / shorter >= 0.6;
+}
+
+/* The topics already asked on this call. Both forms of the record are kept: the
+ * regex topics for the questions they already describe exactly, and the token
+ * signatures of every question actually spoken, which is what catches the
+ * paraphrases no regex was written for. */
+const askedForCache = new Set();
+const askedTokenCache = [];
+function bindAskedFor(set, tokens) {
+  askedForCache.clear();
+  for (const k of set) askedForCache.add(k);
+  askedTokenCache.length = 0;
+  for (const t of tokens || []) askedTokenCache.push(t);
+}
+
+function isForbiddenTurnSentence(sentence) {
   if (/\bthis is (?:atlas|autumn|alex|[a-z]+) (?:from|with|calling)\b|\bcalling (?:you )?from\b|\bcalling about\b/i.test(sentence)) return true;
   if (/\bhow can i (?:help|assist) you\b|\bwhat can i (?:help|assist) you with\b|\bhow may i (?:help|direct) you\b|\bthanks for reaching out\b|\bhow can i direct your call\b/i.test(sentence)) return true;
   const topic = ASK_TOPICS.find(([, re]) => re.test(sentence));
-  return !!(topic && askedForCache.has(topic[0]));
+  if (topic && askedForCache.has(topic[0])) return true;
+  // Only a question can be a re-ask. A statement that happens to share a noun
+  // with an earlier question is not one, and treating it as one made the guard
+  // delete real replies.
+  if (!/\?/.test(sentence)) return false;
+  const tokens = askTokens(sentence);
+  if (!tokens.length) return false;
+  return askedTokenCache.some((prev) => sameAskTopic(tokens, prev));
 }
-
-// The set of topics already asked, rebound per call by bindAskedFor().
-let askedForCache = new Set();
-function bindAskedFor(set) { askedForCache = set; }
 
 /** Sentences that only re-ask for something already asked, plus a repeat intro.
  *  Everything that is actually spoken gets recorded, so the same request can
  *  never slip through twice - recording only the multi-sentence path let a
- *  one-line "May I get your name?" be asked again on the next turn. */
-function stripRepeatedAsks(text, askedFor) {
-  bindAskedFor(askedFor);
-  const record = (t) => { for (const [k, re] of ASK_TOPICS) if (re.test(t)) askedFor.add(k); };
+ *  one-line "May I get your name?" be asked again on the next turn.
+ *
+ *  Returns an object rather than a bare string. It used to return "", meaning
+ *  "do not speak this turn", and the caller tested the result for truthiness -
+ *  so "" was read as "nothing to change" and the forbidden line was spoken
+ *  anyway. On the 2026-10-06 call that is why one question was heard three times
+ *  while the guard that should have prevented it was running correctly. */
+function stripRepeatedAsks(text, askedFor, askedTokens) {
+  bindAskedFor(askedFor, askedTokens);
+  const record = (t) => {
+    for (const [k, re] of ASK_TOPICS) if (re.test(t)) askedFor.add(k);
+    const toks = askTokens(t);
+    if (toks.length && /\?/.test(t)) askedTokens.push(toks);
+  };
   const sentences = splitSentences(String(text || ""));
   if (sentences.length < 2) {
     // A single-sentence turn that is entirely forbidden carries no information;
     // drop it so the prospect hears a pause, not the same question again.
-    if (isForbiddenTurnSentence(sentences[0] || text)) return "";
+    if (isForbiddenTurnSentence(sentences[0] || text)) return { text: "", forbidden: true };
     record(text);
-    return text;
+    return { text, forbidden: false };
   }
   const kept = [];
   for (const s of sentences) {
@@ -198,7 +414,10 @@ function stripRepeatedAsks(text, askedFor) {
     kept.push(s);
     record(s);
   }
-  return kept.join(" ").trim();
+  // Every sentence was a re-ask. Say so explicitly, because the caller has to
+  // replace the turn rather than keep it.
+  if (!kept.length) return { text: "", forbidden: true };
+  return { text: kept.join(" ").trim(), forbidden: false };
 }
 
 async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null, callId = null }) {
@@ -271,6 +490,9 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let closingPromiseSpoken = false;
   // The prospect said they are ready and waiting; there is nothing left to qualify.
   let noMoreQuestions = false;
+  // The prospect said they are busy. Once is enough to stop qualifying - asking
+  // again after they have said it is what the 2026-10-06 call did for a minute.
+  let busyRefused = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
   const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId, learning: learning || {} };
@@ -285,6 +507,10 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       return { ...baseConfig, locale: normalizeLanguage(forLocale || activeLocale, activeLocale), playbook, research: getCachedResearch(product, companyName) };
     };
   const askedFor = new Set();
+  // Token signature of every question already spoken on this call, so a
+  // paraphrase of an earlier question is caught even when it matches no
+  // ASK_TOPICS regex. Kept per call, alongside askedFor.
+  const askedTokens = [];
   const QUIET_HANGUP_MS = 20000;
   // The question the agent is currently waiting on, so a quiet window re-asks
   // it instead of moving to the next topic.
@@ -431,6 +657,55 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     return table[loc] || table.en;
   };
 
+  /* What to say when the brain's turn was entirely a repeat and cannot be
+   * spoken, but the prospect is owed a turn.
+   *
+   * These must be statements, not questions - asking again is the defect being
+   * repaired - and not goodbyes, because the call is not over. They are also
+   * deliberately several per language: one fixed line used as a fallback is
+   * itself repeated verbatim on the next such turn, and the never-repeat-a-line
+   * guard then holds the turn, which is silence. Which is the bug. */
+  const MOVE_ON = Object.freeze({
+    en: ["That gives me a clear picture.", "I have that noted.", "Good, that helps a lot."],
+    ur: ["یہ بات واضح ہو گئی۔", "میں نے یہ نوٹ کر لیا ہے۔", "بہت اچھا، اس سے مدد ملی۔"],
+    es: ["Eso me queda claro.", "Lo tengo anotado.", "Perfecto, me ayuda mucho."],
+    ru: ["Теперь мне понятно.", "Я это записал.", "Отлично, это очень помогает."],
+    fr: ["C'est plus clair pour moi.", "C'est noté.", "Parfait, cela m'aide beaucoup."],
+    it: ["Ora è più chiaro.", "Ho preso nota.", "Perfetto, aiuta molto."],
+    zh: ["这样我就清楚了。", "我记下了。", "太好了，这很有帮助。"],
+    hi: ["अब सब स्पष्ट है।", "मैंने यह नोट कर लिया है।", "बहुत अच्छा, इससे मदद मिली।"],
+  });
+
+  /* Prefer a move-on line that has not been spoken yet, so the fallback never
+   * becomes the repetition. */
+  const moveOnLine = (loc) => {
+    const pool = MOVE_ON[loc] || MOVE_ON.en;
+    return pool.find((l) => !spokenLines.has(normalizeSpoken(l))) || pool[0];
+  };
+
+  /* The close for someone who told us they are busy.
+   *
+   * Short, apologetic, and it asks nothing. The callback is kept because the
+   * lead is real and we did reach them - but it is stated once and never
+   * questioned, because "when should we call back?" to someone who just said
+   * they have no time is the exact thing they were refusing. Every line is
+   * localized, for the same reason as everything else here: a Urdu speaker was
+   * being told "thanks for your time" in English at the end of the call. */
+  const BUSY_CLOSE = Object.freeze({
+    en: (cb) => `Sorry, you are right, I have taken enough of your time. ${cb ? cb() : ""} Thank you.`.trim(),
+    ur: (cb) => `معذرت، آپ ٹیک ہیں، میں نے آپ کا وقت لے لیا۔ ${cb ? cb() : ""} شکریہ۔`.trim(),
+    es: (cb) => `Perdona, tienes razón, te he quitado demasiado tiempo. ${cb ? cb() : ""} Gracias.`.trim(),
+    ru: (cb) => `Извините, вы правы, я отнял у вас слишком много времени. ${cb ? cb() : ""} Спасибо.`.trim(),
+    fr: (cb) => `Désolé, vous avez raison, je vous ai pris trop de temps. ${cb ? cb() : ""} Merci.`.trim(),
+    it: (cb) => `Mi scusi, ha ragione, le ho preso troppo tempo. ${cb ? cb() : ""} Grazie.`.trim(),
+    zh: (cb) => `抱歉，您说得对，我占用您太多时间了。${cb ? cb() : ""} 谢谢。`.trim(),
+    hi: (cb) => `क्षमा करें, आप सही कह रहे हैं, मैंने आपका ज़्यादा समय ले लिया। ${cb ? cb() : ""} धन्यवाद।`.trim(),
+  });
+  const busyCloseLine = (loc, cb) => {
+    const fn = BUSY_CLOSE[loc];
+    return normaliseCallbackWindow(fn ? fn(cb) : BUSY_CLOSE.en(cb));
+  };
+
   const closingLine = (loc, captured) => {
     const cb = callbackSentence(loc, captured);
     const text = cb ? `${thanksLine(loc)} ${cb(captured)}` : thanksLine(loc);
@@ -552,8 +827,48 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
           // removed "This is Atlas with Zaz Logistics" for being a repeat
           // introduction. Skip the strip when they ask who is calling.
         } else {
-          const trimmed = lastSpokenLine ? stripRepeatedAsks(line, askedFor) : line;
-          if (trimmed) line = trimmed;
+          const strip = lastSpokenLine
+            ? stripRepeatedAsks(line, askedFor, askedTokens)
+            : { text: line, forbidden: false };
+          if (strip.forbidden) {
+            /* Every sentence in this turn was a repeat - a question already
+             * asked, a second introduction, or inbound-receptionist phrasing on
+             * an outbound call. The old code did `if (trimmed) line = trimmed`,
+             * which read the empty result as "no change" and spoke the repeat
+             * anyway: the guard worked and its verdict was thrown away. That is
+             * how "What type of truck do you operate?" was asked three times on
+             * the 2026-10-06 call.
+             *
+             * The turn cannot be spoken, and it cannot be replaced with
+             * silence either - a prospect who hears nothing after answering
+             * thinks the call dropped. So the brain is asked once for a line
+             * that moves on, and the deterministic non-question line is the
+             * floor under it. */
+            try { log("[repeat-ask] a turn re-asked something already asked; replacing it"); } catch {}
+            const fresh = await askBrain({
+              transcript: [
+                ...transcript,
+                {
+                  role: "lead",
+                  text: `You just tried to ask: "${line}". That has already been asked on this call, in other words, and repeating it makes you sound like a machine. Say something DIFFERENT that moves the conversation forward in one short natural sentence, in ${languageName(loc)}. Do not ask any question you have already asked.`,
+                },
+              ],
+              ...config(loc),
+            }).catch(() => null);
+            const retry = fresh && fresh.text ? capTurnLength(String(fresh.text).trim()) : "";
+            /* Run the retry back through the same guard, so it is both checked
+             * and recorded. A brain told "say something different" that answers
+             * with another paraphrase of the same question is exactly the failure
+             * being fixed here, so it is rejected rather than spoken - and a
+             * replacement that IS accepted gets recorded, or the next turn can
+             * repeat the replacement. */
+            const retryStrip = retry
+              ? stripRepeatedAsks(retry, askedFor, askedTokens)
+              : { text: "", forbidden: true };
+            line = retryStrip.forbidden || !retryStrip.text ? moveOnLine(loc) : retryStrip.text;
+          } else if (strip.text) {
+            line = strip.text;
+          }
         }
         // "Is this a good time to talk?" is only ever an opener - but the brain
         // is allowed to say it when they have just asked who is calling, and an
@@ -840,6 +1155,38 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       await agent(fallbackReply(heard, config()));
       break;
     }
+    /* They told us they are busy. Stop qualifying and close.
+     *
+     * Placed with the other refusals so it is decided before any brain call for
+     * this turn: the 2026-10-06 call asked the brain for a normal reply to "I
+     * told you I'm a bit busy right now", the brain apologised, and the next
+     * question went out anyway. There is no turn after this one - the call ends
+     * with an apology and the callback promise, which is all a busy person
+     * wants. */
+    if (BUSY_RE.test(heard)) {
+      busyRefused = true;
+      closingSpoken = true;
+      /* The apology has to come from the turn that heard the refusal, and it has
+       * to be first - "Sorry, you are right" followed immediately by "just one
+       * more question" is what made the call feel like it was not listening. */
+      const cb = callbackSentence(activeLocale, null);
+      const busyClose = busyCloseLine(activeLocale, cb);
+      const busyLine = await askBrain({
+        transcript: [
+          ...transcript,
+          {
+            role: "lead",
+            text: "The prospect has just told you they are busy and cannot talk. Apologise briefly and end the call immediately. Do NOT ask them any further question, and do NOT ask if now is a better time. One or two short sentences, then stop.",
+          },
+        ],
+        ...config(activeLocale),
+      }).catch(() => null);
+      const fromBrain = busyLine && busyLine.text ? capTurnLength(String(busyLine.text).trim()) : "";
+      /* Never speak a question back at someone who just said they are busy,
+       * whatever the brain produced. */
+      await agent(fromBrain && !/\?/.test(fromBrain) ? fromBrain : busyClose, { intent: "closing", noRetry: true });
+      break;
+    }
 
     /* Reply in the language the call is IN, not the language of the last clip.
      *
@@ -873,10 +1220,33 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     }
     const turnLocale = activeLocale;
 
+    /* A failed brain call must never produce a turn with nothing in it.
+     *
+     * The 2026-10-06 test call logged "AI gateway returned non-JSON (HTTP 502)"
+     * and "AI gateway timed out after 7000ms", and both produced pure dead air -
+     * the agent said nothing at all and the prospect was left listening to a
+     * dead line. The bug was that the fallback line was only applied when the
+     * brain returned an empty string, not when it returned null: a failure and
+     * an empty reply are different things, and only one of them was handled.
+     *
+     * So the failure is detected here, where the prospect is waiting on a reply,
+     * and answered in the language of the call. Holding the turn is the one thing
+     * that must never happen. */
     const ai = await askBrain({ transcript, ...config(turnLocale) });
+    if (!ai || !ai.text || isMetaLine(ai.text)) {
+      const reason = (ai && ai.timeout) ? "timed out" : "failed";
+      try { log(`[brain] turn had no usable reply (${reason}); speaking the fallback line`); } catch {}
+      /* Count it against the runaway-failure budget so a gateway that is down
+       * ends the call with a human follow-up rather than talking to itself. */
+      const line = unusableReply(turnLocale);
+      lastAgentAsked = null;
+      await agent(line, { intent: "reassurance", locale: turnLocale });
+      if (consecutiveLlmFailures >= 4) break;
+      continue;
+    }
     // A meta line is not an answer. It is also not a question, so it must not
     // become the "waiting on this" question the next quiet window re-asks.
-    const aiText = isMetaLine(ai.text) ? "" : String(ai.text || "");
+    const aiText = String(ai.text || "");
     let finalText = normaliseCallbackWindow(stripWrongClosingIdiom(aiText));
     // A promise made is a promise kept once. The rest of the turn survives; only
     // the second promise is removed.

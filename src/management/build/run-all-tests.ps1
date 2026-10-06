@@ -6,6 +6,8 @@ $tests = @(
   "agent\local-ringcentral-engine.behavior.test.js",
   "agent\local-call-controller.behavior.test.js",
   "agent\call-runner.behavior.test.js",
+  "agent\repeat-ask.behavior.test.js",
+  "agent\refusal-and-fallback.behavior.test.js",
   "agent\language-coverage.test.js",
   "agent\latency-language.test.js",
   "agent\qualification.test.js",

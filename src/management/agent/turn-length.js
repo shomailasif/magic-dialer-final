@@ -128,9 +128,21 @@ function stripSpokenArtifacts(text) {
   s = s.replace(/\s{2,}/g, " ").trim();
   /* A turn that stops on a function word was cut off mid-thought, and the
    * customer hears the agent stop talking. "What type of truck do you." is
-   * worse than not saying it - drop the fragment and keep what came before. */
-  s = s.replace(/\s+[^.!?]*\b(?:you|the|a|an|to|of|for|and|or|with|from|at|on|in|is|are|was|were|my|your|our|their|that|this|it)\s*[.?!]?\s*$/i, "");
-  s = s.replace(/\.{2,}/g, ".").replace(/\s{2,}/g, " ").trim();
+   * worse than not saying it - drop the fragment and keep what came before.
+   *
+   * A question is exempt. Its trailing function word is not a truncation, it is
+   * the question: "So, what kind of truck is it?" ends on "it?" and this rule
+   * was deleting the whole sentence, so the agent said nothing at all on that
+   * turn. On the 2026-10-06 test call the brain's replies to a repeat-ask were
+   * cut off here before the repeat guard ever saw them. */
+  if (!/\?\s*["')\u2019]?$/.test(s)) {
+    s = s.replace(/\s+[^.!?]*\b(?:you|the|a|an|to|of|for|and|or|with|from|at|on|in|is|are|was|were|my|your|our|their|that|this|it)\s*[.?!]?\s*$/i, "");
+  }
+  /* A run of dots is an ellipsis, which becomes one full stop. That can leave a
+   * bare "." stranded after an already-terminated sentence - "That is helpful.
+   * ..." became "That is helpful. ." - which the voice reads as a second
+   * sentence that says nothing. Drop the orphan. */
+  s = s.replace(/\.{2,}/g, ".").replace(/([.!?])\s*\.(?=\s|$)/g, "$1").replace(/\s{2,}/g, " ").trim();
   // Normalise a trailing comma or colon into a full stop, but never touch a
   // question or an exclamation - a question has to stay a question.
   s = s.replace(/[,;:]\s*$/, ".");
