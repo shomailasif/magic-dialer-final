@@ -468,14 +468,28 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
      * gateway has proved itself dead. Worst case per turn drops from ~25s to
      * ~10s, and to under 100ms on every turn after the third failure. */
     const STT_ATTEMPTS = 2;
-    /* Measured on the 06 Oct call: every turn cost 11-15s of dead air, and the
-     * transcript showed 13s, 11s, 14s, 13s and 15s gaps in a row. The cause was
-     * this budget - 5000ms per attempt, twice, before the AI was even asked, so a
-     * single sentence cost ten seconds of waiting and a failed one cost twenty.
-     * A short answer transcribes well inside 2500ms; anything slower is a slow
-     * gateway, not speech that needs more time, and waiting for it is exactly the
-     * silence that makes a prospect say "hello?" and hang up. */
-    const STT_ATTEMPT_BUDGET_MS = 2500;
+    /* Measured on the 06 Oct call: every turn cost 11-15s of dead air. The cause
+     * was this budget at 5000ms per attempt, twice, before the AI was even asked,
+     * so one sentence cost ten seconds of waiting and a failed one cost twenty.
+     *
+     * It was then cut to 2500ms to halve that, and that was wrong. The live call
+     * on 07 Oct measured real transcriptions at 2516ms and 2503ms - a couple of
+     * milliseconds past the new budget - so every single turn was discarded and
+     * the agent went deaf:
+     *   STT attempt 1/2 failed: STT attempt exceeded 2500ms (2516ms)
+     *   STT attempt 2/2 failed: STT attempt exceeded 2500ms (2503ms)
+     * The transcript showed the agent talking to nobody - "That gives me a clear
+     * picture", three "Sorry"s, and a prospect asking "Who is this?" twice with no
+     * answer. None of that was the brain failing; it was never given a word to
+     * work with. Halving the budget did not halve the silence, it removed the
+     * hearing.
+     *
+     * The cost of waiting one short turn is far smaller than the cost of never
+     * understanding a word: a prospect who is answered is worth more than one who
+     * is answered 2s sooner but wrongly. 6000ms per attempt keeps the worst case
+     * per turn near the old 5000ms single attempt rather than the 10s two, and
+     * comfortably above the ~2.5s the gateway actually needs. */
+    const STT_ATTEMPT_BUDGET_MS = 6000;
     let stt = null, lastErr = "";
     if (health.isOpen("stt")) {
       stt = { text: null, error: `STT gateway ${health.reason("stt")}` };
