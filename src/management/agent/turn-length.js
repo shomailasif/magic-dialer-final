@@ -119,6 +119,40 @@ function stripSpokenArtifacts(text) {
   s = s.replace(/\[object [A-Za-z]+\]/g, " ");
   // Unbalanced quote left dangling mid-sentence, e.g. 'services." is now...'
   s = s.replace(/[“”"]\s+(?=(?:is|are|was|were|do|does|did|can|could|will|would|and|so|but)\b)/g, " ");
+  /* Repaired text, not only stripped text.
+   *
+   * Two corruptions reached the voice on the 06 and 07 Oct calls:
+   *   "Hi, this is Atlas from Zaz Logistics- is now a good time to talk?"
+   *   "Hi, this is Atlas<bad char>"just checking if now is a good time to talk?"
+   * Neither is produced anywhere in this file - they arrive that way from the
+   * model or from whatever decoded them. The voice cannot tell a mangled
+   * sentence from a real one, so it is repaired here, the last point before
+   * synthesis, which every spoken line passes.
+   *
+   * lowercase-dash-capital is a sentence boundary that lost its full stop
+   * ("Logistics- Is"). A replacement character is a byte lost in decoding, and
+   * everything from it on is unusable, so it becomes a boundary and the residue
+   * is dropped. */
+  s = s.replace(/([a-z])(\s*)([-‐‑–—])(\s*)([A-Za-z])/g, (m, before, beforeGap, dash, afterGap, after) => {
+    /* A dash with whitespace on BOTH sides is one the model meant, and spoken as
+     * a dash it is exactly right: "a straight answer to that - I will have
+     * someone call you back with it." Rewriting that would change its words.
+     *
+     * A dash welded to the word before it is the corruption - "Zaz Logistics- is
+     * now a good time" - where a sentence boundary lost its full stop. There is
+     * no English punctuation written that way, so it is always safe to repair, and
+     * the case after it may be upper or lower depending on where it broke. */
+    const welded = beforeGap.length === 0;
+    if (!welded) return m;
+    /* A real full stop starts a sentence, and sentences start capitalised. The
+     * source was lowercase because it was mid-thought ("Logistics- is now"), so
+     * restoring the capital is part of repairing it. */
+    const head = after.toUpperCase();
+    return `${before}. ${head}`;
+  });
+  s = s.replace(/�+["')\u2019]?\s*([a-z])/gi, (m, letter) => `. ${letter.toUpperCase()}`)
+       .replace(/�+["')\u2019]?/gi, ". ")
+       .replace(/�/g, "");
   s = s.replace(/\s{2,}/g, " ").trim();
   /* The model sometimes starts a list and gets cut off by the turn cap, leaving
    * "I just need a couple more quick details: 1." - which the customer hears as
