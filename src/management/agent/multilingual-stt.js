@@ -4,14 +4,20 @@ const { withPortalSlot } = require("./portal-queue");
 const { requestId, safeError } = require("./safe-diagnostic");
 
 const GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
-/* Measured live on 07 Oct: a single short answer took 2516ms and 2503ms on
-   whisper-large-v3-turbo - the entire per-turn budget, spent before the brain is
-   asked anything, and it made the agent miss its window and apologise instead of
-   replying. That model is the largest Whisper variant and is sized for studio
-   audio. This is 8kHz telephone speech, one connected sentence at a time, where a
-   small model is both accurate and several times faster. The env override stays
-   so a larger model can be dialled back up without touching code. */
-const MODEL = process.env.AUTODIAL_WHISPER_MODEL || "whisper-small";
+/* Reverted to whisper-large-v3-turbo.
+ *
+ * I changed this to whisper-small for speed and it broke every call: Groq's
+ * transcription endpoint does not serve whisper-small, so every request was
+ * rejected and the agent went deaf on 07 Oct - "STT provider request failed
+ * (4729ms)" twice, no reply at all. The speed was already fixed by the other
+ * change: the per-attempt budget was 2500ms when the gateway was measured at
+ * 2516ms and 2503ms, so real transcriptions were being thrown away. The budget is
+ * 6000ms now, so the original model fits comfortably and there was never a reason
+ * to change it.
+ *
+ * Verified against the provider rather than assumed this time: the model name
+ * below is one Groq actually serves. */
+const MODEL = process.env.AUTODIAL_WHISPER_MODEL || "whisper-large-v3-turbo";
 
 function pcmuToWav(audio) {
   const { mulawDecode } = require("./hear");

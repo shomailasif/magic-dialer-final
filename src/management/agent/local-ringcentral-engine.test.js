@@ -113,15 +113,29 @@ for (const forbidden of ["werift-rtp", "werift_rtp", "srtpSession.encrypt", "Rtp
   assert(!trunk.includes(forbidden), `forbidden production media transport found: ${forbidden}`);
 
 assert(Object.keys(SUPPORTED_LANGUAGES).length >= 20, "at least 20 languages required");
-/* The model must be one that transcribes 8kHz telephone speech inside the
-   per-turn budget. whisper-large-v3-turbo took ~2.5s for a single short answer -
-   measured live, 2516ms and 2503ms - which is the whole turn budget spent before
-   the brain is asked anything. whisper-small is several times faster on this audio
-   and is accurate for connected, one-sentence telephone speech. The env override
-   is kept so a larger model can be dialled back up without a code change. */
+/* The STT model must be one the provider actually serves, and the per-turn budget
+   must fit it.
+   *
+   * This was written the wrong way round once. whisper-small was substituted to
+   * "fix" a latency problem, but Groq's transcription endpoint does not serve it:
+   * every request was rejected and the agent went completely deaf on 07 Oct
+   * ("STT provider request failed (4729ms)", twice, no reply at all). Asserting
+   * that a specific model was absent would only have locked in another wrong
+   * assumption, so this asserts membership of the set the provider serves instead.
+   *
+   * The latency that prompted the change was real and is fixed elsewhere: the
+   * gateway was measured at 2516ms and 2503ms against a 2500ms budget, so real
+   * transcriptions were discarded. The budget is 6000ms. */
+const GROQ_SERVES = new Set(["whisper-large-v3-turbo", "whisper-large-v3", "distil-whisper-large-v3-en"]);
 const sttCode = stt.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
-assert(sttCode.includes("AUTODIAL_WHISPER_MODEL") && !sttCode.includes("whisper-large-v3-turbo"), "STT must not default to the slowest Whisper variant; it cannot fit the per-turn budget");
-assert(stt.includes("verbose_json"), "automatic multilingual Whisper path missing");
+const model = (sttCode.match(/AUTODIAL_WHISPER_MODEL\s*\|\|\s*"([^"]+)"/) || [])[1];
+assert.ok(model && GROQ_SERVES.has(model), `STT default "${model}" is not a model the provider serves; every request would be rejected`);
+/* The gateway must default to the same model the engine does. When they differed,
+   the engine asked for a model the gateway did not use and every turn failed. */
+const sttRoute = fs.readFileSync(path.join(__dirname, "..", "..", "app", "api", "engine", "ai", "stt", "route.ts"), "utf8");
+const routeModel = (sttRoute.match(/AUTODIAL_WHISPER_MODEL\s*\|\|\s*"([^"]+)"/) || [])[1];
+assert.equal(routeModel, model, `the gateway is using "${routeModel}" but the engine defaults to "${model}"; they must be the same model`);
+assert(sttCode.includes("verbose_json"), "automatic multilingual Whisper path missing");
 assert(runner.includes("language-switch") && runner.includes("activeLocale"), "mid-call language switching missing");
 assert(normalizeLanguage("en") === "en", "English normalization missing");
 assert(normalizeLanguage("urd") === "ur", "Urdu ISO-3 normalization missing");
