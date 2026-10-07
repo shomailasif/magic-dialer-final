@@ -113,7 +113,15 @@ for (const forbidden of ["werift-rtp", "werift_rtp", "srtpSession.encrypt", "Rtp
   assert(!trunk.includes(forbidden), `forbidden production media transport found: ${forbidden}`);
 
 assert(Object.keys(SUPPORTED_LANGUAGES).length >= 20, "at least 20 languages required");
-assert(stt.includes("whisper-large-v3-turbo") && stt.includes("verbose_json"), "automatic multilingual Whisper path missing");
+/* The model must be one that transcribes 8kHz telephone speech inside the
+   per-turn budget. whisper-large-v3-turbo took ~2.5s for a single short answer -
+   measured live, 2516ms and 2503ms - which is the whole turn budget spent before
+   the brain is asked anything. whisper-small is several times faster on this audio
+   and is accurate for connected, one-sentence telephone speech. The env override
+   is kept so a larger model can be dialled back up without a code change. */
+const sttCode = stt.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+assert(sttCode.includes("AUTODIAL_WHISPER_MODEL") && !sttCode.includes("whisper-large-v3-turbo"), "STT must not default to the slowest Whisper variant; it cannot fit the per-turn budget");
+assert(stt.includes("verbose_json"), "automatic multilingual Whisper path missing");
 assert(runner.includes("language-switch") && runner.includes("activeLocale"), "mid-call language switching missing");
 assert(normalizeLanguage("en") === "en", "English normalization missing");
 assert(normalizeLanguage("urd") === "ur", "Urdu ISO-3 normalization missing");

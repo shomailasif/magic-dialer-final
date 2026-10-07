@@ -4,7 +4,14 @@ const { withPortalSlot } = require("./portal-queue");
 const { requestId, safeError } = require("./safe-diagnostic");
 
 const GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
-const MODEL = process.env.AUTODIAL_WHISPER_MODEL || "whisper-large-v3-turbo";
+/* Measured live on 07 Oct: a single short answer took 2516ms and 2503ms on
+   whisper-large-v3-turbo - the entire per-turn budget, spent before the brain is
+   asked anything, and it made the agent miss its window and apologise instead of
+   replying. That model is the largest Whisper variant and is sized for studio
+   audio. This is 8kHz telephone speech, one connected sentence at a time, where a
+   small model is both accurate and several times faster. The env override stays
+   so a larger model can be dialled back up without touching code. */
+const MODEL = process.env.AUTODIAL_WHISPER_MODEL || "whisper-small";
 
 function pcmuToWav(audio) {
   const { mulawDecode } = require("./hear");

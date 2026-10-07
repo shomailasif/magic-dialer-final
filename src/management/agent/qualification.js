@@ -84,6 +84,20 @@ function checklistBlock(collected, fields) {
   if (!have.length && !need.length) return "";
   const lines = ["ALREADY COLLECTED (never ask for these again):"];
   for (const f of have) lines.push(`  - ${f}: ${String(collected[f] || "given").slice(0, 80)}`);
+  /* When nothing is outstanding, say so in words the model can act on.
+   *
+   * An empty STILL NEEDED list with no instruction is the worst of both: the
+   * engine told the brain "ask for exactly ONE item from STILL NEEDED" while that
+   * list had nothing in it. The model then asked anyway, which is how a
+   * qualification that was already complete kept going - "What type of truck do
+   * you operate?" after the MC number, the phone number and the name were all
+   * already on file. On the 06 Oct call the prospect said they were busy and the
+   * agent was still mid-checklist. */
+  if (!need.length) {
+    lines.push("STILL NEEDED: nothing. You have everything you were asked for.");
+    lines.push("DO NOT ask for any further qualification question. Move straight to the close: thank them, say a manager will follow up, and stop.");
+    return lines.join("\n");
+  }
   lines.push("STILL NEEDED (ask for these, one per turn, then stop):");
   for (const f of need) lines.push(`  - ${f}`);
   return lines.join("\n");
