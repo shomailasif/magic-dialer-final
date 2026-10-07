@@ -869,6 +869,18 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
           } else if (strip.text) {
             line = strip.text;
           }
+          /* A refusal to repeat must not become filler when we have heard nothing.
+             *
+             * The 07 Oct call opened with "That gives me a clear picture." at 0:26,
+             * before the prospect had said anything at all. That line is a
+             * move-on filler, which is only meaningful as a reply to something.
+             * Spoken into a silent line it is the single most confusing thing the
+             * agent can do: it implies it heard an answer that does not exist. */
+          if (!heardSomething && !/\?/.test(line)) {
+            /* Nothing has been heard yet and this turn has no question in it, so
+             * there is no conversation for it to advance. Wait instead. */
+            line = lastAgentAsked ? "" : line;
+          }
         }
         // "Is this a good time to talk?" is only ever an opener - but the brain
         // is allowed to say it when they have just asked who is calling, and an
@@ -1036,6 +1048,14 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       /* We could not hear them, or they went quiet. Both are handled, and
        * neither advances the conversation. */
         if (heardResult && typeof heardResult === "object" && heardResult.unheard) {
+          /* They spoke and we could not make it out, so ask them again - but only
+           * if we have ever heard them at all. On the 07 Oct call STT was failing
+           * on every turn, and the agent kept apologising into a line where nobody
+           * had yet spoken. Repeating "sorry" at a silent line is not patience. */
+          if (!heardSomething) {
+            try { log("[unheard] speech detected but nothing transcribed yet; waiting instead of apologising into a silent line"); } catch {}
+            continue;
+          }
           /* No brain call here. The prospect is already waiting on an apology,
            * and asking the model to produce it cost a 7s round trip on the
            * 20:40Z call and returned "I want to answer that accurately rather

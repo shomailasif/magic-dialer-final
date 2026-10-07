@@ -126,17 +126,53 @@ function stripSpokenArtifacts(text) {
   s = s.replace(/[,:;]\s*\d\s*[.)]?\s*$/, ".").replace(/\.\s*\d\s*[.)]?\s*$/, ".");
   s = s.replace(/\b(?:firstly|secondly|thirdly|1\)|2\)|3\))\b,?\s*/gi, "");
   s = s.replace(/\s{2,}/g, " ").trim();
-  /* A turn that stops on a function word was cut off mid-thought, and the
-   * customer hears the agent stop talking. "What type of truck do you." is
-   * worse than not saying it - drop the fragment and keep what came before.
+  /* A turn that stops mid-thought on a function word is cut off, and the customer
+   * hears the agent stop talking. "What type of truck do you" is worse than not
+   * saying it - drop the fragment and keep what came before.
    *
-   * A question is exempt. Its trailing function word is not a truncation, it is
-   * the question: "So, what kind of truck is it?" ends on "it?" and this rule
-   * was deleting the whole sentence, so the agent said nothing at all on that
-   * turn. On the 2026-10-06 test call the brain's replies to a repeat-ask were
-   * cut off here before the repeat guard ever saw them. */
-  if (!/\?\s*["')\u2019]?$/.test(s)) {
-    s = s.replace(/\s+[^.!?]*\b(?:you|the|a|an|to|of|for|and|or|with|from|at|on|in|is|are|was|were|my|your|our|their|that|this|it)\s*[.?!]?\s*$/i, "");
+   * This must only apply to text that is actually incomplete. A finished sentence
+   * can legitimately END on one of these words, and treating that as a truncation
+   * threw away most of a complete reply:
+   *   "Let me get you a straight answer to that - I will have someone call you
+   *    back with it."
+   * became "Let." - the rule matched from the first "you" to the final "it" and
+   * deleted the sentence. It was heard as "Talk." and "Let." on the 07 Oct call,
+   * which is what made the agent sound like it had nothing to say.
+   *
+   * So: apply it only when the text does NOT end on a sentence terminator, and
+   * only when there is real content before the fragment. A question is exempt for
+   * the same reason - "So, what kind of truck is it?" ends on "it?" legitimately. */
+  const isQuestion = /\?\s*["')\u2019]?$/.test(s);
+  if (!isQuestion) {
+    const usable = (t) => /[a-z]{3}/i.test(t) && t.trim().length >= 12;
+    /* The tail after the last sentence boundary. A full stop does NOT make it
+     * complete - the model punctuates its own truncations, which is why
+     * "What type of truck do you." arrives with a period and is still a fragment.
+     * What identifies it is that it OPENS as a question and then stops. */
+    const lastStop = Math.max(s.lastIndexOf(". "), s.lastIndexOf("! "), s.lastIndexOf("? "));
+    const tail = (lastStop >= 0 ? s.slice(lastStop + 1) : s).trim();
+    const opensAsQuestion = /^(?:so|and|ok(?:ay)?|right|well|now|but)?[,\s-]*(?:what|which|who|whom|whose|where|when|why|how|can|could|would|will|should|do|does|did|is|are|was|were|have|has|tell|may|might|must)\b/i.test(tail);
+    const endsOnFunctionWord = /\b(?:you|the|a|an|to|of|for|and|or|with|from|at|on|in|is|are|was|were|my|your|our|their|that|this|it)\s*[.?!]?$/i.test(tail);
+    const noTerminator = !/[.!?]["')\u2019]?$/.test(s);
+
+    if (opensAsQuestion && endsOnFunctionWord) {
+      /* A question that stops mid-sentence. Drop it and keep what came before. */
+      if (lastStop > 0) {
+        const kept = s.slice(0, lastStop + 1).trim();
+        if (usable(kept)) s = kept;
+      }
+    } else if (noTerminator) {
+      /* Shape 2: unterminated text. Either it ends on a function word
+       * ("...call you back with it" - the tail is a real sentence, so keep it)
+       * or on a content word ("I was going to ask you about" - a promise with no
+       * delivery, so cut it). Only the cut is applied when there is a complete
+       * earlier sentence to fall back to. */
+      const lastStopAny = Math.max(s.lastIndexOf(". "), s.lastIndexOf("! "), s.lastIndexOf("? "));
+      if (lastStopAny > 0) {
+        const kept = s.slice(0, lastStopAny + 1).trim();
+        if (usable(kept)) s = kept;
+      }
+    }
   }
   /* A run of dots is an ellipsis, which becomes one full stop. That can leave a
    * bare "." stranded after an already-terminated sentence - "That is helpful.
