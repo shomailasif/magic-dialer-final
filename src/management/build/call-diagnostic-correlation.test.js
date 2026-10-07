@@ -4,10 +4,16 @@ const root=path.join(__dirname,"..");
 const read=p=>fs.readFileSync(path.join(root,p),"utf8");
 const call=read("agent/call.js"), runner=read("agent/call-runner.js"), stt=read("agent/multilingual-stt.js"), brain=read("agent/intelligent-brain.js"), agent=read("agent/agent.js");
 const chat=read("../app/api/engine/ai/chat/route.ts"), sttRoute=read("../app/api/engine/ai/stt/route.ts");
+const controller=read("agent/local-call-controller.js");
 const checks=[
- ["call creates correlation id",/const callId = sessionId \|\| requestId\(\)/.test(call)],
+ /* The cloud-media branch is gone: there is no sessionId any more, because the
+  * PC places and carries its own call. The correlation id still has to be created
+  * in call.js and handed to the runner, and the engine - which is where the STT
+  * call actually happens now - has to carry it too. */
+ ["call creates correlation id",/const callId = requestId\(\)/.test(call)],
  ["call passes correlation to runner",/deviceToken: token, callId/.test(call)],
- ["call passes correlation to STT",/portal, deviceToken: token, callId/.test(call)],
+ ["engine passes correlation to STT",/portal: config\.portalUrl, deviceToken: config\.deviceToken/.test(controller)],
+ ["no dead cloud-media path remains",!/media-client|sessionId|ws\/media/.test(call.replace(/\/\*[\s\S]*?\*\//g,"").replace(/^[ \t]*\/\/.*$/gm,""))],
  ["runner preserves callId",/callId = null/.test(runner)&&/deviceToken, callId/.test(runner)],
  ["chat client sends call id",/"x-call-id":callId/.test(brain)],
  ["stt client sends request id",/"x-request-id":reqId/.test(stt)],

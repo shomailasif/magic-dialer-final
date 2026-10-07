@@ -266,13 +266,44 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     }
   }
   onLog(`[local-media-v2] opening pre-render passed (${openingAudio.engine || "unknown"}, ${openingAudio.buffer.length} bytes PCMU/8000)`);
+
+  /* Inbound audio that arrives when no window is open.
+   *
+   * `state` is null for the whole gap between one listen window returning and the
+   * next one being built - during transcription, the brain call, synthesis, and
+   * the agent's own playback. onAudio used to `if (!state) return`, so every
+   * frame spoken in that gap was discarded. A prospect who starts talking as the
+   * agent finishes is therefore unheard: the first word is dropped, and if the
+   * rest falls inside the gap as well, the whole sentence is.
+   *
+   * On 06 Oct the agent's last turn ended and "Hello." at 15:35:01 produced no
+   * reply at all. That is this.
+   *
+   * So speech outside a window is kept, not dropped, and seeds the pre-roll of
+   * the next window - which already exists to hold speech that began just before
+   * the VAD decided there was any. Bounded, so a long silence cannot grow. */
+  const IDLE_BUFFER_FRAMES = 25; // 500ms at 20ms a frame
+  const PRE_ROLL_FRAMES = IDLE_BUFFER_FRAMES + 10;
+  let idleFrames = [];
+  const seedPre = () => {
+    const seeded = idleFrames.slice();
+    idleFrames = [];
+    return seeded;
+  };
+
   const engine = makeEngine({
     number: target,
     sip: sipOptions(v),
     onLog,
     onSessionGone: endSession,
     onAudio: (b) => {
-      if (!state) return;
+      if (!state) {
+        for (let i = 0; i + 160 <= b.length; i += 160) {
+          idleFrames.push(b.subarray(i, i + 160));
+          if (idleFrames.length > IDLE_BUFFER_FRAMES) idleFrames.shift();
+        }
+        return;
+      }
       for (let i = 0; i < b.length; i += 160) {
         const frame = b.subarray(i, i + 160);
         if (frame.length < 160) continue;
@@ -326,7 +357,11 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
         }
         if (!state.started) {
           state.pre.push(frame);
-          if (state.pre.length > 10) state.pre.shift();
+          /* The pre-roll has to be able to hold what was seeded from the idle
+           * buffer as well as what arrived inside this window, or the seeded
+           * frames are evicted as soon as the first new frame lands and the
+           * prospect's opening word is lost again - which is the bug. */
+          if (state.pre.length > PRE_ROLL_FRAMES) state.pre.shift();
           if (event.speaking) { state.started = true; state.chunks.push(...state.pre); state.pre = []; }
         } else {
           state.chunks.push(frame);
@@ -372,7 +407,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     if (!state) {
       let release;
       const ended = new Promise((r) => { release = r; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     let out;
     if (isOpening) {
@@ -413,7 +448,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -446,7 +481,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: [], chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
     }
     // A prospect who has stopped talking is answered in well under a second by
     // a human. The old 15s ceiling left 15s of dead air on the line before the
