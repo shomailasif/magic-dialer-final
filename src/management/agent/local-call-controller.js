@@ -534,10 +534,16 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
      *
      * The cost of waiting one short turn is far smaller than the cost of never
      * understanding a word: a prospect who is answered is worth more than one who
-     * is answered 2s sooner but wrongly. 6000ms per attempt keeps the worst case
-     * per turn near the old 5000ms single attempt rather than the 10s two, and
-     * comfortably above the ~2.5s the gateway actually needs. */
-    const STT_ATTEMPT_BUDGET_MS = 6000;
+     * is answered 2s sooner but wrongly.
+     *
+     * Verified against the live gateway after the revert: a transcription came
+     * back in 5458ms. At 6000ms that is half a second of headroom, and it is
+     * inside the gateway's own 4500ms budget plus a slow retry - so a turn that
+     * needed its second attempt would fail here rather than being spoken late.
+     * 12000ms holds three attempts and keeps the prospect listening to us rather
+     * than to silence. The circuit breaker still short-circuits a dead gateway,
+     * so a real outage is not made slower by any of this. */
+    const STT_ATTEMPT_BUDGET_MS = 12000;
     let stt = null, lastErr = "";
     if (health.isOpen("stt")) {
       stt = { text: null, error: `STT gateway ${health.reason("stt")}` };
