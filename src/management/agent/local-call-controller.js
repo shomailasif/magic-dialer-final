@@ -308,6 +308,11 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
         const frame = b.subarray(i, i + 160);
         if (frame.length < 160) continue;
         const event = state.vad.push(frame, 20);
+        /* When the far end last made a sound. This is what the listen window's
+         * ceiling is measured from - see listenFn. It has to be stamped here,
+         * on the frame that carries the voice, because nothing else in the loop
+         * knows a human is still talking. */
+        if (event.voiced) state.lastVoicedAt = Date.now();
         const playingMs = state.playing && state.playbackStartedAt ? Date.now() - state.playbackStartedAt : 0;
         // Opening: do not chop the intro on warm-up noise. After 1s require
         // much stronger sustained speech so a short "Beep."/carrier blip cannot
@@ -378,12 +383,21 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
   });
 
   await engine.connect();
-  // Do not start the opening until callee RTP has shown up (or a short cap).
-  // Speaking the millisecond "answered" fires is how the AI opened before the
-  // far end was actually ready on the last test call.
+  /* Two gates, and they answer different questions.
+   *
+   * This one asks "is the far end ready for audio at all", and inbound RTP
+   * arrives within a frame or two of the answer, so it costs tens of
+   * milliseconds and it must stay that cheap. Speaking the millisecond
+   * "answered" fires is how the AI opened before the far end was ready.
+   *
+   * It says NOTHING about whether the other person has spoken, and that used to
+   * be the only gate: the opener was therefore on the wire long before the
+   * prospect's own "Hello?" had finished. The speech gate is firstSpeechFn below
+   * - it is a real capture window, so it ends when the VAD says their speech has
+   * ended rather than when RTP appeared. */
   if (typeof engine.waitForInboundMedia === "function") {
     const media = await engine.waitForInboundMedia(1200);
-    onLog(`[local-media-v2] opening gated on inbound RTP: ${media.gotInbound ? "yes" : "no"} after ${media.waitedMs}ms`);
+    onLog(`[local-media-v2] inbound RTP ready: ${media.gotInbound ? "yes" : "no"} after ${media.waitedMs}ms`);
   }
   let preparedOpening = { text: openingText, audio: openingAudio };
   const speakFn = async (text, turn = {}) => {
@@ -466,6 +480,16 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     if (state) {
       state.playing = false;
       state.openingProtected = false;
+      /* We were the one talking. If the far end said nothing while we played,
+       * everything this window is holding is OUR OWN voice and the silence around
+       * it, and the recognizer must never be handed that. If they DID start
+       * talking, it is theirs and it stays - see listenFn.
+       *
+       * Before this, the pre-roll was left in place and listenFn then built a
+       * fresh window over the top of it, so the tail of our own playback was
+       * either transcribed as the prospect's words or thrown away with the rest
+       * of their utterance. */
+      if (!state.started) { state.pre = []; state.chunks = []; }
     }
     if (sessionEnded) return;
     onLog(`[local-media-v2] outbound ${n} bytes PCMU/8000 ${locale} playback finished`);
@@ -474,27 +498,76 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
   const listenFn = async (turn = {}) => {
     if (sessionEnded) return { ended: true, text: null };
     let ended;
-    if (state && state.ended) {
-      ended = state.ended;
-      state.playing = false;
-      state.openingProtected = false;
+    let win;
+    if (state) {
+      /* Reuse the window that is already open.
+       *
+       * It used to build a fresh one whenever the existing window had not
+       * finished, and that threw away the prospect's speech: speakFn captures
+       * inbound audio for the whole time we are talking, and everything it holds
+       * at that moment is discarded by the replacement. A person who starts
+       * answering as the agent finishes - the ordinary way anyone interrupts -
+       * was therefore silenced, which is the exact failure the idle-frame buffer
+       * above was added to prevent. It only ever covered the gap where `state`
+       * is null, which is between windows and never during playback.
+       *
+       * Our own audio is kept out of it by the reset at the end of speakFn: if
+       * they did not speak while we played, the window is emptied. */
+      win = state;
+      ended = win.ended;
+      win.playing = false;
+      win.openingProtected = false;
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, lastVoicedAt: 0 };
+      win = state;
     }
-    // A prospect who has stopped talking is answered in well under a second by
-    // a human. The old 15s ceiling left 15s of dead air on the line before the
-    // agent said anything (measured: playback finished 20:26:07.098, "no speech
-    // in window" 20:26:22.109). The VAD still ends the window early the moment
-    // real speech stops, so this ceiling only governs "the far end said nothing
-    // at all" - and call-runner now budgets the hangup on cumulative quiet time
-    // so shortening it does not make the agent hang up sooner than before.
+    /* A prospect who has stopped talking is answered in well under a second by
+     * a human. The old 15s ceiling left 15s of dead air on the line before the
+     * agent said anything (measured: playback finished 20:26:07.098, "no speech
+     * in window" 20:26:22:109). The VAD still ends the window early the moment
+     * real speech stops, so this budget only has to govern "the far end said
+     * nothing for a while" - and call-runner budgets the hangup on cumulative
+     * quiet time, so it does not make the agent hang up sooner than before.
+     *
+     * It is a DEAD LINE budget, not a TURN budget, and that distinction is the
+     * whole fix for truncated prospect speech.
+     *
+     * It used to be a single setTimeout taken when the window opened, so it
+     * expired mid-sentence for anyone who talked for longer than the budget and
+     * the recognizer was handed the first five seconds of their words and
+     * nothing after them. On the 07 Oct call that is exactly what a transcript
+     * entry reads like:
+     *
+     *   LEAD:  What do you
+     *
+     * a sentence ending on a dangling function word, because that is where five
+     * seconds of audio fell. The comment above it claimed the VAD ends the
+     * window early "the moment real speech stops, so this ceiling only governs
+     * the far end said nothing at all" - and for an utterance with less than
+     * endSilenceMs (700ms) of breath in it, there is no such moment, so the
+     * ceiling is the only thing that ever ended the turn. A length cap belongs
+     * on what WE say; it must never bound what THEY say.
+     *
+     * So the budget is measured from the last voiced frame. While they are
+     * talking the window stays open and their whole sentence is captured; when
+     * they fall silent it still closes within the budget, which is the
+     * behaviour the number was chosen for. MAX_SPEAKING_WINDOW_MS is only a
+     * guard so a stuck VAD cannot hold a live call open forever. */
     const windowMs = Number(turn.maxSilenceMs) > 0 ? Number(turn.maxSilenceMs) : 5000;
+    const MAX_SPEAKING_WINDOW_MS = 25000;
     const windowStartedAt = Date.now();
-    const timer = setTimeout(() => { if (state && !state.done) { state.done = true; state.resolve(); } }, windowMs);
+    const quietTimer = setInterval(() => {
+      if (!win || win.done) return;
+      const quietSince = win.lastVoicedAt ? win.lastVoicedAt : windowStartedAt;
+      if (Date.now() - quietSince >= windowMs || Date.now() - windowStartedAt >= MAX_SPEAKING_WINDOW_MS) {
+        win.done = true;
+        win.resolve();
+      }
+    }, 100);
     await ended;
-    clearTimeout(timer);
+    clearInterval(quietTimer);
     const waitedMs = Date.now() - windowStartedAt;
     const captured = state;
     state = null;
@@ -595,6 +668,54 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     return { text: null, unheard: true, empty: true, junk: false, gatewayFailed, waitedMs };
   };
 
+  /* THE SPEECH GATE. Do not open our mouth until the far end has spoken.
+   *
+   * This is a product rule, and the live call of 07 Oct broke it on both counts:
+   *
+   *   ringcentral: Hi, this is Atlas with Zaz Logistics. Is now a good time...  (t+7s)
+   *   Haris:       Hello?                                                       (t+7s)
+   *
+   * The opener was already on the wire at the instant the prospect said "Hello?",
+   * because the only thing gating it was inbound RTP, which is true within a
+   * frame or two of the far end being answered - whether or not a word has been
+   * said. A person who answers a phone says something; an agent that talks over
+   * that is not holding a conversation.
+   *
+   * So this is a real capture window, not a media gate. It runs the same VAD a
+   * turn runs, so it ends when the prospect's speech ends rather than when RTP
+   * appeared, and it returns their words with it - which is what lets the
+   * conversation answer what they actually said instead of reading an opener
+   * over the top of it.
+   *
+   * FIRST_SPEECH_TIMEOUT_MS is the fallback, for a prospect who answers and says
+   * nothing at all. 4000ms:
+   *
+   *  - Long enough to be useless to skip. Somebody who has picked up and is
+   *    going to speak has started within about a second and a half of the
+   *    answer - "Hello?", "Hello, yes?", "One moment", "Yes, go ahead" - so 4s
+   *    captures every one of those with room to spare, and the window closes the
+   *    moment their breath ends rather than waiting the full budget out.
+   *  - Short enough to keep. A person who picked up and said nothing has usually
+   *    decided nobody is there, and four seconds of dead air before the first
+   *    word is about as long as a caller will sit through. It is also below the
+   *    5000ms quiet budget every other window uses, so the opener can never be
+   *    later in this call than any other thing the agent says.
+   */
+  const FIRST_SPEECH_TIMEOUT_MS = 4000;
+  const firstSpeechFn = async (turn = {}) => {
+    const got = await listenFn({ ...turn, maxSilenceMs: FIRST_SPEECH_TIMEOUT_MS, gate: true });
+    onLog(
+      "[local-media-v2] speech gate: " +
+      (got && got.ended ? "call ended before we spoke"
+        : got && got.text ? "the prospect spoke first: " + got.text
+        : got && got.junk ? "a carrier tone or voicemail, not a person"
+        : got && got.unheard ? "someone is speaking and we could not make them out"
+        : "silence; opening after " + FIRST_SPEECH_TIMEOUT_MS + "ms") +
+      " (waited " + ((got && got.waitedMs) || 0) + "ms)",
+    );
+    return got;
+  };
+
   try {
     return await callBrain({
       product: config.product,
@@ -616,6 +737,8 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
         lead: lead || null,
         speakFn,
         listenFn,
+        /* How long to wait for a voice before speaking the opening at all. */
+        firstSpeechFn,
         onLog,
         onMode,
       });
@@ -624,4 +747,12 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
   }
 }
 
-module.exports = { runLocalCall, preflightLocalSip, sipOptions };
+/* runLocalCallBody is exported alongside the entry point, not instead of it.
+ *
+ * It is the whole conversation and it cannot dial by itself: the only thing that
+ * reaches a carrier is the engine returned by createLocalRingCentralEngine, and
+ * that is a deps injection point. src/management/build/audio-sim.js runs it with
+ * an injected local media engine to drive the real VAD/STT/brain/TTS offline and
+ * time every stage, and it must never go through runLocalCall - the name that
+ * means "place a call" - even with the same deps. */
+module.exports = { runLocalCall, runLocalCallBody, preflightLocalSip, sipOptions };

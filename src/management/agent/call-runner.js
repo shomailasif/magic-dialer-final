@@ -13,7 +13,75 @@ const FAREWELL_RE = /\b(bye[\s-]?bye|goodbye|good[\s-]?bye|that'?s (?:all|it|eve
 // the 18:44Z call the prospect asked "Who is this?" and the repeat-introduction
 // guard removed the agent's name from the reply, so they were answered with
 // "Is now a good time to talk?".
-const WHO_IS_THIS_RE = /\b(who(?:'s| is) this|who(?:'s| are) (?:this|you)|what(?:'s| is) (?:this|that)|kaun (?:ho|hai)|koi hai)\b/i;
+/* Asking who is calling is a request for the introduction, not small talk. On
+ * the 18:44Z call the prospect asked "Who is this?" and the repeat-introduction
+ * guard removed the agent's name from the reply, so they were answered with
+ * "Is now a good time to talk?".
+ *
+ * It also has to recognise how people actually ask it. This listed "who is this"
+ * and nothing else, so on the 07 Oct call - where the prospect said "Who is it?"
+ * - it did not match at all, and the turn that most obviously needs an
+ * introduction fell through to the ordinary question path, where the model's
+ * answer was a question and the fallback was a callback promise. "who is it" is
+ * the most common phrasing there is and it was not in the list. */
+const WHO_IS_THIS_RE = new RegExp([
+  "\\bwho(?:'s| is| se| are) (?:this|that|it)\\b",
+  "\\bwho am i (?:speaking|talking|calling) (?:to|with)\\b",
+  "\\bwho(?:'s| is) on the line\\b",
+  "\\bwhat(?:'s| is) (?:this|that|your name)\\b",
+  "\\b(?:tell me|let me know) who (?:this|that|it|you) (?:is|are)\\b",
+  "\\bkaun (?:ho|hai)\\b",
+  "\\bkoi hai\\b",
+].join("|"), "i");
+/* "What is this about?" is the same request as "Who is it?", and on a real call
+ * they arrive back to back - "Who is it?" at t+19s and "What do you" at t+28s on
+ * the 07 Oct call. Both were answered with "Let me get you a straight answer to
+ * that - I will have someone call you back with it", which answers neither and
+ * promises something for a question that costs nothing to answer. */
+const CALL_PURPOSE_RE = /\b(?:what(?:'s| is| was)\s+(?:this|that|it|the\s+call)\s+(?:about|for)|why\s+(?:are|do)\s+you\s+(?:calling|ringing)|what\s+do\s+you\s+(?:want|need|sell|offer)|purpose\s+of\s+(?:this|the)\s+call)\b/i;
+
+/* An opener - a greeting plus "is now a good time to talk" - is a first-turn
+ * line and nothing after it.
+ *
+ * The 07 Oct call said the same sentence twice in one call, sixteen seconds
+ * apart:
+ *
+ *   ringcentral: Hi, this is Atlas with Zaz Logistics. Is now a good time... (t+7s)
+ *   ringcentral: Is now a good time for a quick call?                      (t+18s)
+ *
+ * The guard that should have caught the second one was
+ * /\bis (?:now )?(?:this|it) a good time\b/ - it needs the words "this" or "it"
+ * before "a good time", and the line that was actually spoken has neither: it
+ * is "is now a good time for", a preposition the pattern did not allow. So the
+ * repeat passed a guard that looked like it covered it, which is the same shape
+ * of failure as the repeat-ask bug the token comparison replaced. Everything in
+ * the family is matched here: "for" as well as "to", "would now be a better
+ * time", "is this an okay time". */
+const OPENER_GREETING_RE = new RegExp([
+  "\\b(?:is|would it be|would now be)\\s+(?:now\\s+)?(?:this\\s+|it\\s+|that\\s+)?(?:a|an)\\s*(?:good|okay|ok|convenient|appropriate|better)\\s+time\\b",
+  "\\b(?:good|okay|ok|convenient|appropriate)\\s+time\\s+(?:to|for)\\b",
+].join("|"), "i");
+
+/* Facts the agent was configured with, read out of config the same way the
+ * prompt reads them.
+ *
+ * persona and companyName arrive as objects from the call configuration, and
+ * String({}) is "[object Object]" - which reached the voice once, in the system
+ * prompt, because the prompt did not look inside them. An identity answer built
+ * the lazy way would put that string on the phone, so it looks. */
+function configText(value, keys, fallback = "") {
+  let v = value;
+  if (v && typeof v === "object") {
+    for (const k of keys) {
+      if (typeof v[k] === "string" && v[k].trim()) { v = v[k]; break; }
+      if (typeof v[k] === "number") { v = String(v[k]); break; }
+    }
+    if (typeof v !== "string") v = "";
+  }
+  const s = String(v == null ? "" : v).trim();
+  if (!s || s === "[object Object]") return fallback;
+  return s;
+}
 const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
   const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
 
@@ -383,6 +451,21 @@ function isForbiddenTurnSentence(sentence) {
   return askedTokenCache.some((prev) => sameAskTopic(tokens, prev));
 }
 
+/** Note what was asked, so it cannot be asked again.
+ *
+ *  Stripping a repeat is only half of it; the other half is remembering what was
+ *  actually spoken, and that has to happen for EVERY line - including the
+ *  opener. The opening was spoken outside this machinery entirely, so the
+ *  question it asks ("Is now a good time to talk?") was never on the list, and
+ *  the brain was free - and did - ask the same thing again sixteen seconds
+ *  later. */
+function recordAsks(text, askedFor, askedTokens) {
+  const t = String(text || "");
+  for (const [k, re] of ASK_TOPICS) if (re.test(t)) askedFor.add(k);
+  const toks = askTokens(t);
+  if (toks.length && /\?/.test(t)) askedTokens.push(toks);
+}
+
 /** Sentences that only re-ask for something already asked, plus a repeat intro.
  *  Everything that is actually spoken gets recorded, so the same request can
  *  never slip through twice - recording only the multi-sentence path let a
@@ -395,11 +478,7 @@ function isForbiddenTurnSentence(sentence) {
  *  while the guard that should have prevented it was running correctly. */
 function stripRepeatedAsks(text, askedFor, askedTokens) {
   bindAskedFor(askedFor, askedTokens);
-  const record = (t) => {
-    for (const [k, re] of ASK_TOPICS) if (re.test(t)) askedFor.add(k);
-    const toks = askTokens(t);
-    if (toks.length && /\?/.test(t)) askedTokens.push(toks);
-  };
+  const record = (t) => recordAsks(t, askedFor, askedTokens);
   const sentences = splitSentences(String(text || ""));
   if (sentences.length < 2) {
     // A single-sentence turn that is entirely forbidden carries no information;
@@ -420,7 +499,7 @@ function stripRepeatedAsks(text, askedFor, askedTokens) {
   return { text: kept.join(" ").trim(), forbidden: false };
 }
 
-async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null, callId = null }) {
+async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null, callId = null, waitForFirstSpeech = null }) {
   const transcript = [];
   const timeline = [];
   let heardSomething = false;
@@ -469,12 +548,17 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let pendingDetected = null;
   // Recent substantial detections, so two agreeing turns need not be adjacent.
   const recentDetections = [];
-  // Set when the prospect asks who is calling, and once the opener has been said.
+// Set when the prospect asks who is calling, and once the opener has been said.
   // Between them these stop the two opener habits that read as a machine: repeating
   // the opener as an answer to "who is this?", and re-asking "is this a good time"
   // in the middle of a conversation.
   let askedWhoIsThis = false;
-  let openingAsked = false;
+  /* "Who is it?" and "what is this about?" are the same request and are answered
+   * from the configuration, in every language, the same way. */
+  let identityAsked = false;
+  // The first thing the agent said, kept because it IS the identity answer in the
+  // language of the call - see identityAnswer.
+  let firstSpokenLine = null;
   // How many times we have already asked a prospect to repeat themselves, so the
   // apology is not the same sentence every time.
   let askedUnheard = 0;
@@ -516,7 +600,16 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // it instead of moving to the next topic.
   let lastAgentAsked = null;
   const spokenLines = new Set();
+  /* The same lines in the order they were said, for the near-duplicate check
+   * above - the exact set cannot answer "is this the same sentence again". */
+  const spokenOrder = [];
   let lastSpokenLine = null;
+  /* The prospect's first words, when they spoke before the opener did. Held so
+   * the loop can answer THAT turn instead of opening a new window and losing it. */
+  let pendingTurn = null;
+  /* The far end hung up before we had said anything. There is nobody to speak
+   * to, so there is no opener and no closing either. */
+  let gateEnded = false;
   // Everything the prospect actually said, so the closing can repeat their number.
   const leadSpeech = [];
   let openingSpoken = false;
@@ -748,6 +841,116 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
    * nothing, then answered "Who is this?" with a question about truck types.
    * If the brain has nothing usable, hold the turn. */
 
+  /* What to say into a quiet window when the brain has nothing usable.
+   *
+   * Persistence, never an introduction. The old fallback here was a hardcoded
+   * "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick
+   * call?" - a second introduction on a call that had already made one, that
+   * also re-asked the opening question, and that was the exact second sentence
+   * heard sixteen seconds after the first on the 07 Oct call. Stripping the
+   * introduction out of it left "Is now a good time for a quick call?" spoken on
+   * its own, so the repeat survived a guard that only looked at the whole turn.
+   *
+   * A line that has already been said is never returned. Empty means hold the
+   * turn, which is better than the canned loop. */
+  const REOPEN = Object.freeze({
+    en: ["Hello?", "Are you still there?", "Sorry, I did not catch anything.", "Take your time, I am here."],
+    ur: ["ہیلو؟", "کیا آپ ابھی موجود ہیں؟", "معذرت، میں نے کچھ نہیں سنا۔", "فیں کا وقت لیں، میں یہیں ہوں۔"],
+    es: ["¿Hola?", "¿Sigue ahí?", "Disculpe, no he oído nada.", "Tómese su tiempo, aquí estoy."],
+    ru: ["Алло?", "Вы ещё здесь?", "Извините, я ничего не расслышал.", "Не торопитесь, я здесь."],
+    fr: ["Allô ?", "Vous êtes toujours là ?", "Désolé, je n'ai rien entendu.", "Prenez votre temps, je suis là."],
+    it: ["Pronto?", "È ancora qui?", "Mi scusi, non ho sentito nulla.", "Si accomodi, sono qui."],
+    zh: ["您好？", "您还在吗？", "抱歉，我没听到声音。", "您慢慢来，我在。"],
+    hi: ["हैलो?", "क्या आप अभी भी हैं?", "क्षमा करें, मुझे कुछ सुनाई नहीं दिया।", "आराम से लीजिए, मैं यहाँ हूँ।"],
+  });
+  const reopenLine = (loc) => {
+    const pool = REOPEN[loc] || REOPEN.en;
+    return pool.find((l) => !spokenLines.has(normalizeSpoken(l)) && !OPENER_GREETING_RE.test(l)) || "";
+  };
+
+  /* Near-duplicate of a line already spoken.
+   *
+   * The never-repeat-a-line guard compares normalized strings, which is exact
+   * enough for lines the model writes twice and useless for a line WE construct:
+   * "I'm Atlas from Zaz Logistics, calling about our dispatch services" and "I'm
+   * Atlas with Zaz Logistics, calling about our dispatch services" normalize
+   * differently and are the same sentence to a listener. audio-sim's own
+   * repetition detector uses 90% word overlap for the same reason, and it caught
+   * exactly this on the first real run of the fixed code.
+   *
+   * It is only used on the lines we build ourselves, because a fuzzy check on the
+   * model's own turns would start deleting distinct replies. */
+  const wordsOf = (s) => new Set(String(s || "").toLowerCase().match(/[a-z]+/g) || []);
+  const isNearDuplicate = (candidate, spoken) => {
+    const a = wordsOf(candidate);
+    if (!a.size) return false;
+    for (const line of spoken) {
+      const b = wordsOf(line);
+      if (!b.size) continue;
+      let shared = 0;
+      for (const w of a) if (b.has(w)) shared++;
+      if (shared / Math.min(a.size, b.size) >= 0.8) return true;
+    }
+    return false;
+  };
+
+  /* "Who is it?" / "What is this about?" answered from the configuration.
+   *
+   * These are facts we own - our name, our company, what we sell - and they are
+   * already in the configuration the prompt is built from. They do not need a
+   * network round trip, a hedge, or a promise that someone will call back.
+   *
+   * On the 07 Oct call both questions were answered with "Let me get you a
+   * straight answer to that - I will have someone call you back with it", and the
+   * prospect said "The fuck?". A callback promise is not an answer, and for the
+   * one question where the answer costs nothing it is the worst possible reply:
+   * it tells a person who is about to hang up that we will ring them later.
+   *
+   * Two sources. The configuration always wins when it can: the name, the company
+   * and the offering are facts we own, they are already in the system prompt,
+   * and they let the same question be answered differently twice. The
+   * introduction the agent already spoke is the fallback, and it is the answer in
+   * the language of the call when there is nothing else - a call with no agent
+   * name configured, or in a language we have no translation of this for.
+   *
+   * The order of the two sources depends on what was actually asked: "Who is it?"
+   * wants the introduction, "What is this about?" wants what we sell.
+   *
+   * Every candidate is checked against what has already been said - exactly, and
+   * as a near-duplicate, because the opener-derived phrasing is the line the
+   * prospect has just heard and saying it again with one word changed is still
+   * saying it again. A prospect who asks twice is answered with a different
+   * sentence; a prospect who has exhausted every phrasing gets quiet rather than
+   * a third repeat. */
+  const identityAnswer = (loc, kind) => {
+    const openerCandidates = [];
+    if (firstSpokenLine) {
+      const kept = splitSentences(firstSpokenLine)
+        .filter((s) => !OPENER_GREETING_RE.test(s) && /\b(?:this is|i am|i'?m|my name is|speaking)\b/i.test(s))
+        .join(" ")
+        .trim();
+      if (kept) openerCandidates.push(kept);
+    }
+    const facts = {
+      name: configText(persona, ["name", "agentName", "firstName", "displayName"], ""),
+      company: configText(companyName, ["name", "companyName", "company"], ""),
+      offering: configText(product, ["name", "title", "product", "description"], ""),
+    };
+    const factCandidates = [];
+    if (facts.name && (loc || "en") === "en") {
+      const who = facts.company ? `${facts.name} with ${facts.company}` : facts.name;
+      if (facts.offering) {
+        factCandidates.push(`I am ${who}, calling about ${facts.offering}.`);
+        factCandidates.push(`You are speaking with ${who}, about ${facts.offering}.`);
+      } else {
+        factCandidates.push(`I am ${who}.`);
+        factCandidates.push(`You are speaking with ${who}.`);
+      }
+    }
+    const candidates = kind === "purpose" ? [...factCandidates, ...openerCandidates] : [...factCandidates, ...openerCandidates];
+    return candidates.find((c) => !spokenLines.has(normalizeSpoken(c)) && !isNearDuplicate(c, spokenOrder)) || "";
+  };
+
   /* The prospect's most recent words, and whether they were a question. Asking
    * for something has to produce an answer - see the unanswered-question guard
    * where the reply is produced. */
@@ -763,6 +966,15 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
        * guess" was the result. So a turn that has been heard in another language
        * is answered in that language, immediately, with the matching voice. */
       const loc = normalizeLanguage(opts.locale || activeLocale, activeLocale);
+      /* What is still unsaid of the persistence lines. Resolved once per turn so
+       * the substitutions below agree with each other about what has been used. */
+      const reopen = reopenLine(loc);
+      /* The first thing the agent says on a call is an opener: it may introduce
+       * the agent and it may ask whether this is a good time to talk. Every line
+       * after that is a conversation turn, and the guards below treat the two
+       * differently, because an introduction and an opening question are correct
+       * once and are a defect the second time. Captured before the flag is set. */
+      const isFirstAgentLine = !openingSpoken;
       // Cap here, where the words are produced, so every consumer of a turn - a
       // live call or an offline simulation - gets a speakable length. The
       // controller caps again as a net before anything reaches the wire.
@@ -792,15 +1004,21 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         const onlyAcknowledged = ACKNOWLEDGMENT_ONLY_RE.test(line);
         if (askedQuestion || onlyAcknowledged) {
           try { log("[unanswered-question] the prospect asked a question; the reply was not an answer - retrying"); } catch {}
+          /* The question has to be the one they ACTUALLY asked. This prompt used
+           * to say "I asked whether your dispatcher can call me now", which was
+           * hardcoded, so a prospect asking "Who is it?" was told they had asked
+           * about dispatch availability - and the model, answering that question
+           * instead, produced the deflection heard on the 07 Oct call. */
+          const theyAsked = String(lastProspectTurn || "").replace(/\s+/g, " ").trim();
           const retry = await askBrain({
             ...config(),
             transcript: [
               ...transcript,
-              { role: "lead", text: String(lastProspectTurn || "") },
+              { role: "lead", text: theyAsked },
               {
                 role: "lead",
                 text:
-                  "Answer my question directly. I asked whether your dispatcher can call me now. " +
+                  "Answer that question directly. The prospect asked: \"" + theyAsked + "\". " +
                   "Give me a real answer - yes or no and why - in one or two sentences. Do not ask " +
                   "me anything back, and do not just thank me.",
               },
@@ -810,6 +1028,13 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
           // Only accept the retry if it is genuinely an answer.
           if (retryLine && !/\?\s*$/.test(retryLine) && !ACKNOWLEDGMENT_ONLY_RE.test(retryLine)) {
             line = retryLine;
+          } else if (identityAsked) {
+            /* They asked who we are or what this is about, and the model gave us
+             * nothing usable. The answer to that is in the configuration, so it
+             * is said rather than promised. */
+            const identity = identityAnswer(loc, askedWhoIsThis ? "who" : "purpose");
+            if (identity) line = identity;
+            else line = "Let me get you a straight answer to that - I will have someone call you back with it.";
           } else {
             // Last resort: say plainly that it is being checked and a human will
             // answer, which is at least honest and always better than silence or
@@ -821,11 +1046,13 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
         // Never re-introduce after the opening, and never re-ask for something
         // already asked - EXCEPT when the prospect asks who is calling, because
         // then repeating it is the only correct answer.
-        if (!openingSpoken) openingSpoken = true;
-        else if (askedWhoIsThis) {
+        if (isFirstAgentLine) {
+          openingSpoken = true;
+          firstSpokenLine = line;
+        } else if (askedWhoIsThis || identityAsked) {
           // On the 18:44Z call the prospect asked "Who is this?" and the guard
           // removed "This is Atlas with Zaz Logistics" for being a repeat
-          // introduction. Skip the strip when they ask who is calling.
+          // introduction. Skip the strip when they are asking what we are.
         } else {
           const strip = lastSpokenLine
             ? stripRepeatedAsks(line, askedFor, askedTokens)
@@ -865,7 +1092,21 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
             const retryStrip = retry
               ? stripRepeatedAsks(retry, askedFor, askedTokens)
               : { text: "", forbidden: true };
-            line = retryStrip.forbidden || !retryStrip.text ? moveOnLine(loc) : retryStrip.text;
+            /* Move-on filler is the right replacement in a conversation and the
+             * wrong one on a line nobody has spoken on yet: "That gives me a
+             * clear picture." said into dead air implies an answer that does not
+             * exist. A re-open is the opposite - it claims nothing and invites a
+             * reply - so when the prospect has never spoken and the turn was
+             * refused, the re-open is the replacement.
+             *
+             * This is also where the repeated opener dies. The brain was asked
+             * for something new and produced "Is now a good time for a quick
+             * call?", which is the opener again, which is forbidden - and the
+             * live call spoke it anyway, because the replacement was filler and
+             * then the silence guard held the whole turn. */
+            line = retryStrip.forbidden || !retryStrip.text
+              ? (!heardSomething ? (reopen || moveOnLine(loc)) : moveOnLine(loc))
+              : retryStrip.text;
           } else if (strip.text) {
             line = strip.text;
           }
@@ -875,20 +1116,30 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
              * before the prospect had said anything at all. That line is a
              * move-on filler, which is only meaningful as a reply to something.
              * Spoken into a silent line it is the single most confusing thing the
-             * agent can do: it implies it heard an answer that does not exist. */
-          if (!heardSomething && !/\?/.test(line)) {
+             * agent can do: it implies it heard an answer that does not exist.
+             *
+             * A re-open is exempt, and only a re-open: it says the agent is still
+             * there and asks them to speak, which is the one thing that IS true
+             * of an unanswered turn. */
+          if (!heardSomething && !/\?/.test(line) && line !== reopen) {
             /* Nothing has been heard yet and this turn has no question in it, so
              * there is no conversation for it to advance. Wait instead. */
             line = lastAgentAsked ? "" : line;
           }
         }
-        // "Is this a good time to talk?" is only ever an opener - but the brain
-        // is allowed to say it when they have just asked who is calling, and an
-        // earlier version of this rule replaced the agent's name with a canned
-        // question in exactly that case. Never override a reply to that question.
-        if (openingAsked && !askedWhoIsThis
-          && /\b(?:is (?:now )?(?:this|it) a good time|good time to (?:talk|chat))\b/i.test(line)) {
-          line = unusableReply(loc);
+        /* The opener is a first-turn line. Any later turn that re-asks whether
+         * this is a good time to talk is the repeated opener - which is what the
+         * prospect heard twice on the 07 Oct call, eleven seconds apart:
+         * "Hi, this is Atlas with Zaz Logistics. Is now a good time to talk?" and
+         * then "Is now a good time for a quick call?". It used to slip through
+         * because the guard wanted the words "this" or "it" before "a good time"
+         * and a "for" instead of a "to".
+         *
+         * The prospect asking who is calling is the one exemption, because then
+         * re-introducing is the only correct answer. */
+        if (!isFirstAgentLine && !askedWhoIsThis && OPENER_GREETING_RE.test(line)) {
+          try { log("[repeat-opener] a later turn repeated the opening; replacing it"); } catch {}
+          line = reopen || "";
         }
       /* The brain sometimes mirrors the prospect's script even on a call
        * configured for another language, and the current voice cannot speak it.
@@ -940,7 +1191,17 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
           return;
         }
       }
+      /* Record it, so the guards own this line too.
+       *
+       * stripRepeatedAsks only records the turns it is asked to strip, which is
+       * every turn after the first. The opener - which asks "Is now a good time
+       * to talk?" - was therefore never on the list of things already asked, so
+       * nothing stopped a later turn from asking the identical question. Every
+       * spoken line goes through here instead, so there is one place that knows
+       * what this call has said. */
+      recordAsks(line, askedFor, askedTokens);
       spokenLines.add(normalizeSpoken(line));
+      spokenOrder.push(line);
       lastSpokenLine = line;
       const f = qual.fieldAskedAbout(line, leadFields);
       if (f) lastAskedField = f;
@@ -968,12 +1229,64 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
    * floor, which is already guaranteed to be present. The fetch now happens in
    * the pre-dial window, where nothing is waiting on a person. */
 
-  if (preparedOpeningText) {
-    await agent(preparedOpeningText, { intent: "opening" });
-  } else {
-    const first = await opening(config()).catch(() => ({ text: null }));
-    if (!first || !first.text) { llmFailures++; await agent(fallbackOpening(config()), { intent: "opening" }); }
-    else await agent(first.text, { intent: "opening" });
+  /* THE AI DOES NOT GET TO SPEAK FIRST.
+   *
+   * The rule is the customer's: the agent must not begin talking until the other
+   * person has answered AND spoken. The opener used to fire the moment the call
+   * connected, which is a handful of milliseconds after the far end is answered
+   * and says nothing at all about whether a human has said a word. On the 07 Oct
+   * call that produced this, at the same instant:
+   *
+   *   ringcentral: Hi, this is Atlas with Zaz Logistics. Is now a good time... (t+7s)
+   *   Haris:       Hello?                                                       (t+7s)
+   *
+   * A person who answers a phone says something. Talking over the first word is
+   * how a caller knows they have reached a machine.
+   *
+   * waitForFirstSpeech is that gate: a real capture window, provided by the
+   * media controller (local-call-controller's firstSpeechFn), so it ends when
+   * the VAD says their speech has ended rather than when media arrived. What it
+   * returns decides what we do:
+   *
+   *  - they said something  -> DO NOT open. Keep the turn and answer it. Reading a
+   *    canned opener over the top of their own greeting is the defect, and the
+   *    answer to what they actually said is worth more than our script.
+   *  - someone is there and the recognizer could not make them out -> they have
+   *    spoken, so an opener would still be talking over them; ask them to repeat.
+   *  - a carrier tone or a voicemail -> nobody to talk over, open.
+   *  - silence -> open. That is the fallback the gate's own budget bounds.
+   *  - the call ended remotely -> say nothing at all.
+   *
+   * The controller owns the budget because the VAD lives there; on a path with
+   * no gate capability (an offline simulation, the local microphone) the opener
+   * behaves exactly as it always did. */
+  if (typeof waitForFirstSpeech === "function") {
+    let gate = null;
+    try { gate = await waitForFirstSpeech({ locale: activeLocale, autoLanguage: true }); } catch { gate = null; }
+    if (gate && typeof gate === "object" && gate.ended) {
+      gateEnded = true;
+      try { log("[opening-gate] the call ended before we said anything; staying silent"); } catch {}
+    } else if (gate && gate.text && !isJunkLead(gate.text)) {
+      pendingTurn = gate;
+      try { log("[opening-gate] the prospect spoke first, so the opener is not read over them: " + gate.text); } catch {}
+    } else if (gate && gate.unheard) {
+      const pool = ASK_AGAIN[activeLocale] || [ASK_AGAIN_FALLBACK[activeLocale]].filter(Boolean);
+      if (pool.length) await agent(pool[0], { intent: "reassurance", locale: activeLocale });
+      /* They are there, whatever we could not make out of it. */
+      heardSomething = true;
+    }
+  }
+
+  /* A held turn means the prospect spoke first, so there is no opener left to
+   * read: the first thing the agent says is the reply to what they said. */
+  if (!openingSpoken && !pendingTurn && !gateEnded) {
+    if (preparedOpeningText) {
+      await agent(preparedOpeningText, { intent: "opening" });
+    } else {
+      const first = await opening(config()).catch(() => ({ text: null }));
+      if (!first || !first.text) { llmFailures++; await agent(fallbackOpening(config()), { intent: "opening" }); }
+      else await agent(first.text, { intent: "opening" });
+    }
   }
 
   // Turn count is only a runaway-call safety bound. Turn endings themselves are
@@ -984,9 +1297,17 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // request, a human request, two quiet windows, three junk windows, repeated
   // brain failure - all still fire long before this backstop.
   for (let turn = 0; turn < 20; turn++) {
-    // Always let the recognizer auto-detect the spoken language; the configured
-    // locale is only the starting language, never a permanent pin.
-    const heardResult = await listen({ locale: activeLocale, autoLanguage: true });
+    /* The gate's window IS this turn when they spoke first - it already holds
+     * their words, so it is not opened and transcribed a second time. */
+    let heardResult;
+    if (pendingTurn) {
+      heardResult = pendingTurn;
+      pendingTurn = null;
+    } else {
+      // Always let the recognizer auto-detect the spoken language; the configured
+      // locale is only the starting language, never a permanent pin.
+      heardResult = await listen({ locale: activeLocale, autoLanguage: true });
+    }
     // Remote hangup: the controller reports ended so we stop turning instead
     // of burning check-in TTS/LLM calls against a dead leg.
     if (heardResult && typeof heardResult === "object" && heardResult.ended) break;
@@ -1102,10 +1423,16 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
        * advance. Re-ask, or invite the answer to the question already asked. */
       const pendingQuestion = lastAgentAsked;
       let ask;
-      if (neverHeard && firstQuiet) {
+if (neverHeard && firstQuiet) {
         ask = { role: "lead", text: "The prospect has not answered yet. Restate who you are and your reason for calling in one short natural sentence, then ask whether this is a good time to talk. Do not ask if they can hear you." };
       } else if (neverHeard) {
-        ask = { role: "lead", text: "Still no answer. Say hello and ask whether this is a good time to talk, in one short natural sentence. Never say the line is connected or that you are ready - that sounds like a machine." };
+        /* The first quiet window is the opener; this one is a re-open, and it is
+         * the second time on the 07 Oct call that the agent said "Is now a good
+         * time for a quick call?" having already said "Is now a good time to
+         * talk?". By here the introduction has been made and the question has
+         * been asked, so instructing the model to do both again produces the
+         * repeated opener every time the model is helpful enough to comply. */
+        ask = { role: "lead", text: "Still no answer. You have ALREADY introduced yourself and asked whether this is a good time to talk. Do not introduce yourself again, do not ask that again, and do not repeat any line you have already said. Say something short and different that invites them to speak, in one short sentence. Never say the line is connected or that you are ready - that sounds like a machine." };
       } else if (pendingQuestion) {
         ask = { role: "lead", text: `You asked: "${pendingQuestion}". The prospect has not answered yet. Do NOT move on to a different topic and do NOT ask a new question. Politely invite them to answer, or repeat that one question in different words, in one short sentence.` };
       } else {
@@ -1113,10 +1440,13 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       }
       const hello = await askBrain({ transcript: [...transcript, ask], ...config() });
       if (hello.text && !isMetaLine(hello.text)) lastAgentAsked = extractQuestion(hello.text) || pendingQuestion;
-      await agent((hello.text && !isMetaLine(hello.text)) ? hello.text : (neverHeard && firstQuiet
-        ? (activeLocale === "en" ? "Hello, this is Atlas with Zaz Logistics. Is now a good time for a quick call?" : "Hello.")
-        : (activeLocale === "en" ? "Hello, is this a good time to talk?" : "Hello?")),
-      { intent: neverHeard && firstQuiet ? "opening" : "checkin", noRetry: true });
+      /* A re-open is persistence. This fallback used to be a hardcoded second
+       * introduction - "Hello, this is Atlas with Zaz Logistics. Is now a good
+       * time for a quick call?" - which is the exact pair heard on the 07 Oct
+       * call. reopenLine() never returns an introduction, never returns an
+       * opener, and never returns something already said; empty holds the turn. */
+      await agent((hello.text && !isMetaLine(hello.text)) ? hello.text : reopenLine(activeLocale),
+      { intent: "checkin", noRetry: true });
       continue;
     }
       consecutiveSilence = 0;
@@ -1160,7 +1490,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     // question is one-shot: leaving it set made the opener check stay disabled
     // for the rest of the call once they had ever asked.
     askedWhoIsThis = WHO_IS_THIS_RE.test(heard);
-    if (openingSpoken) openingAsked = true;
+    identityAsked = askedWhoIsThis || CALL_PURPOSE_RE.test(heard);
     stopRequested = STOP_RE.test(heard);
     humanRequested = HUMAN_RE.test(heard) && /\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
 
@@ -1174,6 +1504,35 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       closingSpoken = true;
       await agent(fallbackReply(heard, config()));
       break;
+    }
+    /* "Who is it?" and "What is this about?" are answered from the
+     * configuration, here, before the brain is asked.
+     *
+     * These are not judgement calls and they are not things to hedge: the name,
+     * the company and the offering are all in the config this call was started
+     * from, and they are already in the system prompt the brain is given. On the
+     * 07 Oct call "Who is it?" (t+19s) and "What do you" (t+28s) were both
+     * answered with "Let me get you a straight answer to that - I will have
+     * someone call you back with it", and the prospect said "The fuck?".
+     *
+     * Answering here rather than only as a fallback matters for two reasons. The
+     * model does know the answer, but on a call it is second-guessing a stranger
+     * and a promise is the safe-sounding option; and when it does answer, it
+     * answers in whatever shape it likes, which on that call included asking a
+     * question back. A person who asks who is calling has told us they are
+     * deciding whether to keep talking - that turn has to be short, factual and
+     * certain.
+     *
+     * A phrasing that has already been spoken is not offered again: a prospect who
+     * asks twice gets a different sentence, not a repeat and not silence. If
+     * every phrasing has been used, the loop falls through to the brain rather
+     * than saying nothing at all. */
+    if (identityAsked) {
+      const identity = identityAnswer(activeLocale, askedWhoIsThis ? "who" : "purpose");
+      if (identity) {
+        await agent(identity, { intent: "question", locale: activeLocale });
+        continue;
+      }
     }
     /* They told us they are busy. Stop qualifying and close.
      *
@@ -1301,7 +1660,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // currently never hears a closing - the 20:44Z call was cut off mid-sentence
   // on "...a load from Gujarawala to Kar" with no sign-off at all. Close it out
   // properly: thank them, say what happens next, then hang up.
-  if (!closingSpoken) {
+  if (!closingSpoken && !gateEnded) {
     closingSpoken = true;
     /* Close properly: repeat back the number the prospect actually gave and
      * commit to a manager calling within 30 minutes. The 16:09Z call ended on
@@ -1326,6 +1685,21 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
          * prospect never gave, because the brain was asked to state "the number
          * you already have on file" and invented one. */
         let line = closing.text;
+        /* And it must not be a line the prospect has already heard.
+         *
+         * The exact never-repeat guard cannot see this, because the callback
+         * promise is bolted onto the end: a model that repeats its own greeting
+         * into a closing produces "<the greeting>. A manager will call you back
+         * within the next 30 minutes.", which normalizes differently and is the
+         * same sentence. audio-sim's repetition detector flags it, and it is
+         * right to - the last thing a caller hears should not be the first thing.
+         *
+         * If the closing really is a repeat, the deterministic closing is used
+         * instead: it is ours, it is always different, and saying it is exactly
+         * what a closing is for. */
+        if (isNearDuplicate(capTurnLength(line), spokenOrder)) {
+          line = closingLine(activeLocale, captured);
+        }
         // Strip any number the model produced that we did not capture.
         if (captured) {
           const wanted = captured.replace(/\D/g, "");
@@ -1387,4 +1761,4 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   };
 }
 
-module.exports = { runCall, prospectAskedQuestion, isAcknowledgmentOnly };
+module.exports = { runCall, prospectAskedQuestion, isAcknowledgmentOnly, OPENER_GREETING_RE, configText };

@@ -28,6 +28,7 @@ async function voiceCall({
   product, leadFields, persona, companyName, callbackNumber, callbackIn,
   contactEmail, token, portal, learning, locale = "en", voiceStyle = "friendly",
   preparedOpeningText = null, onLog = () => {}, onMode = () => {}, speakFn, listenFn,
+  firstSpeechFn,
 }) {
   const callId = requestId();
 
@@ -46,10 +47,20 @@ async function voiceCall({
     return t;
   });
 
+  /* The microphone has no notion of RTP, so on the offline path the gate is just
+   * the first listen window - which is exactly what it is on the phone path too.
+   * The budget it uses there (FIRST_SPEECH_TIMEOUT_MS, 4000ms) is carried by the
+   * controller because that is where the VAD lives; the local-mic listener has its
+   * own, longer, capture window and cannot be cut to fit. */
+  const waitForFirstSpeech = firstSpeechFn || (async (turn = {}) => {
+    onLog("(waiting for a voice…)");
+    return listen(turn);
+  });
+
   onLog("Starting live call…");
   let result;
   try {
-    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText, portal, deviceToken: token, callId });
+    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText, portal, deviceToken: token, callId, waitForFirstSpeech });
   } catch (e) {
     onLog("Call failed [" + callId + "]: " + safeError(e,[token]));
     return { transcript: [], score: 0, goodLead: false, strategies: [], summary: "Call failed", callId, learning: learning || {}, posted: null };

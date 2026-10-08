@@ -11,6 +11,13 @@
  * Enforced where the text is produced (call-runner) AND where it is put on the
  * wire (local-call-controller), so neither a live call nor an offline
  * simulation can produce an over-long turn.
+ *
+ * THIS IS AN OUTPUT BUDGET AND IT MUST NEVER BE APPLIED TO WHAT THE CALLER
+ * SAYS. A prospect's words are transcribed and handed on whole: a length cap on
+ * them truncates a person mid-sentence, and "What do you" is what that looks
+ * like in a transcript. Every site that calls capTurnLength is on the agent's own
+ * side of the conversation - agent(), the controller's speakFn, and call-sim's
+ * grading of agent turns - and none of them is on the inbound path.
  */
 const MAX_TURN_CHARS = 110;
 

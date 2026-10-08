@@ -64,3 +64,8 @@ src/management/portal/rc-credentials.json
 # stray copies of build outputs that land at the management root - never sources
 /src/management/agent.exe
 /src/management/MagicDialer.exe
+
+# Audio-sim prospect fixtures: ~40-150KB of SAPI-generated WAV per scripted line.
+# The generator is committed (fixtures/make-fixtures.ps1) and the harness
+# synthesizes any missing clip on demand, so the binaries are not sources.
+src/management/build/fixtures/*.wav

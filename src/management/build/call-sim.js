@@ -57,7 +57,11 @@ const CONFIG = (() => {
 })();
 
 /* ---------- scripted prospects ---------- */
-const SCENARIOS = {
+/* Scenario scripts are kept under their own name because build/audio-sim.js
+ * exports a `SCENARIOS` of its own and the two must not be confused: one is a
+ * list of words for a text simulator, the other a list of WAV clips for the
+ * audio harness. */
+const SIM_SCENARIOS = {
   // Answers what it is asked, and gets annoyed at being asked twice.
   checklist: [
     { text: "Hello?", language: "en" },
@@ -161,7 +165,7 @@ function grade(name, script, out, spoken) {
 }
 
 async function run(name) {
-  const script = SCENARIOS[name];
+  const script = SIM_SCENARIOS[name];
   const spoken = [];
   let i = 0;
   const listen = async () => {
@@ -176,10 +180,10 @@ async function run(name) {
 
 async function main() {
   const want = process.argv[2] && process.argv[2] !== "--verbose" ? process.argv[2] : "all";
-  const names = want === "all" ? Object.keys(SCENARIOS) : [want];
+  const names = want === "all" ? Object.keys(SIM_SCENARIOS) : [want];
   let failed = 0;
   for (const n of names) {
-    if (!SCENARIOS[n]) { console.error(`unknown scenario ${n}`); process.exit(2); }
+    if (!SIM_SCENARIOS[n]) { console.error(`unknown scenario ${n}`); process.exit(2); }
     const r = await run(n);
     console.log(`\n=== scenario: ${n} ===`);
     if (VERBOSE) {

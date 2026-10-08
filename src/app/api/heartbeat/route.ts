@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createHash } from "crypto";
 import { prisma } from "@/lib/db";
 import { decryptSecret, encryptSecret, isEncryptedSecret } from "@/lib/credential-crypto";
+import { invalidateEngineDeviceAuthCache } from "@/lib/engine-device-auth";
 
 const hash=(v:string)=>createHash("sha256").update(v).digest("hex");
 
@@ -25,7 +26,12 @@ const configCache=new Map<string,{at:number;config:any}>();
 
 function cachedConfig(deviceId:string){const c=configCache.get(deviceId);if(c&&Date.now()-c.at<CONFIG_CACHE_MS)return c.config;return null}
 function cacheConfig(deviceId:string,config:any){configCache.set(deviceId,{at:Date.now(),config});if(configCache.size>64){const oldest=[...configCache.entries()].sort((a,b)=>a[1].at-b[1].at)[0];if(oldest)configCache.delete(oldest[0])}}
-export function invalidateConfigCache(deviceId?:string){if(deviceId)configCache.delete(deviceId);else configCache.clear()}
+/* Revoke-device and release-lease clear this. The AI gateway holds device auth
+ * for three seconds so the engine stops paying a database round trip per request
+ * mid-call, and it is dropped here too - otherwise a revoked device or a
+ * released lease would keep reaching the AI gateway for the rest of that
+ * window. */
+export function invalidateConfigCache(deviceId?:string){try{invalidateEngineDeviceAuthCache(deviceId)}catch{}if(deviceId)configCache.delete(deviceId);else configCache.clear()}
 
 export async function POST(req:Request){
  let b:any; try{b=await req.json()}catch{return NextResponse.json({error:"Invalid body"},{status:400})}

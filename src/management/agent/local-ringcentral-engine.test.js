@@ -70,7 +70,23 @@ assert(controller.includes("onSessionGone: endSession"), "controller must stop t
 assert(runner.includes("heardResult.ended"), "call runner must break the turn loop on remote hangup");
 assert(engine.includes("if (gone) return Promise.resolve(0)"), "post-BYE sends must not reject and crash the child");
 assert(engine.includes("!closed && !gone"), "keep-alive/status must not touch a dead session");
-assert(controller.includes("state && state.ended"), "listen phase must reuse speech captured during playback");
+/* The listen phase must REUSE the capture window that is already open, so speech
+ * the prospect started while the agent was still talking belongs to their turn.
+ *
+ * This used to be asserted as the presence of "state && state.ended", which is
+ * the weaker half of it: a window is reused only when it has ALREADY FINISHED,
+ * and the open one - the one holding the audio from the last few seconds - was
+ * built over and discarded. That is the ordinary interruption case, and it is
+ * why a prospect who began answering as the agent finished was never
+ * transcribed. Asserted against the behaviour, not the old spelling. */
+const controllerCode = controller.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+const listenPhase = controllerCode.slice(controllerCode.indexOf("const listenFn"));
+assert(
+  /if \(state\) \{\s*win = state;/.test(listenPhase),
+  "listen phase must reuse the open capture window, including speech captured during playback"
+);
+assert(controller.includes("if (!state.started) { state.pre = []; state.chunks = []; }"),
+  "the agent's own playback must never be handed to the recognizer as the prospect's words");
 assert(controller.includes("transcribeAuto"), "captured telephone audio must reach multilingual transcription");
 assert(!controller.includes("mediaConnect("), "local fallback must not route live audio through Suga WSS");
 assert(!controller.includes("await preflightLocalSip(config, deps);"), "live call must not create and revoke a disposable SIP registration before engine.connect");
