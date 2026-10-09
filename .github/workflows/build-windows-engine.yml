@@ -438,7 +438,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
-          $version = "1.4.67"
+          $version = "1.4.68"
           $tag = "engine-v$version"
           $assetUrl = "https://github.com/shomailasif/magic-dialer-final/releases/download/$tag/magic-dialer-engine-windows.exe"
           $sha = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
