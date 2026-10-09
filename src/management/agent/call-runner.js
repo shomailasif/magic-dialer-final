@@ -523,20 +523,56 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     };
     for (let attempt_ = 0; attempt_ < 2; attempt_++) {
       const left = BRAIN_BUDGET_MS - (Date.now() - startedAt);
-      if (left <= 0) { consecutiveLlmFailures++; llmFailures++; return { text: null, timeout: true }; }
+      if (left <= 0) { noteLlmFailure(); return { text: null, timeout: true }; }
       let timer = null;
       const r = await Promise.race([
         attempt(),
         new Promise((res) => { timer = setTimeout(() => res(null), left); }),
       ]).finally(() => { if (timer) clearTimeout(timer); });
-      if (r && r.text) { consecutiveLlmFailures = 0; return r; }
-      consecutiveLlmFailures++;
-      llmFailures++;
+      if (r && r.text) { noteLlmSuccess(); return r; }
+      noteLlmFailure();
       if (Date.now() - startedAt >= BRAIN_BUDGET_MS) return { text: null, timeout: true };
     }
     return { text: null };
   };
   let consecutiveSilence = 0;
+
+  /* A brain failure is OUR outage, not the prospect losing interest.
+   *
+   * Measured in audio-sim `reopen`: the gateway 502'd for about seven seconds, the
+   * brain returned nothing, and the call ended like this -
+   *
+   *   AGENT: Sorry, could you tell me a bit more about that?
+   *   AGENT: Sorry, I lost that. What were you asking about?
+   *   AGENT: Thanks for your time.  A manager will call you back within the next
+   *          30 minutes. Goodbye.
+   *
+   * The prospect said "Hello." and "Yes, go ahead." They were interested. We hung
+   * up on them because a provider was briefly unhealthy, and escalation was
+   * triggered by `llmFailures > 0` - a single failure, no threshold, and no notion
+   * of how long the outage had lasted.
+   *
+   * So a technical failure only justifies giving up on a live lead if it is
+   * SUSTAINED: several consecutive failures across a real span of wall clock. One
+   * 502, or a burst inside a few seconds, must never end a call. Escalation for a
+   * prospect who asked for a human, or who has genuinely stopped engaging, is
+   * unchanged and still works. */
+  const LLM_OUTAGE_MIN_FAILURES = Number(process.env.AUTODIAL_LLM_OUTAGE_MIN_FAILURES) || 3;
+  const LLM_OUTAGE_MIN_MS = Number(process.env.AUTODIAL_LLM_OUTAGE_MIN_MS) || 60_000;
+  let llmOutageStartedAt = 0;
+  const noteLlmFailure = () => {
+    if (!llmOutageStartedAt) llmOutageStartedAt = Date.now();
+    consecutiveLlmFailures++;
+    llmFailures++;
+  };
+  const noteLlmSuccess = () => {
+    consecutiveLlmFailures = 0;
+    llmOutageStartedAt = 0;
+  };
+  const llmOutageSustained = () =>
+    consecutiveLlmFailures >= LLM_OUTAGE_MIN_FAILURES &&
+    !!llmOutageStartedAt &&
+    Date.now() - llmOutageStartedAt >= LLM_OUTAGE_MIN_MS;
   let consecutiveJunk = 0;
   // The listen window dropped from 15s to 5s so the agent answers a prospect the
   // way a human does. Hangup still needs two full quiet windows (a proven dead
@@ -1284,7 +1320,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       await agent(preparedOpeningText, { intent: "opening" });
     } else {
       const first = await opening(config()).catch(() => ({ text: null }));
-      if (!first || !first.text) { llmFailures++; await agent(fallbackOpening(config()), { intent: "opening" }); }
+      if (!first || !first.text) { noteLlmFailure(); await agent(fallbackOpening(config()), { intent: "opening" }); }
       else await agent(first.text, { intent: "opening" });
     }
   }
@@ -1620,7 +1656,7 @@ if (neverHeard && firstQuiet) {
       const line = unusableReply(turnLocale);
       lastAgentAsked = null;
       await agent(line, { intent: "reassurance", locale: turnLocale });
-      if (consecutiveLlmFailures >= 4) break;
+      if (consecutiveLlmFailures >= 4 && llmOutageSustained()) break;
       continue;
     }
     // A meta line is not an answer. It is also not a question, so it must not
@@ -1652,7 +1688,7 @@ if (neverHeard && firstQuiet) {
 
     // Repeated AI failure must not silently turn the universal agent back into
     // a rigid industry script. End safely and leave a human-follow-up result.
-    if (consecutiveLlmFailures >= 4) break;
+    if (consecutiveLlmFailures >= 4 && llmOutageSustained()) break;
   }
 
   // A sales call must not just stop. When the loop ends for a reason that is not
@@ -1731,7 +1767,7 @@ if (neverHeard && firstQuiet) {
   const verdict = scoreLead({ transcript, fields: leadFields, locale: activeLocale });
   const allLeadWords = transcript.filter((t) => t.role === "lead").map((t) => t.text).join(" ");
   const legacyEsc = shouldEscalate({ goodLead: verdict.goodLead, maxAttemptsOfRejection: 0, hearsHumanRequest: allLeadWords, locale: activeLocale });
-  const escalateToHuman = !stopRequested && (humanRequested || llmFailures > 0 || legacyEsc.escalate);
+  const escalateToHuman = !stopRequested && (humanRequested || llmOutageSustained() || legacyEsc.escalate);
   const strategies = ["llm_company_context", "speech_driven_turns", "automatic_multilingual"];
   const updatedLearning = learn(learning || {}, {
     goodLead: verdict.goodLead,
@@ -1753,7 +1789,7 @@ if (neverHeard && firstQuiet) {
     score: Number(verdict.score.toFixed(2)),
     goodLead: verdict.goodLead,
     escalateToHuman,
-    escalateReason: stopRequested ? "do-not-call request" : (humanRequested ? "human requested" : (llmFailures ? "AI fallback required" : legacyEsc.reason)),
+    escalateReason: stopRequested ? "do-not-call request" : (humanRequested ? "human requested" : (llmOutageSustained() ? "AI gateway outage" : legacyEsc.reason)),
     learning: updatedLearning,
     strategies,
     summary: `Call about ${product || "customer offering"}: ${verdict.goodLead ? "QUALIFIED LEAD" : "not a lead"}. Lead said: ${leadLines.join(" | ") || "nothing detected"}.`,
