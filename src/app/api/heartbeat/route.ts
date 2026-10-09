@@ -62,8 +62,22 @@ export async function POST(req:Request){
   try {
    const leaseUntil = new Date(Date.now() + 2 * 60 * 1000);
    const claim = { id: d.userId, OR: [{ activeEngineMachineId: d.machineId }, { activeEngineMachineId: null }, { engineLeaseUntil: null }, { engineLeaseUntil: { lte: now } }] };
-   const renewed = await prisma.user.updateMany({ where: claim, data: { activeEngineMachineId: d.machineId, engineLeaseUntil: leaseUntil } });
-   leaseHeld = renewed.count === 1;
+/* Measured on the deployed gateway: an authorized heartbeat was taking
+     * 1883ms, and this route makes four serialized round trips to a remote
+     * Postgres on the happy path - read the device, stamp last-seen, claim the
+     * lease, stamp the lease. The claim and the lease stamp are independent
+     * writes to different rows and nothing between them needs the result of the
+     * other, so they go as one batch instead of two round trips.
+     *
+     * Writing our own device row's leaseUntil when we did NOT win the claim is
+     * inert: device leaseUntil is only ever read alongside the user's
+     * activeEngineMachineId, and a row that failed the claim has already failed
+     * that check, so it is still denied. */
+    const [renewed] = await prisma.$transaction([
+     prisma.user.updateMany({ where: claim, data: { activeEngineMachineId: d.machineId, engineLeaseUntil: leaseUntil } }),
+     prisma.engineDevice.update({ where: { id: d.id }, data: { leaseUntil } }),
+    ]);
+    leaseHeld = renewed.count === 1;
    if (!leaseHeld) {
     // Read the holder fresh, and match the takeover on that exact value. The
     // first version looked up the holding *device row* and then updated on
@@ -95,7 +109,7 @@ export async function POST(req:Request){
      console.error(`heartbeat lease takeover: ${leaseHeld ? "granted" : "refused"}`);
     }
    }
-   if (leaseHeld) await prisma.engineDevice.update({ where: { id: d.id }, data: { leaseUntil } });
+   /* The lease stamp already went out with the claim above, in one batch. */
   } catch (e) {
    // The lease table is unavailable. Last-seen was already recorded, so the
    // device is still known-good; do not tear down a live call over a lease
