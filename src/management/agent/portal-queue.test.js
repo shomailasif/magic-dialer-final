@@ -64,14 +64,14 @@ async function main() {
   const agent = src(path.join("src", "management", "agent", "agent.js"));
   for (const [name, code] of [["intelligent-brain", brain], ["multilingual-stt", stt], ["agent", agent]]) {
     assert.match(code, /require\("\.\/portal-queue"\)/, name + " must require the portal queue");
-    assert.match(code, /withPortalSlot\(/, name + " must route its portal traffic through the queue");
+    assert.match(code, /withPortal(?:Priority)?Slot\(/, name + " must route its portal traffic through the queue");
   }
   // The brain's and STT's portal fetches specifically, not just any call.
   // Whitespace-tolerant: these files are minified in places, so requiring exact
   // spacing would make the test fail for cosmetic reasons.
-  assert.match(brain, /withPortalSlot\(\s*\(\)\s*=>\s*fetch\(\s*portal\s*\+\s*"\/api\/engine\/ai\/chat"/,
+  assert.match(brain, /withPortalPrioritySlot\(\s*\(\)\s*=>\s*fetch\(\s*portal\s*\+\s*"\/api\/engine\/ai\/chat"/,
     "the AI request must be serialized");
-  assert.match(stt, /withPortalSlot\(\s*\(\)\s*=>\s*fetch\(\s*base\s*\+\s*"\/api\/engine\/ai\/stt"/,
+  assert.match(stt, /withPortalPrioritySlot\(\s*\(\)\s*=>\s*fetch\(\s*base\s*\+\s*"\/api\/engine\/ai\/stt"/,
     "the STT request must be serialized");
   assert.match(agent, /withPortalSlot\(\s*\(\)\s*=>\s*post\(\s*`\$\{heartbeatPortal\}\/api\/heartbeat`/,
     "the heartbeat must be serialized");

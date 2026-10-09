@@ -14,6 +14,7 @@ $tests = @(
   "agent\turn-corruption.behavior.test.js",
   "agent\turn-stub.behavior.test.js",
   "agent\brain-outage.behavior.test.js",
+  "agent\portal-queue-priority.behavior.test.js",
   "agent\repeat-ask.behavior.test.js",
   "agent\refusal-and-fallback.behavior.test.js",
   "agent\language-coverage.test.js",

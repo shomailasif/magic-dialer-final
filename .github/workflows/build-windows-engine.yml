@@ -4,7 +4,7 @@ name: Build Windows Engine
 # variable assigned inside one step is not visible in another; the smoke test
 # needs this to check what the installer actually installed.
 env:
-  ENGINE_VERSION: "1.4.68"
+  ENGINE_VERSION: "1.4.69"
 # CI rerun marker: fresh runner after 6617c5d upgrade-step hang
 on:
   workflow_dispatch: {}
@@ -444,7 +444,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
-          $version = "1.4.68"
+          $version = "1.4.69"
           $tag = "engine-v$version"
           $assetUrl = "https://github.com/shomailasif/magic-dialer-final/releases/download/$tag/magic-dialer-engine-windows.exe"
           $sha = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()

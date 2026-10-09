@@ -1,6 +1,6 @@
 const { requestId, safeError } = require("./safe-diagnostic");
 const health = require("./gateway-health");
-const { withPortalSlot } = require("./portal-queue");
+const { withPortalSlot, withPortalPrioritySlot } = require("./portal-queue");
 const { languageName } = require("./language");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_MODEL = "openai/gpt-oss-120b";
@@ -144,7 +144,7 @@ async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_
       const c = new AbortController();
       const t = setTimeout(() => c.abort(), timeoutMs);
       try {
-        const r = await withPortalSlot(() => fetch(portal + "/api/engine/ai/chat", {
+        const r = await withPortalPrioritySlot(() => fetch(portal + "/api/engine/ai/chat", {
           method: "POST",
           // Compact key style is deliberate and contract-pinned: safe-diagnostic
           // and call-diagnostic-correlation assert that the call id and request
