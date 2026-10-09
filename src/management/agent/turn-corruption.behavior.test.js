@@ -1,4 +1,4 @@
-const { capTurnLength } = require("C:/Users/USER/Documents/Default Project/autodial-ai/src/management/agent/turn-length");
+const { capTurnLength } = require("./turn-length");
 
 /* Both corruptions were heard on the wire on 06/07 Oct 2026:
  *   "Hi, this is Atlas from Zaz Logistics- is now a good time to talk?"

@@ -1,4 +1,4 @@
-const { capTurnLength, stripSpokenArtifacts } = require("C:/Users/USER/Documents/Default Project/autodial-ai/src/management/agent/turn-length");
+const { capTurnLength, stripSpokenArtifacts } = require("./turn-length");
 
 const cases = [
   // The two that were heard as "Talk." and "Let." on the 07 Oct call.
