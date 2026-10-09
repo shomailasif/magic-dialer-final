@@ -142,10 +142,28 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
 
   let state = null;
   let sessionEnded = false;
+  /* Close a capture window exactly once, and freeze what it was holding when it
+   * closed.
+   *
+   * Inbound frames keep arriving for as long as `state` is non-null, so reading
+   * state.chunks after the window resolved can pick up frames from AFTER the
+   * turn ended. That used to be harmless. It is not harmless now that
+   * transcription can start before the window closes: the re-transcribe decision
+   * has to be made against the buffer that belongs to this turn, not against
+   * whatever arrived while the browser was elsewhere. So the frame list is copied
+   * at close and that copy is what gets transcribed. */
+  const closeWindow = (win) => {
+    if (!win || win.done) return;
+    win.done = true;
+    win.finalChunks = win.chunks.slice();
+    win.voicedAfterEos = win.voicedAfterEos || 0;
+    win.onEos = null;
+    win.resolve();
+  };
   const endSession = () => {
     if (sessionEnded) return;
     sessionEnded = true;
-    if (state && !state.done) { state.done = true; state.resolve(); }
+    if (state) closeWindow(state);
     onLog("[local-media-v2] remote hangup; conversation loop will stop");
   };
   let activeLocale = config.lang && config.lang !== "auto" ? normalizeLanguage(config.lang) : "en";
@@ -370,12 +388,36 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
           if (event.speaking) { state.started = true; state.chunks.push(...state.pre); state.pre = []; }
         } else {
           state.chunks.push(frame);
+          /* END OF SPEECH, LATCHED ONCE.
+           *
+           * `event.ended` stays true for every silent frame from here on, so it
+           * has to be latched or the timestamp would keep moving and measure the
+           * end of the silence rather than the start of it.
+           *
+           * This is the moment transcription starts. Everything the VAD knows is
+           * already in state.chunks, and the 250ms hold below is only insurance
+           * against a prospect who resumes. Waiting for that insurance before
+           * starting STT cost ~250ms of dead air on every single turn; now the
+           * two overlap, and the hold's verdict is applied afterwards (see
+           * listenFn). */
+          if (event.ended && !state.eosLatched) {
+            state.eosLatched = true;
+            if (typeof state.onEos === "function") {
+              try { state.onEos(); } catch (e) { onLog("[local-media-v2] end-of-speech hook failed: " + ((e && e.message) || e)); }
+            }
+          }
+          /* Any voice after the end-of-speech latch is a resumed utterance, which
+           * is what decides whether the transcript has to be redone. Counted, not
+           * inferred from length: the hold also accumulates ~250ms of SILENCE, so
+           * the buffer always grows during it and length alone would say "the
+           * hold was used" on every turn. */
+          if (state.eosLatched && event.voiced) state.voicedAfterEos++;
           // End-of-utterance with a short hold so a resumed sentence is kept in
           // the same window instead of being cut off and re-transcribed.
           if (event.ended && !state.done && !state.holdUntil) state.holdUntil = Date.now() + SPEECH_HOLD_MS;
           if (state.holdUntil) {
             if (event.voiced) state.holdUntil = 0; // they carried on: same utterance
-            else if (!state.done && Date.now() >= state.holdUntil) { state.done = true; state.resolve(); }
+            else if (!state.done && Date.now() >= state.holdUntil) closeWindow(state);
           }
         }
       }
@@ -421,7 +463,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     if (!state) {
       let release;
       const ended = new Promise((r) => { release = r; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
     }
     let out;
     if (isOpening) {
@@ -462,7 +504,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -520,7 +562,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, lastVoicedAt: 0 };
+      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, lastVoicedAt: 0, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
       win = state;
     }
     /* A prospect who has stopped talking is answered in well under a second by
@@ -562,87 +604,151 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
       if (!win || win.done) return;
       const quietSince = win.lastVoicedAt ? win.lastVoicedAt : windowStartedAt;
       if (Date.now() - quietSince >= windowMs || Date.now() - windowStartedAt >= MAX_SPEAKING_WINDOW_MS) {
-        win.done = true;
-        win.resolve();
+        closeWindow(win);
       }
     }, 100);
+
+    /* TRANSCRIPTION STARTS AT THE VAD'S OWN END-OF-SPEECH, NOT AFTER THE HOLD.
+     *
+     * The window used to sit on 950ms of dead air before a single byte reached
+     * the recognizer: 700ms of VAD end-silence plus SPEECH_HOLD_MS of fixed wait
+     * (measured, audio-sim, real Groq STT + real Groq brain + real Edge TTS):
+     *
+     *   turn     eos   hold    stt   brain    tts   total
+     *   0        687    252    299     253   2076    3600
+     *
+     * All of it is avoidable without touching what the hold is FOR. The hold
+     * exists because a prospect who resumes mid-sentence must stay one utterance
+     * - "it's the" followed by the number 17 seconds later was the stuttering
+     * that was complained about, and deleting the hold reintroduces it. But the
+     * hold is not a reason to WAIT: at the instant the VAD says ended, the audio
+     * is already buffered, so STT can begin immediately and the hold runs
+     * alongside it.
+     *
+     * So the turn is now speculative-then-corrected:
+     *   - STT starts on the buffer as it stands at end-of-speech.
+     *   - if the hold expires without a voiced frame, that transcript is the
+     *     answer. One STT call, ~250ms earlier than before.
+     *   - if a voiced frame arrives during the hold, the prospect carried on, so
+     *     that transcript is a fragment of a longer sentence. It is discarded and
+     *     STT runs again on the extended buffer, and the LONGER one wins.
+     *
+     * The re-transcribe only happens on turns where the hold is actually used,
+     * which is exactly the turn where a fragment would have been a defect, so one
+     * extra billable STT call there is the correct trade against truncating
+     * somebody. Worst case those turns are ~250ms + one STT slower than before.
+     */
+    const runStt = async (audio) => {
+      onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
+      const sttHint = turn.autoLanguage ? "auto" : (turn.locale || activeLocale);
+      /* This audio is the prospect's only utterance. If the STT gateway blips -
+       * measured live: "STT gateway HTTP 503" - the whole conversation goes blind.
+       *
+       * But four 6s attempts is 24s of silence for one short sentence, and on the
+       * 20:40Z call that happened three times in a row and then again for the next
+       * three turns, because nothing remembered the gateway was already down. So:
+       * two bounded attempts, and a circuit breaker that stops paying once the
+       * gateway has proved itself dead. Worst case per turn drops from ~25s to
+       * ~10s, and to under 100ms on every turn after the third failure. */
+      const STT_ATTEMPTS = 2;
+      /* Measured on the 06 Oct call: every turn cost 11-15s of dead air. The cause
+       * was this budget at 5000ms per attempt, twice, before the AI was even asked,
+       * so one sentence cost ten seconds of waiting and a failed one cost twenty.
+       *
+       * It was then cut to 2500ms to halve that, and that was wrong. The live call
+       * on 07 Oct measured real transcriptions at 2516ms and 2503ms - a couple of
+       * milliseconds past the new budget - so every single turn was discarded and
+       * the agent went deaf:
+       *   STT attempt 1/2 failed: STT attempt exceeded 2500ms (2516ms)
+       *   STT attempt 2/2 failed: STT attempt exceeded 2500ms (2503ms)
+       * The transcript showed the agent talking to nobody - "That gives me a clear
+       * picture", three "Sorry"s, and a prospect asking "Who is this?" twice with no
+       * answer. None of that was the brain failing; it was never given a word to
+       * work with. Halving the budget did not halve the silence, it removed the
+       * hearing.
+       *
+       * The cost of waiting one short turn is far smaller than the cost of never
+       * understanding a word: a prospect who is answered is worth more than one who
+       * is answered 2s sooner but wrongly.
+       *
+       * Verified against the live gateway after the revert: a transcription came
+       * back in 5458ms. At 6000ms that is half a second of headroom, and it is
+       * inside the gateway's own 4500ms budget plus a slow retry - so a turn that
+       * needed its second attempt would fail here rather than being spoken late.
+       * 12000ms holds three attempts and keeps the prospect listening to us rather
+       * than to silence. The circuit breaker still short-circuits a dead gateway,
+       * so a real outage is not made slower by any of this. */
+      const STT_ATTEMPT_BUDGET_MS = 12000;
+      let stt = null, lastErr = "";
+      if (health.isOpen("stt")) {
+        stt = { text: null, error: `STT gateway ${health.reason("stt")}` };
+      } else {
+        for (let attempt = 1; attempt <= STT_ATTEMPTS; attempt++) {
+          const startedAt = Date.now();
+          let r = null;
+          try {
+            r = await Promise.race([
+              sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken }),
+              new Promise((res) => setTimeout(() => res({ error: `STT attempt exceeded ${STT_ATTEMPT_BUDGET_MS}ms` }), STT_ATTEMPT_BUDGET_MS)),
+            ]);
+          } catch (e) { r = { error: String((e && e.message) || e) }; }
+          if (r && r.error) {
+            lastErr = r.error;
+            health.recordFailure("stt");
+            onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} failed: ${r.error} (${Date.now() - startedAt}ms)`);
+          } else {
+            health.recordSuccess("stt");
+          }
+          if (r && r.text) { stt = r; break; }
+          if (r && !r.error) { stt = r; break; } // a real empty result, not a failure
+          if (attempt < STT_ATTEMPTS) await new Promise((res) => setTimeout(res, 200));
+        }
+      }
+      return stt || { text: null, error: lastErr || "STT unavailable" };
+    };
+
+    /* Idempotent: the latch fires once, and listenFn also fires it directly when
+     * the window ended before this turn started listening to it (a prospect who
+     * talked over the agent can reach end-of-speech before listenFn runs). */
+    let early = null;
+    const startEarlyStt = () => {
+      if (early || !win.started || !win.chunks.length || win.done) return;
+      const snapshot = Buffer.concat(win.chunks);
+      early = { promise: runStt(snapshot).catch((e) => ({ text: null, error: String((e && e.message) || e) })) };
+    };
+    win.onEos = startEarlyStt;
+    if (win.eosLatched) startEarlyStt();
+
     await ended;
     clearInterval(quietTimer);
+    win.onEos = null;
     const waitedMs = Date.now() - windowStartedAt;
     const captured = state;
     state = null;
     if (sessionEnded) return { ended: true, text: null };
-    if (!captured.started || !captured.chunks.length) {
+    const turnChunks = (captured.finalChunks && captured.finalChunks.length) ? captured.finalChunks : captured.chunks;
+    if (!captured.started || !turnChunks.length) {
       onLog(`[local-media-v2] listen: no speech in window (${waitedMs}ms)`);
       return { text: null, quiet: true, waitedMs };
     }
-    const audio = Buffer.concat(captured.chunks);
-    onLog(`[local-media-v2] inbound ${audio.length} bytes PCMU/8000`);
-    const sttHint = turn.autoLanguage ? "auto" : (turn.locale || activeLocale);
-    /* This audio is the prospect's only utterance. If the STT gateway blips -
-     * measured live: "STT gateway HTTP 503" - the whole conversation goes blind.
-     *
-     * But four 6s attempts is 24s of silence for one short sentence, and on the
-     * 20:40Z call that happened three times in a row and then again for the next
-     * three turns, because nothing remembered the gateway was already down. So:
-     * two bounded attempts, and a circuit breaker that stops paying once the
-     * gateway has proved itself dead. Worst case per turn drops from ~25s to
-     * ~10s, and to under 100ms on every turn after the third failure. */
-    const STT_ATTEMPTS = 2;
-    /* Measured on the 06 Oct call: every turn cost 11-15s of dead air. The cause
-     * was this budget at 5000ms per attempt, twice, before the AI was even asked,
-     * so one sentence cost ten seconds of waiting and a failed one cost twenty.
-     *
-     * It was then cut to 2500ms to halve that, and that was wrong. The live call
-     * on 07 Oct measured real transcriptions at 2516ms and 2503ms - a couple of
-     * milliseconds past the new budget - so every single turn was discarded and
-     * the agent went deaf:
-     *   STT attempt 1/2 failed: STT attempt exceeded 2500ms (2516ms)
-     *   STT attempt 2/2 failed: STT attempt exceeded 2500ms (2503ms)
-     * The transcript showed the agent talking to nobody - "That gives me a clear
-     * picture", three "Sorry"s, and a prospect asking "Who is this?" twice with no
-     * answer. None of that was the brain failing; it was never given a word to
-     * work with. Halving the budget did not halve the silence, it removed the
-     * hearing.
-     *
-     * The cost of waiting one short turn is far smaller than the cost of never
-     * understanding a word: a prospect who is answered is worth more than one who
-     * is answered 2s sooner but wrongly.
-     *
-     * Verified against the live gateway after the revert: a transcription came
-     * back in 5458ms. At 6000ms that is half a second of headroom, and it is
-     * inside the gateway's own 4500ms budget plus a slow retry - so a turn that
-     * needed its second attempt would fail here rather than being spoken late.
-     * 12000ms holds three attempts and keeps the prospect listening to us rather
-     * than to silence. The circuit breaker still short-circuits a dead gateway,
-     * so a real outage is not made slower by any of this. */
-    const STT_ATTEMPT_BUDGET_MS = 12000;
-    let stt = null, lastErr = "";
-    if (health.isOpen("stt")) {
-      stt = { text: null, error: `STT gateway ${health.reason("stt")}` };
+    const audio = Buffer.concat(turnChunks);
+    const holdWasUsed = (captured.voicedAfterEos || 0) > 0;
+    let stt;
+    if (early && !holdWasUsed) {
+      /* The ordinary turn: the hold found nobody, so the speculative transcript
+       * IS the turn, and exactly one STT call was made. */
+      stt = await early.promise;
     } else {
-      for (let attempt = 1; attempt <= STT_ATTEMPTS; attempt++) {
-        const startedAt = Date.now();
-        let r = null;
-        try {
-          r = await Promise.race([
-            sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken }),
-            new Promise((res) => setTimeout(() => res({ error: `STT attempt exceeded ${STT_ATTEMPT_BUDGET_MS}ms` }), STT_ATTEMPT_BUDGET_MS)),
-          ]);
-        } catch (e) { r = { error: String((e && e.message) || e) }; }
-        if (r && r.error) {
-          lastErr = r.error;
-          health.recordFailure("stt");
-          onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} failed: ${r.error} (${Date.now() - startedAt}ms)`);
-        } else {
-          health.recordSuccess("stt");
-        }
-        if (r && r.text) { stt = r; break; }
-        if (r && !r.error) { stt = r; break; } // a real empty result, not a failure
-        if (attempt < STT_ATTEMPTS) await new Promise((res) => setTimeout(res, 200));
+      /* Either the hold caught a resumed sentence - in which case the speculative
+       * transcript is a fragment and the longer one must win - or there was no
+       * speculative call to begin with. The speculative call is awaited first so
+       * two recognizer calls can never be in flight for one turn at once. */
+      if (early) {
+        const first = await early.promise;
+        if (holdWasUsed) onLog(`[local-media-v2] prospect resumed inside the ${SPEECH_HOLD_MS}ms hold; re-transcribing the full utterance (speculative pass returned ${JSON.stringify(String((first && first.text) || "").slice(0, 40))})`);
       }
+      stt = await runStt(audio);
     }
-    if (!stt) stt = { text: null, error: lastErr || "STT unavailable" };
     // Locale changes are owned by call-runner (it applies command/substantial
     // guards); here we only report what the recognizer saw.
     if (stt.language) onLog(`[local-media-v2] STT detected language ${stt.language}`);

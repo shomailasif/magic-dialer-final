@@ -326,6 +326,22 @@ async function speakHeadTTS(text, { locale = "en", rate = 1, style = "human" } =
   }
 }
 
+/* How long the HeadTTS request is allowed to take.
+ *
+ * HeadTTS is a local Kokoro server on 127.0.0.1:8883, reached over loopback. A
+ * local neural render of one phone line is a few hundred milliseconds, and a
+ * server that is not running refuses the connection immediately - so the only
+ * situation this timeout actually governs is a server that accepted the socket
+ * and then stopped answering.
+ *
+ * It was 240000ms, and that is a hazard rather than a safety net: this call sits
+ * on the turn's critical path, so a wedged HeadTTS meant the prospect listened
+ * to four minutes of dead air on a tier they would never hear from, on a machine
+ * that is almost never going to use this tier at all. 3000ms is more than an
+ * order of magnitude above a local render and keeps the whole fallback chain
+ * inside a prospect's patience. A healthy local server is nowhere near it. */
+const HEADTTS_TIMEOUT_MS = 3000;
+
 /** POST to HeadTTS server, write base64 audio to `outFile`. */
 function synthViaServer(text, outFile, locale, rate) {
   return new Promise((resolve) => {
@@ -352,7 +368,7 @@ function synthViaServer(text, outFile, locale, rate) {
       },
     );
     req.on("error", () => resolve(false));
-    req.setTimeout(240000, () => { req.destroy(); resolve(false); });
+    req.setTimeout(HEADTTS_TIMEOUT_MS, () => { req.destroy(); resolve(false); });
     req.write(data);
     req.end();
   });
@@ -590,6 +606,119 @@ function edgeWsGec(nowS = Date.now() / 1000) {
   return crypto.createHash("sha256").update(`${Math.floor(ticks)}${EDGE_WS_TOKEN}`, "ascii").digest("hex").toUpperCase();
 }
 
+/* ONE WARM EDGE SOCKET, REUSED ACROSS TURNS.
+ *
+ * WHERE THE TTS COST ACTUALLY IS. Measured against the live read-aloud endpoint,
+ * five consecutive renders of short lines on a FRESH connection each:
+ *
+ *   handshake + websocket upgrade   600ms median
+ *   first audio byte                193ms after the handshake
+ *   synthesis to turn.end           390ms median
+ *   mp3 -> PCMU decode               54ms median
+ *
+ * So roughly two thirds of a turn's TTS cost is the dial, not the synthesis,
+ * and it was paid on every single turn because edgeWsSynth dialled a new
+ * wss://speech.platform.bing.com for each one. That is also why TTS time is flat
+ * against text length (10 chars 965ms, 65 chars 1065ms) - a bigger line just
+ * streams longer on a connection that had already cost the same to open.
+ *
+ * REUSE WAS MEASURED, NOT ASSUMED. One connection, ten consecutive syntheses
+ * 3-6s apart: every turn returned audio and readyState stayed OPEN throughout,
+ * first audio byte 169-234ms, whole turn 324-501ms with no handshake at all.
+ * The same socket survives a 30s idle gap. So the socket is pooled rather than
+ * dialled per turn.
+ *
+ * WHY THE CREDENTIALS STAY VALID. Sec-MS-GEC (edgeWsGec) buckets the clock into
+ * 300-second windows and hashes the bucket with the public client token; it is
+ * the credential for the HTTP upgrade, and it is not re-presented per message.
+ * A pooled connection opened before a window boundary therefore keeps working
+ * after it, which is why the pool is allowed to outlive one bucket.
+ *
+ * WHY IT IS STILL BOUNDED. Every bound here is about never handing out a socket
+ * that could be rejected mid-call, not about tidiness:
+ *
+ *   EDGE_WS_POOL_IDLE_MS   - unused for longer than this and the connection is
+ *                            closed instead of pooled. Turns are seconds apart
+ *                            inside a call, so it stays warm through a call and
+ *                            dies between calls rather than sitting on a
+ *                            possibly-stale credential all afternoon.
+ *   EDGE_WS_POOL_MAX_AGE_MS - an absolute ceiling regardless of use.
+ *   EDGE_WS_POOL_MAX       - at most this many idle connections are kept. A
+ *                            process running two calls leases one each, so two
+ *                            conversations can never share a connection and
+ *                            interleave each other's audio frames.
+ *
+ * A synthesis that did not finish cleanly (error, timeout, unexpected close)
+ * returns the socket to nobody: the protocol position is unknown, so it is
+ * terminated and the next turn dials. That is also what keeps a dead connection
+ * from being leased and failing the turn behind it.
+ */
+const EDGE_WS_POOL_MAX = 2;
+const EDGE_WS_POOL_IDLE_MS = 90000;
+const EDGE_WS_POOL_MAX_AGE_MS = 600000;
+const EDGE_WS_CONNECT_TIMEOUT_MS = 4000;
+const edgeWsPool = [];
+const EDGE_WS_OPENED_AT = new WeakMap();
+
+/** Drop any pooled connection that must not be handed to a synthesis. */
+function edgeWsPrunePool() {
+  const now = Date.now();
+  for (let i = edgeWsPool.length - 1; i >= 0; i--) {
+    const e = edgeWsPool[i];
+    const openedAt = (e && EDGE_WS_OPENED_AT.get(e.ws)) || 0;
+    const bad = !e || !e.ws || e.ws.readyState !== 1
+      || now - e.idleSince >= EDGE_WS_POOL_IDLE_MS
+      || (openedAt && now - openedAt >= EDGE_WS_POOL_MAX_AGE_MS);
+    if (!bad) continue;
+    edgeWsPool.splice(i, 1);
+    try { if (e && e.ws) { if (typeof e.ws.terminate === "function") e.ws.terminate(); else e.ws.close(); } } catch { /* already gone */ }
+  }
+}
+
+/** Take a warm connection, or null to dial a fresh one. */
+function edgeWsLease() {
+  edgeWsPrunePool();
+  const entry = edgeWsPool.pop();
+  return entry ? entry.ws : null;
+}
+
+/** Offer a cleanly-finished connection back for the next turn. */
+function edgeWsRelease(ws) {
+  if (!ws) return;
+  try {
+    edgeWsPrunePool();
+    if (ws.readyState !== 1) return;
+    if (edgeWsPool.length >= EDGE_WS_POOL_MAX) { ws.close(); return; }
+    edgeWsPool.push({ ws, idleSince: Date.now() });
+  } catch { /* a connection that cannot be parked is simply not pooled */ }
+}
+
+function edgeWsDial() {
+  return new Promise((resolve) => {
+    let WS;
+    try { WS = require("ws"); } catch { resolve(null); return; }
+    let ws;
+    try {
+      ws = new WS(
+        `${EDGE_WS_HOST}?TrustedClientToken=${EDGE_WS_TOKEN}&ConnectionId=${crypto.randomUUID().replace(/-/g, "")}&Sec-MS-GEC=${edgeWsGec()}&Sec-MS-GEC-Version=${EDGE_WS_GEC_VERSION}`,
+        { headers: { ...EDGE_WS_HEADERS, Cookie: `muid=${crypto.randomBytes(16).toString("hex").toUpperCase()};` }, perMessageDeflate: true },
+      );
+    } catch { resolve(null); return; }
+    EDGE_WS_OPENED_AT.set(ws, Date.now());
+    /* Registered once per connection, so a socket that dies while it is sitting
+     * in the pool cannot be leased by the next turn. */
+    ws.on("close", () => {
+      const i = edgeWsPool.findIndex((e) => e && e.ws === ws);
+      if (i >= 0) edgeWsPool.splice(i, 1);
+    });
+    let settled = false;
+    const done = (v) => { if (settled) return; settled = true; clearTimeout(timer); resolve(v); };
+    const timer = setTimeout(() => { try { ws.terminate(); } catch {} done(null); }, EDGE_WS_CONNECT_TIMEOUT_MS);
+    ws.once("open", () => done(ws));
+    ws.once("error", () => { try { ws.terminate(); } catch {} done(null); });
+  });
+}
+
 function edgeWsClean(text) {
   return String(text || "")
     .split("").map((c) => {
@@ -599,9 +728,6 @@ function edgeWsClean(text) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** One Edge WS synthesis of the FULL utterance → MP3 or null.
- * Edge rejects riff-16khz/other raw formats with close 1007; only the
- * audio-* compressed formats (mp3) are accepted. */
 /** The SSML language tag that matches an Edge voice, e.g. "en-US-AvaNeural"
  *  -> "en-US". Was hardcoded to en-US, so every non-English turn was
  *  synthesised with an English language tag. */
@@ -611,20 +737,32 @@ function voiceLangFor(voice) {
   return m ? m[1] : "";
 }
 
-function edgeWsSynth(text, voice, ratePct, opts = {}) {
-  return new Promise((resolve) => {
-    let WS;
-    try { WS = require("ws"); } catch { resolve(null); return; }
+/* One Edge WS synthesis of the FULL utterance -> MP3 or null.
+ * Edge rejects riff-16khz/other raw formats with close 1007; only the
+ * audio-* compressed formats (mp3) are accepted.
+ *
+ * The connection comes from the warm pool when there is one (see the pool notes
+ * above) and is handed back only after a clean turn.end, so a connection that
+ * errored, timed out or closed early is terminated rather than inherited by the
+ * next turn. */
+async function edgeWsSynth(text, voice, ratePct, opts = {}) {
+  const ws = edgeWsLease() || (await edgeWsDial());
+  if (!ws) return null;
+  return await new Promise((resolve) => {
     let done = false;
-    const timer = setTimeout(() => finish(null), 6000);
-    function finish(buf) {
+    const timer = setTimeout(() => finish(null, false), 6000);
+    /* `reusable` is the whole safety argument for the pool: a turn that ended
+     * cleanly on turn.end with audio leaves the connection at a known protocol
+     * position, and anything else leaves it at an unknown one. */
+    function finish(buf, reusable) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      try { if (ws) ws.close(); } catch {}
+      try { ws.off("message", onMessage); } catch {}
+      if (reusable) edgeWsRelease(ws);
+      else { try { if (typeof ws.terminate === "function") ws.terminate(); else ws.close(); } catch {} }
       resolve(buf);
     }
-    let ws;
     const stamp = edgeWsDate();
     /* Expression: per-turn pitch and volume, and a style where the voice has
      * one. Every turn used to be pitch +0Hz / volume +0%, which is why the voice
@@ -643,30 +781,22 @@ function edgeWsSynth(text, voice, ratePct, opts = {}) {
      * ~1.3s. Pitch/rate/volume is the part that is reliably honoured, and it is
      * what actually reads as expression on the phone. */
     const styleAttr = "";
-    try {
-      ws = new WS(
-        `${EDGE_WS_HOST}?TrustedClientToken=${EDGE_WS_TOKEN}&ConnectionId=${crypto.randomUUID().replace(/-/g, "")}&Sec-MS-GEC=${edgeWsGec()}&Sec-MS-GEC-Version=${EDGE_WS_GEC_VERSION}`,
-        { headers: { ...EDGE_WS_HEADERS, Cookie: `muid=${crypto.randomBytes(16).toString("hex").toUpperCase()};` }, perMessageDeflate: true },
-      );
-    } catch { finish(null); return; }
     const chunks = [];
-    ws.on("open", () => {
-      ws.send(
-        `X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`,
-        (err) => {
-          if (err) { finish(null); return; }
-          ws.send(
-            `X-RequestId:${crypto.randomUUID().replace(/-/g, "")}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
-            `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${langTag}'>` +
-            `<voice name='${voice}'${styleAttr}><prosody pitch='${pitchArg}' rate='${rateArg}' volume='${volArg}'>${edgeWsClean(text)}</prosody></voice></speak>`,
-            (e2) => { if (e2) finish(null); },
-          );
-        },
-      );
-    });
-    ws.on("message", (raw, isBinary) => {
+    const sendTurn = () => ws.send(
+      `X-Timestamp:${stamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}\r\n`,
+      (err) => {
+        if (err) { finish(null, false); return; }
+        ws.send(
+          `X-RequestId:${crypto.randomUUID().replace(/-/g, "")}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${stamp}Z\r\nPath:ssml\r\n\r\n` +
+          `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='${langTag}'>` +
+          `<voice name='${voice}'${styleAttr}><prosody pitch='${pitchArg}' rate='${rateArg}' volume='${volArg}'>${edgeWsClean(text)}</prosody></voice></speak>`,
+          (e2) => { if (e2) finish(null, false); },
+        );
+      },
+    );
+    const onMessage = (raw, isBinary) => {
       if (!isBinary) {
-        if (String(raw).includes("turn.end")) finish(Buffer.concat(chunks));
+        if (String(raw).includes("turn.end")) finish(chunks.length ? Buffer.concat(chunks) : null, chunks.length > 0);
         return;
       }
       const buf = Buffer.from(raw);
@@ -676,14 +806,20 @@ function edgeWsSynth(text, voice, ratePct, opts = {}) {
         const head = buf.toString("ascii", 2, 2 + hl);
         if (!head.includes("Path:audio")) return;
         /* Edge binary audio frame = uint16 headerLen | headerLen header bytes |
-           mp3 payload to end of message. No uint16 data-length field follows,
-           so skipping 2 more bytes ate the first 2 bytes of every 720B chunk
-           (5x144B MPEG2 frames) and destroyed MP3 frame alignment. */
+         * mp3 payload to end of message. No uint16 data-length field follows,
+         * so skipping 2 more bytes ate the first 2 bytes of every 720B chunk
+         * (5x144B MPEG2 frames) and destroyed MP3 frame alignment. */
         chunks.push(buf.subarray(2 + hl));
-      } catch { finish(null); }
-    });
-    ws.on("error", () => finish(null));
-    ws.on("close", () => { if (!done) finish(chunks.length ? Buffer.concat(chunks) : null); });
+      } catch { finish(null, false); }
+    };
+    ws.on("message", onMessage);
+    ws.once("error", () => finish(null, false));
+    ws.once("close", () => { if (!done) finish(chunks.length ? Buffer.concat(chunks) : null, false); });
+    /* A leased connection is already open, so its `open` event has been and gone.
+     * A freshly dialled one may still be connecting, and edgeWsDial only resolves
+     * once it is open - so by here it is open either way. */
+    if (ws.readyState !== 1) { finish(null, false); return; }
+    sendTurn();
   });
 }
 
@@ -810,6 +946,108 @@ async function sapiToBuffer(text, { rate = 1 } = {}) {
   }
 }
 
+/* ---------- rendered-audio cache ----------
+ *
+ * The agent says a small set of lines over and over, on every call: the opener,
+ * "Sorry, I did not catch that", every re-ask, the refusals, the callback
+ * sentence, the busy close. Voice output is deterministic for the same text,
+ * voice and prosody, so those renders are worth keeping - and keeping them is
+ * what takes TTS off those turns entirely, which matters because the cost of a
+ * render is dominated by a fixed dial rather than by synthesis (see the socket
+ * pool notes: 600ms handshake against 390ms synthesis on a fresh connection).
+ *
+ * WHAT IS IN THE KEY. Everything that changes the waveform, or a Turkish line
+ * gets served in an English voice:
+ *
+ *   engine - each tier keeps its own namespace, so a Windows-Zira render recorded
+ *            while Edge was blocked is never handed out in place of a neural one
+ *            after Edge recovers
+ *   text   - the exact string sent to the engine
+ *   locale - selects the Edge voice AND the SSML language tag
+ *   style  - selects the voice table (human/frank/friendly) and the pacing tweak
+ *   rate   - the effective rate after the style tweak, which is the baseRatePct
+ *            expressionFor() adds the intent movement to
+ *   intent - the prosody movement (pitch/rate/volume). An explicit intent and an
+ *            inferred one for the same text produce different prosody, so the raw
+ *            intent is keyed alongside the text it was inferred from.
+ *
+ * WHAT IS NOT. The locale fallback: if a locale's voice cannot speak the script,
+ * speakToBuffer retries the whole chain with "en", and that English render is
+ * cached under "en". Caching it under the failed locale instead would pin the
+ * fallback for the rest of the process even after the locale's voice came back.
+ *
+ * A tier that FAILS stores nothing, so the next tier runs exactly as before and
+ * a failure is never remembered as a success. Nothing here can skip a tier that
+ * would have produced better audio - a cache hit only replaces a synthesis that
+ * would have returned those same bytes.
+ */
+const TTS_CACHE_MAX = 48;
+/* One 20ms PCMU frame. Below this it is not speech, and it must never be stored
+ * or served. */
+const TTS_CACHE_MIN_BYTES = 160;
+const ttsCache = new Map();
+
+function ttsCacheKey(engine, body, locale, style, rate, intent) {
+  return [
+    engine,
+    String(locale || "en").toLowerCase(),
+    normalizeStyle(style),
+    Number(styleRate(style, rate)).toFixed(4),
+    String(intent || ""),
+    body,
+  ].join("\u0001");
+}
+
+/** Most-recently-used wins: re-inserting makes an entry the newest, so the first
+ *  key Map yields is always the least recently used one to evict. */
+function ttsCacheGet(key) {
+  const hit = ttsCache.get(key);
+  if (!hit) return null;
+  ttsCache.delete(key);
+  ttsCache.set(key, hit);
+  return hit;
+}
+
+/** Store a private copy of a render that actually happened. Never stores a
+ *  failure, never stores a non-Buffer, never stores a buffer too short to be
+ *  speech. Returns the value the caller should use unchanged, so the first
+ *  synthesis of a line behaves byte-for-byte as it did before the cache. */
+function ttsCacheSet(key, value) {
+  if (!value || !Buffer.isBuffer(value.buffer) || value.buffer.length < TTS_CACHE_MIN_BYTES) return value;
+  ttsCache.set(key, { buffer: Buffer.from(value.buffer), engine: value.engine });
+  while (ttsCache.size > TTS_CACHE_MAX) {
+    const oldest = ttsCache.keys().next().value;
+    if (oldest === undefined) break;
+    ttsCache.delete(oldest);
+  }
+  return value;
+}
+
+/** A hit hands out a COPY, in the same { buffer, engine } shape every caller
+ *  reads (.buffer for sendAudio, .engine for the log line). Copying a cached
+ *  frame is a few microseconds against a synthesis that was over a second, and it
+ *  means a caller that did write into the buffer it was given could not poison
+ *  the entry for every later call. */
+function ttsCacheResult(hit) {
+  if (!hit || !Buffer.isBuffer(hit.buffer) || hit.buffer.length < TTS_CACHE_MIN_BYTES) return null;
+  return { buffer: Buffer.from(hit.buffer), engine: hit.engine };
+}
+
+/** Test/diagnostic seam: drop every cached render. */
+function ttsCacheClear() { ttsCache.clear(); }
+function ttsCacheSize() { return ttsCache.size; }
+
+/* The tier list, in order, with the engine name each one is cached under. Kept as
+ * data so the cache and the fallback chain are driven from a single place and so
+ * an offline test can count real synthesis calls (see _test below). */
+const TTS_TIERS = [
+  ["edge-ws", (body, o) => edgeWsToBuffer(body, o)],
+  ["edge", (body, o) => edgeToBuffer(body, o)],
+  ["headtts", (body, o) => headTtsToBuffer(body, o)],
+  ["windows", (body, o) => sapiToBuffer(body, o)],
+];
+let ttsTiers = TTS_TIERS;
+
 /**
  * Generate TTS audio and return as a raw PCM buffer (mulaw 8kHz mono).
  * Used by the media channel to stream agent voice to the lead.
@@ -824,14 +1062,25 @@ async function sapiToBuffer(text, { rate = 1 } = {}) {
  * Returns { buffer, engine } or null only when every tier fails.
  */
 async function speakToBuffer(text, { locale = "en", style = "human", rate = 1, intent } = {}) {
+  /* Trimmed once, here, because that is the string every tier is asked to speak
+   * and therefore the string the cache is keyed on. The controller already
+   * trims (local-call-controller.js: `String(text || "").trim()`), so this is
+   * what it was sending anyway. */
+  const body = String(text || "").trim();
   const chain = async (loc) => {
-    const edgeWs = await edgeWsToBuffer(text, { locale: loc, style, rate, intent });
-    if (edgeWs) return edgeWs;
-    const edge = await edgeToBuffer(text, { locale: loc, style, rate });
-    if (edge) return edge;
-    const headtts = await headTtsToBuffer(text, { locale: loc, style, rate });
-    if (headtts) return headtts;
-    return await sapiToBuffer(text, { rate });
+    if (!body) return null;
+    /* Each tier is consulted under its OWN engine name, and only a render that
+     * really happened is stored. So a tier that fails falls through to the next
+     * one exactly as it does today, and its failure leaves nothing behind. */
+    for (const [engine, run] of ttsTiers) {
+      const key = ttsCacheKey(engine, body, loc, style, rate, intent);
+      const hit = ttsCacheResult(ttsCacheGet(key));
+      if (hit) return hit;
+      const out = await run(body, { locale: loc, style, rate, intent });
+      if (!out) continue;
+      return ttsCacheSet(key, out);
+    }
+    return null;
   };
   const first = await chain(locale);
   if (first) return first;
@@ -846,4 +1095,17 @@ async function speakToBuffer(text, { locale = "en", style = "human", rate = 1, i
   return null;
 }
 
-module.exports = { speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate, wavToMulaw, mulawEncode, edgeWsToBuffer };
+module.exports = {
+  speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate,
+  wavToMulaw, mulawEncode, edgeWsToBuffer, edgeWsSynth,
+  ttsCacheKey, ttsCacheGet, ttsCacheSet, ttsCacheResult, ttsCacheClear, ttsCacheSize,
+  TTS_CACHE_MAX, TTS_CACHE_MIN_BYTES, HEADTTS_TIMEOUT_MS,
+  /* Offline tests need to know how many times a synthesis ACTUALLY ran, which is
+   * only observable by replacing the tier list - there is no other injection
+   * point into the fallback chain, and no production path sets this. */
+  _test: {
+    setTiers(list) { ttsTiers = list && list.length ? list : TTS_TIERS; },
+    resetTiers() { ttsTiers = TTS_TIERS; },
+    tiers() { return ttsTiers; },
+  },
+};
