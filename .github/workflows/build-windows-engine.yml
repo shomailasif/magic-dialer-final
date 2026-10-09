@@ -1,4 +1,10 @@
 name: Build Windows Engine
+
+# The engine version, readable by every step. Steps run in separate shells, so a
+# variable assigned inside one step is not visible in another; the smoke test
+# needs this to check what the installer actually installed.
+env:
+  ENGINE_VERSION: "1.4.68"
 # CI rerun marker: fresh runner after 6617c5d upgrade-step hang
 on:
   workflow_dispatch: {}
@@ -210,7 +216,7 @@ jobs:
                 if ($health.ok -eq $true -and $health.service -eq "magic-dialer-engine" -and $customerHealth.ok -eq $true) { $healthy = $true; break }
               } catch {}
             }
-            if ($healthy -and $health.version -ne $version) { throw "Installed engine health reported wrong version: $($health.version), expected $version" }
+            if ($healthy -and $health.version -ne $env:ENGINE_VERSION) { throw "Installed engine health reported wrong version: $($health.version), expected $($env:ENGINE_VERSION)" }
           if (-not $healthy) {
               if ($proc.HasExited) { Write-Host "LAUNCHER EXIT CODE: $($proc.ExitCode)" }
               Write-Host "AGENT PROCESSES:"
