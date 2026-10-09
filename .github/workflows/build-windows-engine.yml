@@ -240,7 +240,7 @@ jobs:
           Write-Host "SMOKE MARKER E: starting silent uninstaller"
           Start-Process -FilePath $uninstaller -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
           Write-Host "SMOKE MARKER F: silent uninstaller returned"
-          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\\updates\\known-good-1.4.67.exe"
+          $seed = Join-Path $env:LOCALAPPDATA "Magic Dialer\updates\known-good-$($env:ENGINE_VERSION).exe"
           if (-not (Test-Path $seed)) { throw "Missing seeded known-good rollback installer" }
           if ((Get-Item $seed).Length -lt 1000000) { throw "Seeded rollback installer is unexpectedly small" }
           $seedHash = (Get-FileHash -Algorithm SHA256 $seed).Hash
