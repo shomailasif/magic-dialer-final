@@ -500,6 +500,33 @@ async function startWebUi(opts) {
       sendJson(res, 200, { configured: !!(cfg && (cfg.deviceToken || cfg.token) && cfg.portalUrl) });
       return;
     }
+    /* The customer's own AI provider key, and whether one is held.
+     *
+     * Status reports presence and origin only, never the key, so this endpoint is
+     * safe to poll and safe to expose: a copy of it tells an attacker nothing. Set
+     * takes the key in the body and never echoes it back.
+     *
+     * Loopback only, like every route here. The engine is not a web server - it
+     * binds 127.0.0.1 - so this is not reachable from the network. */
+    if (req.method === "GET" && p === "/api/provider-key") {
+      try { sendJson(res, 200, { ok: true, ...require("./provider-key").providerKeyStatus() }); }
+      catch (e) { sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not read the provider key status." }); }
+      return;
+    }
+    if (req.method === "POST" && p === "/api/provider-key") {
+      const body = await readJson(req);
+      if (!body || typeof body !== "object") { sendJson(res, 400, { ok: false, error: "Bad request." }); return; }
+      const clearing = body.clear === true || !String(body.key || "").trim();
+      try {
+        const pk = require("./provider-key");
+        const r = clearing ? pk.clearProviderKey() : pk.setProviderKey(String(body.key || ""));
+        if (!r || !r.ok) { sendJson(res, 500, { ok: false, error: (r && r.error) || "Could not store the provider key." }); return; }
+        sendJson(res, 200, { ok: true, ...pk.providerKeyStatus() });
+      } catch (e) {
+        sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not store the provider key." });
+      }
+      return;
+    }
     if (req.method === "GET" && p === "/api/status") {
       let feed = { status: "STARTING", line: "Starting " + serviceName + "...", mode: "on" };
       if (opts.statusPath) {

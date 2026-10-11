@@ -1286,10 +1286,25 @@ async function runScenario(name, opts = {}) {
   }
   if (tel.state.opening.brainError) providerFailures.push({ turn: -1, stage: "brain", error: tel.state.opening.brainError });
 
+  /* Say plainly WHICH kind of provider failure this was.
+   *
+   * "INCONCLUSIVE (the provider failed)" is honest but not actionable: a reader
+   * cannot tell a dead provider from an exhausted token budget, and those need
+   * opposite responses - wait versus raise the limit. Measured in this session, a
+   * full run of scenarios left the account's tokens-per-minute spent, and the
+   * report said only that the provider "failed", which reads like the product is
+   * broken. */
+  const rateLimited = providerFailures.filter((f) => /\b429\b/.test(String(f.error || ""))).length;
+  const providerFailureKind = rateLimited
+    ? (rateLimited === providerFailures.length ? "rate-limited" : "mixed")
+    : (providerFailures.length ? "outage" : "none");
+
   const report = {
     name,
     description: scenario.description,
     providerFailures,
+    providerFailureKind,
+    rateLimitedCalls: rateLimited,
     providerMode: providers.mode,
     realTime: frameDelayMs >= FRAME_MS,
     elapsedMs,
@@ -1450,7 +1465,13 @@ function printReport(report, opts) {
   const providerFailed = !!(report.providerFailures && report.providerFailures.length);
   const bad = !!(report.failure || report.defects.length || report.expectProblems.length);
   console.log("");
-  const verdict = providerFailed ? "INCONCLUSIVE (the provider failed - this run says nothing about the agent)" : bad ? "FAIL" : "PASS";
+  /* Distinguish the two provider failures, because they need opposite responses:
+   * a rate limit clears by waiting, an outage does not. */
+  const verdict = providerFailed
+    ? (report.providerFailureKind === "rate-limited"
+        ? "INCONCLUSIVE (provider RATE LIMITED - the account's token budget is spent; this run says nothing about the agent. Wait for the window to reset, or raise the limit.)"
+        : "INCONCLUSIVE (the provider failed - this run says nothing about the agent)")
+    : bad ? "FAIL" : "PASS";
   console.log("  " + verdict + " (" + report.agentLines.length + " agent turns, " + report.turns.length + " measured turns, " + report.bargeIns + " barge-ins)");
   /* A provider outage is a non-zero exit: the caller must not read "INCONCLUSIVE"
      as success, and the stage numbers above it are still worth having. */
@@ -1489,12 +1510,43 @@ async function main(argv) {
   }
   const reports = [];
   let failed = 0;
-  for (const n of names) {
+  /* Adaptive pacing, and the reason it is needed.
+   *
+   * The gap between scenarios used to be a flat 3s and the pace WITHIN a scenario
+   * was whatever the real-time audio loop produced. That is faster than a
+   * provider's tokens-per-minute budget when the system prompt is large, and the
+   * run then spends itself on HTTP 429: measured here, a run that started fine
+   * went fully 429 partway through, and the harness correctly reported
+   * INCONCLUSIVE on every remaining scenario. A harness that exhausts the quota
+   * it is trying to measure cannot answer the question it was asked.
+   *
+   * So: pace between scenarios, and back off hard when the provider starts
+   * refusing. The backoff is on the symptom the provider actually reports, so it
+   * reacts to a real limit rather than to a guess. */
+  const baseGap = Number(process.env.AUDIO_SIM_GAP_MS) || 3000;
+  let penalty = 0;
+  for (let i = 0; i < names.length; i++) {
+    const n = names[i];
+    const before = Date.now();
     const report = await runScenario(n, opts);
     reports.push(report);
     failed += printReport(report, opts);
-    // The provider rate-limits bursts; a live call spaces its turns out.
-    if (n !== names[names.length - 1]) await new Promise((r) => setTimeout(r, Number(process.env.AUDIO_SIM_GAP_MS) || 3000));
+
+    /* A rate limit is a different problem from a provider outage, and it needs a
+     * different response: waiting does not fix an outage, but a limit clears. */
+    const limited = report.providerFailures.some((f) => /\b429\b/.test(String(f.error || "")));
+    if (limited) {
+      penalty = penalty ? Math.min(penalty * 2, 30000) : 8000;
+      console.log(`  (provider rate-limited; backing off to ${Math.round((baseGap + penalty) / 1000)}s before the next scenario)`);
+    } else if (penalty) {
+      penalty = Math.max(0, penalty - 4000);
+    }
+
+    if (i < names.length - 1) {
+      const wait = baseGap + penalty;
+      const elapsed = Date.now() - before;
+      if (elapsed < wait) await new Promise((r) => setTimeout(r, wait - elapsed));
+    }
   }
   if (opts.json) {
     const file = path.join(os.tmpdir(), "audio-sim-report.json");

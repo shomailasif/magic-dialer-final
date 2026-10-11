@@ -11,9 +11,13 @@ $tests = @(
   "agent\who-is-it.behavior.test.js",
   "agent\call-runner.behavior.test.js",
   "agent\vad-turn-boundary.behavior.test.js",
+  "agent\vad-adaptive-eos.behavior.test.js",
+  "agent\brain-prompt-coverage.behavior.test.js",
+  "agent\stt-turn-budget.contract.test.js",
   "agent\turn-corruption.behavior.test.js",
   "agent\turn-stub.behavior.test.js",
   "agent\brain-outage.behavior.test.js",
+  "agent\direct-provider.behavior.test.js",
   "agent\portal-queue-priority.behavior.test.js",
   "agent\repeat-ask.behavior.test.js",
   "agent\refusal-and-fallback.behavior.test.js",
@@ -69,6 +73,9 @@ $tests = @(
   "build\\stale-campaign-recovery-contract.test.js",
   "build\\consent-provenance-contract.test.js",
   "build\\platform-secret-isolation-contract.test.js",
+  "build\\engine-provider-key-boundary-contract.test.js",
+  "build\\db-round-trip-contract.test.js",
+  "build\\db-connection-audit.behavior.test.js",
   "build\production-deployment-recovery-contract.test.js",
   "build\postgres-raw-sql-identifiers.contract.test.js"
 )

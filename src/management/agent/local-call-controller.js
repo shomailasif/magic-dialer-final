@@ -678,31 +678,78 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
        * 12000ms holds three attempts and keeps the prospect listening to us rather
        * than to silence. The circuit breaker still short-circuits a dead gateway,
        * so a real outage is not made slower by any of this. */
-      const STT_ATTEMPT_BUDGET_MS = 12000;
-      let stt = null, lastErr = "";
+      /* The whole turn gets ONE budget, shared by every attempt.
+       *
+       * It was 12000 per attempt, twice, so a turn could spend 24s on
+       * transcription alone. Worse, the gateway's own provider budget is 4500ms:
+       * a request that blows that returns 5xx rather than hanging, so the
+       * controller saw a "failure" at ~4.5s, waited 200ms, and paid the second
+       * 12s for an answer the first attempt was about to have produced anyway.
+       * That is how a single turn reaches the multi-second outliers that were
+       * logged as one unexplained number.
+       *
+       * Sharing one budget means the sum of every attempt is capped, so a retry
+       * can never quietly double a turn. It also matches the rule the rest of
+       * this work learned the hard way: a bound that applies per attempt is not
+       * a bound on the turn.
+       *
+       * 9000ms total is still far above any real transcription (warm p100 around
+       * 2.2s) and above the gateway's 4500ms provider budget plus a retry, so a
+       * turn that genuinely needs two attempts still gets two. */
+      const STT_TURN_BUDGET_MS = 9000;
+      let stt = null, lastErr = "", turnStartedAt = Date.now(), attemptsUsed = 0;
       if (health.isOpen("stt")) {
         stt = { text: null, error: `STT gateway ${health.reason("stt")}` };
       } else {
         for (let attempt = 1; attempt <= STT_ATTEMPTS; attempt++) {
           const startedAt = Date.now();
+          const left = STT_TURN_BUDGET_MS - (Date.now() - turnStartedAt);
+          /* No time for a full second attempt - spend what is left rather than
+           * starting one that cannot finish inside the budget. */
+          if (attempt > 1 && left < 1200) {
+            onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} skipped: only ${left}ms of the ${STT_TURN_BUDGET_MS}ms turn budget left`);
+            break;
+          }
+          attemptsUsed = attempt;
           let r = null;
           try {
             r = await Promise.race([
               sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken }),
-              new Promise((res) => setTimeout(() => res({ error: `STT attempt exceeded ${STT_ATTEMPT_BUDGET_MS}ms` }), STT_ATTEMPT_BUDGET_MS)),
+              new Promise((res) => setTimeout(() => res({ error: `STT turn budget exhausted` }), Math.max(250, left))),
             ]);
           } catch (e) { r = { error: String((e && e.message) || e) }; }
+          const elapsed = Date.now() - startedAt;
+          /* Timed on SUCCESS as well as on failure.
+           *
+           * Only failures were ever logged, which is why a 7751ms first-turn STT
+           * could be observed and never explained: there was no number for it. A
+           * slow-but-successful transcription is exactly the case worth seeing, and
+           * it is the one that costs a prospect real time rather than producing an
+           * error message. `path` says which leg answered, so a slow gateway hop
+           * and a slow provider are distinguishable in the log rather than being
+           * the same unexplained figure. */
           if (r && r.error) {
             lastErr = r.error;
             health.recordFailure("stt");
-            onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} failed: ${r.error} (${Date.now() - startedAt}ms)`);
+            onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} failed: ${r.error} (${elapsed}ms)`);
           } else {
             health.recordSuccess("stt");
+            const path = r && r.path ? r.path : "unknown";
+            /* Only the slow ones, and every first turn. A log line per turn at
+             * normal speed is noise; a log line for the first turn of every call
+             * is the one that would have caught this. */
+            if (elapsed >= 1500 || attempt === 1) {
+              onLog(`[local-media-v2] STT attempt ${attempt}/${STT_ATTEMPTS} ok via ${path} (${elapsed}ms, turn total ${Date.now() - turnStartedAt}ms)`);
+            }
           }
           if (r && r.text) { stt = r; break; }
           if (r && !r.error) { stt = r; break; } // a real empty result, not a failure
           if (attempt < STT_ATTEMPTS) await new Promise((res) => setTimeout(res, 200));
         }
+      }
+      const totalMs = Date.now() - turnStartedAt;
+      if (totalMs >= 1500 || attemptsUsed > 1) {
+        onLog(`[local-media-v2] STT turn total ${totalMs}ms over ${attemptsUsed} attempt(s), ${audio.length} bytes PCMU`);
       }
       return stt || { text: null, error: lastErr || "STT unavailable" };
     };

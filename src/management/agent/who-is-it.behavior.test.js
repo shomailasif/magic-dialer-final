@@ -219,9 +219,9 @@ async function main() {
     assert.doesNotMatch(prompt, /\[object Object\]/, "an object must never reach the model prompt");
     assert.match(prompt, /Zaz Logistics/, "the company must be in the prompt the model is given");
     assert.match(prompt, /Dispatch Services for trucks/, "the offering must be in the prompt too");
-    assert.match(prompt, /who is calling|why you are calling|what this call/i,
+    assert.match(prompt, /who is calling|why, or what this call is about/i,
       "the prompt must tell the model that an identity question is answered in the first sentence, not promised away");
-    assert.match(prompt, /NEVER answer one of those questions with a promise/i,
+    assert.match(prompt, /never answer with a promise that someone will call back/i,
       "and it must forbid the callback deflection for exactly those questions");
 
     /* ---- 9. A caller who is NOT asking who we are must not be handed the

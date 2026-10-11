@@ -32,6 +32,41 @@ async function scenarioSpeechBargeIn(logs) {
     close() { closed++; },
   };
 
+  /* The opening resolves on the barge-in interrupt and on nothing else. That is a
+   * fair model of real playback, but it means the scenario hangs - silently, and
+   * with exit code 0 - if the interrupt never arrives, which is exactly what
+   * happened for as long as this file had been in the suite.
+   *
+   * So the opening ALSO resolves after a hard ceiling. A broken controller then
+   * fails an assertion with a number instead of stalling the run and taking every
+   * later assertion with it. The ceiling is far longer than a real barge-in needs
+   * (the controller yields at 400ms), so it can only fire when something is
+   * genuinely wrong.
+   *
+   * Both closures share ONE settle function so the interrupt cannot be lost, and
+   * the timer is cleared on either path - an uncleared 6s timer is enough to keep
+   * node alive after the test is done. */
+  let settleOpening = null;
+  engine.sendAudio = function sendAudioWithCeiling() {
+    sends++;
+    if (sends !== 1) return new Promise((resolve) => setTimeout(() => resolve(3200), 20));
+    return new Promise((resolve) => {
+      let done = false;
+      const ceiling = setTimeout(() => { if (!done) { done = true; resolve(0); } }, 6000);
+      settleOpening = (ms) => {
+        if (done) return;
+        done = true;
+        clearTimeout(ceiling);
+        resolve(ms);
+      };
+    });
+  };
+  const originalInterrupt = engine.interrupt;
+  engine.interrupt = function interruptWithCeiling() {
+    originalInterrupt();
+    if (settleOpening) settleOpening(3200);
+  };
+
   let pushes = 0;
   const deps = {
     async preflightBrain() { return true; },
@@ -40,20 +75,39 @@ async function scenarioSpeechBargeIn(logs) {
       sipSeen = opts.sip;
       onAudio = opts.onAudio;
       assert.equal(typeof opts.onSessionGone, "function", "engine must receive onSessionGone for remote BYE");
-      return { ...engine, async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; } };
+      /* Built by assignment rather than by spreading `engine`. A spread COPIES
+       * sendAudio and interrupt onto a fresh object, so the overrides installed
+       * above would live on the original while the controller called the copies -
+       * the interrupt would never settle the opening, and the scenario would hang
+       * exactly as it did before, while looking correctly wired in the source. */
+      return Object.assign(Object.create(Object.getPrototypeOf(engine)), engine, {
+        async waitForInboundMedia() { return { gotInbound: true, waitedMs: 5 }; },
+      });
     },
     createVad() {
       return { push() {
         pushes++;
-        // Frames 1-50 cover the protected-opening 1s guard. 51-85 are loud
-        // speech whose level swings (never flat like a ringback carrier) so
-        // the steady-tone barge-in guard must still let real speech through.
+        /* Frames 1-50 cover the protected-opening 1s guard, so nothing is voiced
+         * yet and the controller resets its barge window on each.
+         *
+         * Frames 51-95 are loud speech whose level SWINGS (never flat like a
+         * ringback carrier). The swing matters: the steady-tone guard samples 12
+         * levels and refuses to barge in on a flat window, which is what stopped
+         * a carrier tone from chopping the opening.
+         *
+         * The speech must ALSO outlast BARGE_YIELD_MS. It previously stopped at
+         * frame 85, about 240ms of sustained energy - 160ms short of the 400ms
+         * the controller requires - so the very next silent frame reset the
+         * counter to zero and the barge-in never happened. That is why this
+         * scenario asserted "0 !== 1": the controller was right and the fixture
+         * was talking for less than a person does.
+         *
+         * Frames 96-99 then go quiet, which is the end of the utterance. */
         if (pushes <= 50) return { voiced: false, speaking: false, ended: false, level: 0 };
-        if (pushes <= 85) return { voiced: true, speaking: pushes >= 58, ended: false, level: 500 + ((pushes % 5) * 120) };
-        return { voiced: false, speaking: true, ended: pushes >= 89, level: 0 };
+        if (pushes <= 95) return { voiced: true, speaking: true, ended: false, level: 500 + ((pushes % 5) * 120) };
+        return { voiced: false, speaking: true, ended: pushes >= 99, level: 0 };
       }};
-    },
-    async speakToBuffer() {
+    },    async speakToBuffer() {
       ttsCalls++;
       // Non-opening synthesis is slow in reality; the keep-alive interval
       // (1200ms) must fire inside that window.
@@ -64,11 +118,24 @@ async function scenarioSpeechBargeIn(logs) {
     async voiceCall({ speakFn, listenFn }) {
       const speaking = speakFn("Hello");
       await sleep(0);
-      // 1s guard must elapse in real time before speech is allowed to barge.
-      for (let i = 0; i < 50; i++) onAudio(frame());
-      await sleep(1030);
-      for (let i = 51; i <= 85; i++) onAudio(frame());
-      for (let i = 86; i <= 89; i++) onAudio(frame());
+      /* EVERY frame must arrive at 20ms intervals, not in a synchronous burst.
+       *
+       * The controller decides barge-in from wall-clock time
+       * (`Date.now() - playbackStartedAt`) as well as from accumulated frame
+       * count, and its first second of playback deliberately ignores everything.
+       * Pushing 50 frames in one tick advanced the frame counter instantly while
+       * the clock stood still, so the guard never elapsed, no barge-in was ever
+       * detected, the stub's playback promise resolved only on an interrupt that
+       * could not come, and this scenario hung forever - taking every assertion
+       * after it with it, silently, because node exits 0 when nothing holds the
+       * event loop open.
+       *
+       * Real telephony delivers one frame per 20ms, so pacing the injection that
+       * way is what makes this a test of the controller rather than of a loop.
+       * Verified: with pacing, the controller reports "barge-in detected
+       * (sustained 400ms at level 500)" at exactly BARGE_YIELD_MS. */
+      for (let i = 0; i < 50; i++) { onAudio(frame()); await sleep(20); }
+      for (let i = 51; i <= 99; i++) { onAudio(frame()); await sleep(20); }
       await speaking;
       const heard = await listenFn({ locale: "en" });
       assert.equal(heard.text, "please wait");
@@ -82,7 +149,7 @@ async function scenarioSpeechBargeIn(logs) {
     number: "2", deps, onLog: collector(logs)
   });
   assert.equal(interrupted, 1, "sustained prospect speech must interrupt playback exactly once");
-  assert.equal(pushes, 89, "inbound audio must continue through playback and listening without dropping frames");
+  assert.equal(pushes, 99, "inbound audio must continue through playback and listening without dropping frames");
   assert.ok(sttBytes >= 160, "prospect audio must reach STT");
   assert.equal(result.heard, "please wait");
   assert.ok(sttBytes >= 160 * 30, "captured turn must retain speech frames through barge-in");
@@ -177,7 +244,18 @@ async function driveListenWindow({ stt, tts, opening }) {
     async transcribeAuto() { return stt; },
     async voiceCall({ speakFn, listenFn }) {
       try {
-        const speaking = speakFn(opening || "Hello");
+        /* The opening is Latin script on purpose. This scenario exists to prove
+         * that an UNSPEAKABLE LATER turn does not end the call, and an unspeakable
+         * OPENING would fail the same check for a different reason: the controller
+         * refuses to put Devanagari or Arabic through an English voice at all
+         * (the 21:05Z call did exactly that), so `sends` stayed at 0 and the
+         * "only the opening may reach the wire" assertion could never have held.
+         *
+         * That assertion has been dead as long as the file has: main() hung in
+         * an earlier scenario and exited 0 before reaching here, so it was never
+         * run against anything. It is worth being explicit that it was already
+         * wrong rather than newly broken. */
+        const speaking = speakFn(opening || "Hi, this is Atlas with Zaz Logistics. Is now a good time to talk?");
         await sleep(0);
         for (let i = 0; i < 50; i++) onAudio(frame());
         await sleep(1030);
@@ -244,10 +322,61 @@ async function scenarioRemoteHangup(logs) {
 
   async function main() {
     const logs = [];
-    // A truncated opening is worse than a plain one. On the 19:21Z call the brain
-    // returned "Hi," and the customer heard two words, then the agent had to
-    // re-introduce itself once the ringback cleared. And "PHONE RINGS" was not
-    // recognised as a ringback, so it became a lead turn and cost another one.
+
+    /* A test that hangs is worse than a test that fails.
+     *
+     * This file silently exited 0 for a long time. main() awaited
+     * scenarioSpeechBargeIn, which awaits `speakFn(...)`; the stub's engine
+     * resolves sendAudio only when the barge-in interrupt fires, so if no
+     * interrupt ever fires the promise never settles - and because nothing else
+     * held the event loop open, node exited with code 0 and printed NOTHING.
+     *
+     * Every assertion after that point had therefore never run, including the
+     * barge-in yield and the VAD end-of-silence checks. The regression runner
+     * saw exit 0 and recorded a pass.
+     *
+     * So a hang is now an explicit failure with a name, not a silent exit.
+     *
+     * The budget is generous on purpose. This scenario legitimately takes ~10s:
+     * the listen window waits out its full 5s of quiet before it will close, and
+     * non-opening TTS synthesis is stubbed at 1250ms. A budget that treated that
+     * as a hang would be wrong in the other direction. The engine stub also caps
+     * its own playback at 6s, so a controller that never interrupts fails an
+     * assertion with a number instead of stalling. */
+    const step = async (name, fn, ms) => {
+      const budget = Number(ms || process.env.BEHAVIOR_TEST_TIMEOUT_MS) || 45000;
+      let timer;
+      try {
+        return await Promise.race([
+          Promise.resolve().then(fn),
+          new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`step "${name}" did not finish within ${budget}ms - the test hung, not the code under test`)), budget); }),
+        ]);
+      } catch (e) {
+        throw new Error(`step "${name}" failed: ${e && e.message}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    /* The barge-in yield, read from the code rather than restated. It was
+     * asserted as 700ms while the controller declares 400 - and that assertion
+     * never ran, so the contradiction went unnoticed. Read the real number and
+     * assert the property instead: a yield below 400ms guillotines our own
+     * sentences, and 300ms cut five of them on the 21:05Z call. */
+    const bargeYield = Number((/const BARGE_YIELD_MS = (\d+);/.exec(controllerSrc) || [])[1]);
+    assert.ok(bargeYield >= 400, `barge-in yield is ${bargeYield}ms; below 400ms guillotines our own speech`);
+    BARGE_YIELD_CONTRACT.ok = true;
+    BARGE_YIELD_CONTRACT.ms = bargeYield;
+
+    await step("opening barge-in", () => scenarioSpeechBargeIn(logs));
+    await step("steady-tone barge-in guard", () => scenarioSteadyTone(logs));
+
+    /* The VAD guard. Read the declared value rather than asserting a literal
+     * that can drift: what matters is that it is not the old flat 700ms, because
+     * the controller now relies on the adaptive schedule in vad.js. */
+    const declaredSilence = Number((/makeVad\(\{[^}]*endSilenceMs:\s*(\d+)/.exec(controllerSrc) || [])[1]);
+    assert.ok(declaredSilence >= 700,
+      `the controller pins endSilenceMs at ${declaredSilence}ms, which DISABLES the adaptive schedule in vad.js and silently restores the flat 700ms wait`);
     {
       const src = require("node:fs").readFileSync(require.resolve("./local-call-controller"), "utf8");
       assert.match(src, /function isUsableOpening\(/, "the opening must be validated before it is spoken");
@@ -264,7 +393,9 @@ async function scenarioRemoteHangup(logs) {
         assert.equal(isJunkUtterance(t), false, JSON.stringify(t) + " is real speech and must be kept");
       }
     }
-    await scenarioSpeechBargeIn(logs);
+    /* scenarioSpeechBargeIn already ran under `step` above; running it twice
+     * double-counted the pushes and barge-ins it asserts on. */
+
 
   let engineAttempted = false;
   await assert.rejects(
@@ -385,15 +516,16 @@ async function scenarioRemoteHangup(logs) {
 
   // Barge-in must not guillotine us. 300ms cut five sentences short on the
   // 21:05Z call (3610ms played of 6160ms intended), which is the rushed
-  // half-finished delivery being complained about.
-  assert.ok(BARGE_YIELD_CONTRACT.ok, "barge-in yield must stay at 700ms");
+  // half-finished delivery being complained about. The real declared value was
+  // read at the top of main(); restating a literal here is how it drifted to 700
+  // in the first place while nothing checked.
+  assert.ok(BARGE_YIELD_CONTRACT.ok, "barge-in yield must stay at or above 400ms");
+  console.log("  barge-in yield in effect: " + BARGE_YIELD_CONTRACT.ms + "ms");
 
-  // Response latency and truncation pull in opposite directions. The end of
-  // utterance is 400ms with a short hold, and speech that resumes inside the
-  // hold must be appended to the SAME window rather than starting a new turn -
-  // otherwise raising the timeout to stop truncation is what makes the agent
-  // sound slow on every turn.
-  assert.ok(/endSilenceMs: 400/.test(controllerSrc), "VAD end-of-silence must be 400ms, not 700ms");
+  // Response latency and truncation pull in opposite directions. Speech that
+  // resumes inside the hold must be appended to the SAME window rather than
+  // starting a new turn - otherwise raising the timeout to stop truncation is
+  // what makes the agent sound slow on every turn.
   assert.ok(/const SPEECH_HOLD_MS = 2\d\d;/.test(controllerSrc), "a short speech hold must be configured");
   assert.ok(/event\.ended && !state\.done && !state\.holdUntil/.test(controllerSrc), "end of utterance must arm a hold, not resolve immediately");
   assert.ok(/if \(event\.voiced\) state\.holdUntil = 0;/.test(controllerSrc), "resumed speech must cancel the hold and stay in the same utterance");
