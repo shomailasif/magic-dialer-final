@@ -16,6 +16,8 @@ $tests = @(
   "agent\stt-turn-budget.contract.test.js",
   "agent\no-silent-turn.behavior.test.js",
   "agent\identity-repeat.contract.test.js",
+  "agent\no-followup-refusal.contract.test.js",
+  "agent\vague-nonanswer.contract.test.js",
   "agent\turn-corruption.behavior.test.js",
   "agent\turn-stub.behavior.test.js",
   "agent\brain-outage.behavior.test.js",

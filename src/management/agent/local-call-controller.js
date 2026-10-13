@@ -459,6 +459,25 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
   /* Counted so the "the agent went quiet" complaint becomes a number instead of an
    * anecdote. Zero is the target; anything else is a turn that cost silence. */
   let contentlessTurns = 0;
+  /* What to say when OUR side produces nothing and we refuse to leave a gap.
+   *
+   * Deliberately not "sorry, I did not catch that" - that blames the prospect
+   * for our failure. And deliberately not a question, because a question here
+   * re-enters the ask-repetition guard on the following turn and the call
+   * loops. These hand the floor back without pretending to have failed to hear.
+   *
+   * Per-locale because the English-only version of this bug was exactly how an
+   * Urdu call got told "Sorry, I did not catch that" in English. */
+  const NEXT_ON_DECENT_LINE = Object.freeze({
+    en: "Absolutely - tell me what you need and I will help you with it.",
+    ur: "بالکل - بتائیے آپ کو کیا چاہیے، میں آپ کی مدد کرتا ہوں۔",
+    es: "Claro - dígame qué necesitas y te ayudo.",
+    ru: "Конечно - скажите, что вам нужно, и я помогу.",
+    fr: "Bien sûr - dites-moi ce qu'il vous faut et je vous aide.",
+    it: "Certo - mi dica cosa le serve e la aiuto.",
+    zh: "当然 - 告诉我您的需求，我来帮您。",
+    hi: "बिल्कुल - बताइए आपको क्या चाहिए, मैं मदद करूँगा।",
+  });
   const speakFn = async (text, turn = {}) => {
     if (sessionEnded) {
       onLog("[local-media-v2] session already ended remotely; skipping outbound turn");
@@ -493,13 +512,34 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
      * the floor back. Applied AFTER capping, because the substitute is itself
      * capped-checked - running it back through capTurnLength could return "" again
      * and recurse straight into the silence this closes. */
-    const capped = isOpening ? line : capTurnLength(line);
-    let spoken = capped;
-    if (!spoken) {
-      onLog(`[local-media-v2] brain produced no speakable turn (${JSON.stringify(line).slice(0, 60)}); asking the prospect to repeat instead of going silent`);
-      spoken = "Sorry, I did not catch that.";
-      contentlessTurns++;
-    }
+const capped = isOpening ? line : capTurnLength(line);
+      let spoken = capped;
+      if (!spoken) {
+        /* We could not say anything and silence is not an option, so say the
+         * least-wrong thing.
+         *
+         * The first version of this was "Sorry, I did not catch that." That
+         * claims the PROSPECT was unintelligible, and on the call of 13 Oct it
+         * was said to somebody whose very next words were perfectly clear: they
+         * said "Okay." and were told we did not catch that, then asked to repeat
+         * something they had said correctly. It reads as a machine that missed
+         * the word "okay" - which is worse than the silence it replaced, because
+         * now they doubt whether anything they said got in.
+         *
+         * Nothing here tells us the prospect was unclear. They spoke, the
+         * recogniser accepted it, and then OUR side produced no usable line.
+         * So the substitute has to be about us and it has to move the call
+         * forward rather than restart it - a prospect repeating a word we failed
+         * to answer loses the thread, and so does the call.
+         *
+         * These are deliberately statements, not questions. A question here would
+         * be re-asked forever by the guard above whenever the prospect answers
+         * it, and the whole point of this branch is to break the loop, not add
+         * one more turn to it. */
+        onLog(`[local-media-v2] brain produced no speakable turn (${JSON.stringify(line).slice(0, 60)}); holding the floor with a forward line instead of going silent`);
+        spoken = NEXT_ON_DECENT_LINE[locale] || NEXT_ON_DECENT_LINE.en;
+        contentlessTurns++;
+      }
     if (line) onLog("AGENT: " + line);
     // Create capture state BEFORE awaiting TTS so inbound audio is never
     // dropped while state is null during synthesis.

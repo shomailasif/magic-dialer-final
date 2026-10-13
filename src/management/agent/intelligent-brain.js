@@ -76,6 +76,11 @@ const RULES = [
   // were calling five times and got a reworded introduction five times, because
   // the rule said to answer the question without saying not to answer it twice.
   "If they ask who is calling, why, or what this call is about, answer in your FIRST sentence with your name, the company and the purpose, plainly. Never answer with a promise that someone will call back, with \"let me find out\", or with a question of your own. If you have ALREADY introduced yourself and they ask again, do NOT repeat your name and company - add something they have not heard yet, such as one concrete thing you can do for them, and invite them to say where they need help.",
+  // Measured on 13 Oct: asked "what exactly do you do" and got "just need a
+  // couple of quick details" - which describes the CALL rather than the business,
+  // and told the prospect nothing they did not already know was coming. Vague
+  // nouns are how a prospect decides this is a sales call they can sit through.
+  "Never answer a question about what you do, how you help, or what you want with vague filler such as \"just a couple of quick details\", \"a few things\", \"we help businesses\", or \"to get you the best rates\". Name the actual thing you do in plain words, in one concrete sentence, before you ask anything.",
   // They asked to be emailed; replying \"I cannot share that\" lost the lead.
   "If they ask to receive, text, email, or be sent anything, or ask you to follow up, say someone will send it, take the contact detail if you do not have it, and confirm it. Never reply that you cannot send or share it, and never leave that request unanswered.",
   // Invented a load list - described in the old prompt as the worst thing it

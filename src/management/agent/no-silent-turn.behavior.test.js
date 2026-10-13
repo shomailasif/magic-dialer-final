@@ -44,10 +44,24 @@ const REALISTIC = [
   "Could you share your MC number?",
   "Thanks, Shamail. Could you share your MC number?",
   "I'm calling because we can help get your dry van in Lahore on the right loads faster.",
-  "Sorry, I did not catch that.",
+  // The line the controller substitutes. It goes through the same cap as any
+  // other wire line, so if it could ever be emptied the silence would return.
+  "Absolutely - tell me what you need and I will help you with it.",
 ];
 
-const substitute = "Sorry, I did not catch that.";
+/* The line the controller puts on the wire when our own side produced nothing.
+ *
+ * It used to be "Sorry, I did not catch that.", which blames the prospect for a
+ * failure that is entirely ours: this branch is only reached after the recogniser
+ * accepted the prospect's speech, so they did speak, and it was the brain that
+ * returned nothing usable. On the call of 13 Oct that sentence was said to
+ * somebody who had just said "Okay." perfectly clearly, and asked to repeat
+ * themselves - which reads far worse than the silence it was added to fix.
+ *
+ * It must also not be a question: the ask-repetition guard would block it on the
+ * next turn whenever they answer, and the loop this branch exists to break would
+ * be rebuilt out of it. */
+const substitute = "Absolutely - tell me what you need and I will help you with it.";
 const survivors = [];
 const substituted = [];
 const emptied = [];
@@ -87,10 +101,12 @@ assert.match(controllerSrc, /const capped = isOpening \? line : capTurnLength\(l
   "the controller must cap the line");
 assert.match(controllerSrc, /if \(!spoken\)\s*\{/,
   "the controller must have a branch for an empty capped turn");
-assert.match(controllerSrc, /asking the prospect to repeat instead of going silent/,
+assert.match(controllerSrc, /holding the floor with a forward line instead of going silent/,
   "that branch must say what it is for, so nobody deletes it as dead code again");
-assert.match(controllerSrc, /spoken = "Sorry, I did not catch that\.";/,
-  "the substitute must be a real line, not empty");
+assert.match(controllerSrc, /NEXT_ON_DECENT_LINE/,
+  "the substitute must come from a table of real, per-locale lines");
+assert.ok(!/spoken = "Sorry, I did not catch that\.";/.test(controllerSrc),
+  "the substitute must not blame the prospect for a gap that is ours");
 assert.match(controllerSrc, /let contentlessTurns = 0;/,
   "replacements must be counted, so silence is a number and not a complaint");
 assert.match(controllerSrc, /contentlessTurns\+\+;/,
@@ -99,7 +115,7 @@ assert.match(controllerSrc, /contentlessTurns\+\+;/,
 /* The order matters and is the whole point: substituting before capping could
  * return "" again, so the substitute must never be re-capped. */
 const capAt = controllerSrc.indexOf("const capped = isOpening");
-const subAt = controllerSrc.indexOf('spoken = "Sorry, I did not catch that.";');
+const subAt = controllerSrc.indexOf("spoken = NEXT_ON_DECENT_LINE[locale]");
 const speakAt = controllerSrc.indexOf("await tts(spoken");
 assert.ok(capAt > -1 && subAt > capAt && speakAt > subAt,
   "the order must be cap -> substitute -> speak, so the substitute cannot be emptied by the cap");

@@ -1,6 +1,7 @@
 const { scoreLead, shouldEscalate, learn } = require("./brain");
 const { nextTurn, opening } = require("./intelligent-brain");
 const { normalizeLanguage, languageName } = require("./language");
+const { isVagueNonAnswer } = require("./reply-quality");
 const { capTurnLength, splitSentences } = require("./turn-length");
 const { NON_LATIN_LOCALE, isMostlyNonLatin, scriptAgreesWithLocale } = require("./script-guard");
 const { getResearch: getCachedResearch, researchBlock } = require("./sales-research");
@@ -153,6 +154,8 @@ const BUSY_RE = new RegExp([
    * what the prospect already said, which is what made the agent sound like it was
    * not listening. */
   const ACKNOWLEDGMENT_CLAUSE_RE = /^(?:thanks?|thank you|i appreciate( that| it)?|got it|okay|ok|sure|understood|noted)\b[^?!.]*\b(?:that|this|it|your time|the (?:domain|email|address|name|number|info|information))\b\s*[.!]*$/i;
+  /* Filler that answers a question by describing the CALL rather than the subject, e.g. "just a couple of quick details". Lives in reply-quality.js with its own test: a false positive here throws away a REAL answer and pays for a second brain call, so it needs the filler phrase AND the absence of any concrete claim. */
+
   function isAcknowledgmentOnly(line) {
     const s = String(line || "").trim().replace(/\s+/g, " ");
     if (!s) return true;
@@ -665,6 +668,43 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     "follow ?up (?:with|to) the team", "i'?ll (?:have to )?escalate that",
     "my instructions", "based on my (?:training|programming|instructions)",
     "i don'?t have (?:access|enough information)", "consult (?:my|the) (?:notes|documentation)",
+].join("|"), "i");
+
+  /* "I don't want you to follow up."
+   *
+   * A third refusal class, and the one that costs the most if it is missed.
+   * They are NOT busy - BUSY_RE needs "busy" - and they have not said "do not
+   * call me" - STOP_RE needs that exact shape. So neither matched, and on the
+   * call of 13 Oct the prospect said "I don't want you to follow-up" and the
+   * agent immediately asked for a phone number so we could follow up. It is the
+   * most alien response to that sentence: being told no and asking for the means
+   * of doing the thing you were told no to.
+   *
+   * It is also the one refusal here with a consequence beyond a lost sale. This
+   * codebase stores consent, honouring a do-not-call, and a lead record. Asking
+   * for contact details after an explicit refusal is how a list of numbers
+   * becomes a complaint.
+   *
+   * So it closes the call the same way BUSY does - apologise, stop, ask nothing -
+   * and it never runs a brain call that could produce a question. */
+  const NO_FOLLOWUP_RE = new RegExp([
+    "i (?:don'?t|do not|dont|really don'?t) want (?:any |a )?(?:you )?(?:to )?(?:follow|following)[\\s-]?ups?",
+    "(?:no|not) (?:more |any )?(?:follow|following)[\\s-]?ups?",
+    "don'?t (?:follow|following) up(?: with me)?",
+    "no (?:follow up|follow-up|call back|followups?)",
+    "do ?n[o']t (?:follow up|follow-up|contact me|call me)",
+    "i(?:'m| am) (?:not )?(?:interested|available) (?:in|for) (?:a )?(?:follow|call)",
+    "(?:remove|take) me (?:off|from) (?:your |the )?(?:list|call ?list)",
+    "(?:i )?don'?t want (?:you )?(?:to )?(?:call|contact|reach) me",
+    /* The passive and the third-person forms. "I do not want to be contacted
+     * again" is the polite version of the same message and carries no less of a
+     * "no" - and it is what a prospect who has been called before will say. */
+    "(?:i )?(?:do not|don'?t) want to be (?:contacted|called|reached)(?: again| anymore)?",
+    "(?:i )?(?:do not|don'?t) want (?:any |further )?(?:contact|calls)(?: from (?:you|us))?",
+    "(?:i )?don'?t need (?:a |any )?(?:follow up|follow-up|call back)",
+    "(?:i )?will call (?:you )?(?:if|when)",
+    "no need to (?:call|contact|follow up)",
+    "(?:not|no) (?:thanks|thank you),? (?:i (?:don'?t|dont) )?(?:need|want)",
   ].join("|"), "i");
 
   function isMetaLine(text) {
@@ -1042,8 +1082,26 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
       if (line && lastProspectAskedQuestion) {
         const askedQuestion = /\?\s*$/.test(line) || /\?\s/.test(line);
         const onlyAcknowledged = ACKNOWLEDGMENT_ONLY_RE.test(line);
-        if (askedQuestion || onlyAcknowledged) {
-          try { log("[unanswered-question] the prospect asked a question; the reply was not an answer - retrying"); } catch {}
+        /* A THIRD way to not answer, and the most convincing one, because it is
+         * a complete grammatical sentence that simply contains no information.
+         *
+         * On the call of 13 Oct the prospect asked what we do and got "just need
+         * a couple of quick details". The existing guard let it through twice
+         * over: it is not a question, and it is not on the acknowledgment list.
+         * It is also the worst possible reply, because it describes the CALL
+         * rather than the BUSINESS - the prospect asked what we do and was told
+         * what we are about to ask them. After that they are just sitting through
+         * a sales call, which is exactly the outcome every other rule here is
+         * trying to prevent.
+         *
+         * So filler is caught by shape: all of the vagueness below describes the
+         * CALL ("a few details", "a couple of things") rather than making a claim
+         * anyone could check ("we find loads in 30 seconds"). */
+        const vague = isVagueNonAnswer(line);
+        if (askedQuestion || onlyAcknowledged || vague) {
+          try {
+            log(`[unanswered-question] the prospect asked a question; the reply was not an answer (${askedQuestion ? "a question" : onlyAcknowledged ? "an acknowledgment" : "vague filler"}) - retrying`);
+          } catch {}
           /* The question has to be the one they ACTUALLY asked. This prompt used
            * to say "I asked whether your dispatcher can call me now", which was
            * hardcoded, so a prospect asking "Who is it?" was told they had asked
@@ -1607,6 +1665,40 @@ if (neverHeard && firstQuiet) {
      * question went out anyway. There is no turn after this one - the call ends
      * with an apology and the callback promise, which is all a busy person
      * wants. */
+    /* Checked BEFORE the brain is consulted, and before anything can ask for
+     * contact details, because the failure mode here is not a wasted turn - it is
+     * pressing a prospect for a phone number after they told us not to follow up.
+     * See NO_FOLLOWUP_RE. */
+    if (NO_FOLLOWUP_RE.test(heard)) {
+      busyRefused = true;
+      closingSpoken = true;
+      /* No callback promise. closingLine() appends "someone will call you back
+       * with the number we collected", and offering that here would repeat the
+       * exact thing they just refused - with the added insult of naming a number
+       * they never gave us. farewellLine() is the thanks with no offer in it. */
+      const noFuClose = farewellLine(activeLocale);
+      const nfLine = await askBrain({
+        transcript: [
+          ...transcript,
+          {
+            role: "lead",
+            text: "The prospect has just told you they do NOT want to be followed up. Accept it immediately and courteously and end the call. Do NOT offer to call them back. Do NOT ask for a phone number or any other contact detail. Do NOT ask if a different time would work. Thank them for their time and stop in one or two short sentences.",
+          },
+        ],
+        ...config(activeLocale),
+      }).catch(() => null);
+      const fromNf = nfLine && nfLine.text ? capTurnLength(String(nfLine.text).trim()) : "";
+      /* Reject any brain output that asks anything, or that offers a callback,
+       * whatever it was told. A closing turn is the last thing said to a prospect
+       * and it must not be the line that undoes their request. */
+      const nfSafe =
+        fromNf &&
+        !/\?/.test(fromNf) &&
+        !/\b(call (?:you )?back|follow up|follow-up|reach out|get your number|your (?:number|phone)|phone number)\b/i.test(fromNf);
+      await agent(nfSafe ? fromNf : noFuClose, { intent: "closing", noRetry: true });
+      break;
+    }
+
     if (BUSY_RE.test(heard)) {
       busyRefused = true;
       closingSpoken = true;
