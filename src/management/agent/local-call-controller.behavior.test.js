@@ -37,22 +37,25 @@ async function scenarioSpeechBargeIn(logs) {
    * with exit code 0 - if the interrupt never arrives, which is exactly what
    * happened for as long as this file had been in the suite.
    *
-   * So the opening ALSO resolves after a hard ceiling. A broken controller then
-   * fails an assertion with a number instead of stalling the run and taking every
-   * later assertion with it. The ceiling is far longer than a real barge-in needs
-   * (the controller yields at 400ms), so it can only fire when something is
-   * genuinely wrong.
+   * So the opening ALSO resolves after a hard ceiling. The ceiling is a hang
+   * guard, NOT a timing assertion, and it has to sit far outside any legitimate
+   * run: at 6s it raced the scenario on the CI runner, where every `sleep(20)`
+   * costs several times its nominal value on a loaded box, so the ceiling won
+   * before the speech had accumulated its 400ms and the test failed with
+   * "sustained prospect speech must interrupt playback exactly once" - which
+   * reads like a barge-in regression and is really a badly chosen timeout. It
+   * passed locally and failed in CI, which is the signature of a race.
    *
-   * Both closures share ONE settle function so the interrupt cannot be lost, and
-   * the timer is cleared on either path - an uncleared 6s timer is enough to keep
-   * node alive after the test is done. */
+   * The real bound is the `step()` timeout around this scenario, which is
+   * generous and named. This ceiling only exists so that a genuine controller
+   * bug fails with a number instead of stalling the gate. */
   let settleOpening = null;
   engine.sendAudio = function sendAudioWithCeiling() {
     sends++;
     if (sends !== 1) return new Promise((resolve) => setTimeout(() => resolve(3200), 20));
     return new Promise((resolve) => {
       let done = false;
-      const ceiling = setTimeout(() => { if (!done) { done = true; resolve(0); } }, 6000);
+      const ceiling = setTimeout(() => { if (!done) { done = true; resolve(0); } }, 30000);
       settleOpening = (ms) => {
         if (done) return;
         done = true;
@@ -344,7 +347,15 @@ async function scenarioRemoteHangup(logs) {
      * its own playback at 6s, so a controller that never interrupts fails an
      * assertion with a number instead of stalling. */
     const step = async (name, fn, ms) => {
-      const budget = Number(ms || process.env.BEHAVIOR_TEST_TIMEOUT_MS) || 45000;
+      /* Generous on purpose, and generous for BOTH reasons this scenario is slow:
+       * the listen window waits out its full 5s of quiet before it will close,
+       * and every frame is paced at 20ms so the controller's own wall-clock
+       * checks are exercised honestly. On a loaded CI runner each of those
+       * sleeps costs several times its nominal value, so a budget that fitted
+       * the local machine failed there. A hang guard that fires on a slow
+       * machine is indistinguishable from a hang, and only teaches people to
+       * ignore it. */
+      const budget = Number(ms || process.env.BEHAVIOR_TEST_TIMEOUT_MS) || 120000;
       let timer;
       try {
         return await Promise.race([
