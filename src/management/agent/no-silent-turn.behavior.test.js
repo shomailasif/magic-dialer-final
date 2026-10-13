@@ -92,8 +92,21 @@ for (const s of survivors) {
 assert.ok(emptied.length >= 10,
   `expected several turns to be replaced, found ${emptied.length} - if this is zero the fixture no longer covers the bug`);
 
-assert.ok(substituted.length === 0 || true, "");
-survivors.length; substituted.length;
+/* Both directions are counted rather than asserted loosely. "substituted.length
+ * === 0 || true" was here and could never fail - it read as a check on the
+ * substitution path while verifying nothing at all, which is the most expensive
+ * kind of test line: it looks like coverage. */
+assert.equal(survivors.length, REALISTIC.length,
+  "every realistic turn must reach the wire as either its own text or the substitute");
+/* One more than `emptied` on purpose: REALISTIC contains the substitute line
+ * itself, and that entry survives the cap as its own text, so it also matches.
+ * The assertion is "at least", not "exactly", so a substitute that stops being
+ * speakable is caught while that legitimate extra is not flagged as a failure. */
+const substituteCount = survivors.filter((s) => s === substitute).length;
+assert.ok(substituteCount >= emptied.length,
+  `every emptied turn must reach the wire as the substitute line, found ${substituteCount} for ${emptied.length} emptied turns`);
+assert.ok(survivors.includes(substitute),
+  "the substitute must itself survive the cap, or the silence this closes would return");
 
 /* ---- 2. the controller must actually do the substituting ---- */
 

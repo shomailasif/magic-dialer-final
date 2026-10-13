@@ -11,7 +11,9 @@ const collector = logs => line => logs.push(String(line));
  * agent five times in two minutes (3610ms played of 6160ms intended). Pin it so
  * the "rushed, half-finished sentence" delivery cannot come back. */
 const controllerSrc = require("node:fs").readFileSync(require.resolve("./local-call-controller"), "utf8");
-const BARGE_YIELD_CONTRACT = { ok: /const BARGE_YIELD_MS = 700;/.test(controllerSrc) };
+/* The barge-in yield is verified once, in the barge-in scenario, against the
+   * module constant. There is no second check here to drift out of sync with it. */
+let bargeYieldInEffect = 0;
 
 /** Opening: 1s protected guard, then sustained *speech-like* levels must
  *  barge in exactly once; then a normal turn with RTP keep-alive. */
@@ -383,8 +385,7 @@ async function scenarioRemoteHangup(logs) {
      * sentences, and 300ms cut five of them on the 21:05Z call. */
     const bargeYield = Number((/const BARGE_YIELD_MS = (\d+);/.exec(controllerSrc) || [])[1]);
     assert.ok(bargeYield >= 400, `barge-in yield is ${bargeYield}ms; below 400ms guillotines our own speech`);
-    BARGE_YIELD_CONTRACT.ok = true;
-    BARGE_YIELD_CONTRACT.ms = bargeYield;
+    bargeYieldInEffect = bargeYield;
 
     await step("opening barge-in", () => scenarioSpeechBargeIn(logs));
     await step("steady-tone barge-in guard", () => scenarioSteadyTone(logs));
@@ -543,10 +544,15 @@ async function scenarioRemoteHangup(logs) {
   // Barge-in must not guillotine us. 300ms cut five sentences short on the
   // 21:05Z call (3610ms played of 6160ms intended), which is the rushed
   // half-finished delivery being complained about. The real declared value was
-  // read at the top of main(); restating a literal here is how it drifted to 700
-  // in the first place while nothing checked.
-  assert.ok(BARGE_YIELD_CONTRACT.ok, "barge-in yield must stay at or above 400ms");
-  console.log("  barge-in yield in effect: " + BARGE_YIELD_CONTRACT.ms + "ms");
+  /* The floor is asserted where the value is read, above, against the module
+   * constant rather than a literal. This used to be a BARGE_YIELD_CONTRACT
+   * object initialised from a hardcoded 700 - a value production no longer has -
+   * and then set to `true` immediately after the real assertion had already
+   * passed. It could therefore only fail if the line above it had already
+   * failed: dead scaffolding that looked like a second, independent guard.
+   *
+   * All that remains is reporting the value that was actually verified. */
+  console.log("  barge-in yield in effect: " + bargeYieldInEffect + "ms");
 
   // Response latency and truncation pull in opposite directions. Speech that
   // resumes inside the hold must be appended to the SAME window rather than

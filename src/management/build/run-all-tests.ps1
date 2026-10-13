@@ -31,6 +31,8 @@ $tests = @(
   "agent\latency-language.test.js",
   "agent\qualification.test.js",
   "agent\lead-queue.test.js",
+"agent\lead-queue-long-run.test.js",
+"agent\unauthorised-no-dial.test.js",
   "agent\lead-queue-paging.test.js",
   "agent\answer-the-question.test.js",
   "agent\self-reenroll.test.js",

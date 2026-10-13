@@ -47,7 +47,7 @@ function main() {
   // A mid-sentence pause of 500ms: natural when someone pauses before saying a
   // number, and the exact case the 250ms setting truncated.
 // "it's the [500ms] 6234001991" - the pause before the digits must not end it.
-  const vad = createVad({ minSpeechMs: 160, endSilenceMs: 700 });
+  const vad = createVad({ minSpeechMs: 160 });
   leadIn(vad);
   speech(vad, 400);
   const during = silence(vad, 500);
@@ -61,7 +61,18 @@ function main() {
 
   // A real finish - a long silence - must still end the turn, or the agent would
   // wait forever and never answer.
-  const vad2 = createVad({ minSpeechMs: 160, endSilenceMs: 700 });
+  /* No endSilenceMs here either, and that is the point of the change.
+ *
+ * Both scenarios used to pin 700ms, which is the exact override that disabled the
+ * adaptive schedule in production. createVad treats an explicit value as a
+ * straight bypass, so these were testing the configuration that had been REMOVED
+ * from the controller - they would still have passed with the entire adaptive
+ * schedule deleted from vad.js, and reported themselves as covering turn
+ * boundaries. A behavioural test that only exercises a disabled path is worse
+ * than no test, because it is indistinguishable from coverage in review.
+ *
+ * The scenarios now build the VAD exactly as the controller does. */
+const vad2 = createVad({ minSpeechMs: 160 });
   leadIn(vad2);
   speech(vad2, 500);
   silence(vad2, 900);
@@ -83,15 +94,10 @@ function main() {
   // constants rather than against a hardcoded number that drifts.
   const controller = fs.readFileSync(path.join(__dirname, "local-call-controller.js"), "utf8");
   const settings = [...controller.matchAll(/endSilenceMs:\s*(\d+)/g)].map((m) => Number(m[1]));
-  for (const value of settings) {
-    assert.ok(
-      value >= 500,
-      `the controller must not end a turn after ${value}ms of silence; that truncates mid-sentence. Measured live: "it's the" and the number arrived as two turns.`
-    );
-  }
-  assert.ok(
-    settings.length === 0,
-    `no controller call site may pin endSilenceMs (found ${settings.length}). createVad treats an explicit value as an override, so a pin silently disables the adaptive schedule - which is exactly what happened for the entire life of the adaptive VAD.`
+  assert.deepEqual(
+    settings,
+    [],
+    `no controller call site may pin endSilenceMs (found ${settings.join(", ")}ms). createVad treats an explicit value as an override, so a pin silently disables the adaptive schedule - which is exactly what happened for the entire life of the adaptive VAD.`,
   );
 
   // The schedule itself has to stay clear of the truncation value.

@@ -71,12 +71,19 @@ function run({ speechMs = 0, silenceMs = 2000, opts = {}, amp = 9000, silence = 
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
-test("a short utterance still waits the full 700ms", () => {
+test("a short utterance still waits the full ceiling", () => {
   /* 200ms of speech is someone who has barely started. Truncating here is exactly
-   * the 20:25Z failure. */
+   * the 20:25Z failure.
+   *
+   * Bounded by QUIET_MAX_MS rather than the literal 700. Hardcoding it here is
+   * how the floor moved from 300 to 500 while this line kept asserting 700 - the
+   * test would have failed for the right reason by luck, and the magic 800 had no
+   * meaning at all. If the ceiling is retuned, this follows it. */
   const r = run({ speechMs: 200, silenceMs: 3000 });
-  assert.ok(r.endedAfter >= 700, `short utterance ended after only ${r.endedAfter}ms`);
-  assert.ok(r.endedAfter <= 800, `short utterance should end near 700ms, ended at ${r.endedAfter}ms`);
+  assert.ok(r.endedAfter >= QUIET_MAX_MS,
+    `short utterance ended after only ${r.endedAfter}ms, under the ${QUIET_MAX_MS}ms ceiling`);
+  assert.ok(r.endedAfter <= QUIET_MAX_MS + 100,
+    `short utterance should end at the ceiling, ended at ${r.endedAfter}ms`);
 });
 
 test("a mid-sentence pause does not end the turn", () => {
@@ -175,6 +182,43 @@ test("quiet-room noise does not trigger the guard either", () => {
   assert.equal(ended, false, "room noise produced an end-of-speech");
 });
 
+/* ---- the wiring, which is where this actually went wrong ----
+ *
+ * Every test above passes while the production VAD is pinned at 700ms. That is
+ * exactly what happened: createVad honours an explicit endSilenceMs as an
+ * override, and all three makeVad() call sites in local-call-controller.js
+ * passed one, so the adaptive schedule above never ran on a single live call
+ * while this suite reported itself as coverage.
+ *
+ * A tested feature that is unreachable is worse than no feature, because it
+ * reads as coverage. So the controller is asserted too: no call site may pin
+ * endSilenceMs.
+ *
+ * These are registered BEFORE the runner loop. They were added after it, which
+ * meant the loop had already drained the array, both guards never executed, and
+ * `tests.length` printed 11 for 9 tests that actually ran - so the guard was
+ * reported as passing while being unreachable, which is the same defect it was
+ * written to catch. Registration order is load-bearing here: anything pushed
+ * after the loop is decorative. */
+const controllerSrc = fs.readFileSync(path.join(__dirname, "local-call-controller.js"), "utf8");
+const pinnedCalls = [...controllerSrc.matchAll(/makeVad\(\{[^}]*endSilenceMs[^}]*\}\)/g)].map((m) => m[0]);
+
+test("the controller does not pin endSilenceMs at any call site", () => {
+  if (pinnedCalls.length) {
+    throw new Error(
+      `${pinnedCalls.length} makeVad() call site(s) pin endSilenceMs: ` +
+      pinnedCalls.join(" | ") +
+      ". That override disables the adaptive schedule entirely - every test above " +
+      "still passes, but no live call ever adapts.",
+    );
+  }
+});
+
+test("the controller still builds its VAD at all three turn sites", () => {
+  const sites = (controllerSrc.match(/makeVad\(\{/g) || []).length;
+  if (sites < 3) throw new Error(`expected the 3 controller VAD sites, found ${sites} - a call site was removed and the turn-boundary wiring is no longer exercised`);
+});
+
 (async () => {
   let failed = 0;
   for (const [name, fn] of tests) {
@@ -187,33 +231,6 @@ test("quiet-room noise does not trigger the guard either", () => {
   }
   const shortU = run({ speechMs: 200, silenceMs: 3000 }).endedAfter;
   const longU = run({ speechMs: 4000, silenceMs: 3000 }).endedAfter;
-  /* ---- the wiring, which is where this actually went wrong ----
-   *
-   * Every test above passes while the production VAD is pinned at 700ms. That is
-   * exactly what happened: createVad honours an explicit endSilenceMs as an
-   * override, and all three makeVad() call sites in local-call-controller.js
-   * passed one, so the adaptive schedule below never ran on a single live call.
-   *
-   * A tested feature that is unreachable is worse than no feature, because it
-   * reads as coverage. So the controller is asserted here too: no call site may
-   * pin endSilenceMs, and that is the only thing standing between this and the
-   * same silent regression. */
-  const controller = fs.readFileSync(path.join(__dirname, "local-call-controller.js"), "utf8");
-  const pins = [...controller.matchAll(/makeVad\(\{[^}]*endSilenceMs/g)];
-  tests.push(() => {
-    if (pins.length) {
-      throw new Error(
-        `${pins.length} makeVad() call site(s) pin endSilenceMs: ` +
-        pins.map((m) => m[0]).join(" | ") +
-        ". That override disables the adaptive schedule entirely - the tests here " +
-        "still pass, but no live call ever adapts.",
-      );
-    }
-  });
-  tests.push(() => {
-    const sites = (controller.match(/makeVad\(\{/g) || []).length;
-    if (sites < 3) throw new Error(`expected the 3 controller VAD sites, found ${sites}`);
-  });
   console.log(`\nPASS: ${tests.length} adaptive end-of-speech tests`);
-  console.log(`  short utterance ${shortU}ms (was 700) · long utterance ${longU}ms (was 700) · floor ${QUIET_FLOOR_MS}ms`);
+  console.log(`  short utterance ${shortU}ms (was ${QUIET_MAX_MS}) · long utterance ${longU}ms (was ${QUIET_MAX_MS}) · floor ${QUIET_FLOOR_MS}ms`);
 })();
