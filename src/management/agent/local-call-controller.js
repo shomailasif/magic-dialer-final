@@ -66,6 +66,20 @@ function isJunkUtterance(text) {
 
   const BARGE_YIELD_MS = 400;
 
+/* How many times a single turn will try to hear the prospect.
+ *
+ * Declared here, at module scope, and NOT inside runStt. It is read in two
+ * sibling functions - runStt to drive the retry loop, and listenFn to say how
+ * many attempts were spent when none of them worked - and a const declared inside
+ * runStt is invisible to listenFn. That cost a real call on 13 Oct: the fourth
+ * turn failed, and the failure REPORT threw `STT_ATTEMPTS is not defined`,
+ * which killed the call and replaced the real reason with a nonsense one.
+ *
+ * Every turn that ends with an unheard utterance hit this, so it was never a
+ * rare path - it was the path taken every time recognition failed, which is
+ * exactly when the message matters most. */
+const STT_ATTEMPTS = 2;
+
 function trackBargeLevel(state, level) {
   const w = state.bargeLevels || (state.bargeLevels = []);
   w.push(level);
@@ -649,8 +663,12 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
        * three turns, because nothing remembered the gateway was already down. So:
        * two bounded attempts, and a circuit breaker that stops paying once the
        * gateway has proved itself dead. Worst case per turn drops from ~25s to
-       * ~10s, and to under 100ms on every turn after the third failure. */
-      const STT_ATTEMPTS = 2;
+       * ~10s, and to under 100ms on every turn after the third failure.
+       *
+       * STT_ATTEMPTS is declared at MODULE scope above, not here: listenFn reads
+       * it too when a turn ends with an unheard utterance, and a const declared
+       * inside this function is invisible to a sibling function. That is what
+       * killed the call of 13 Oct with "STT_ATTEMPTS is not defined". */
       /* Measured on the 06 Oct call: every turn cost 11-15s of dead air. The cause
        * was this budget at 5000ms per attempt, twice, before the AI was even asked,
        * so one sentence cost ten seconds of waiting and a failed one cost twenty.

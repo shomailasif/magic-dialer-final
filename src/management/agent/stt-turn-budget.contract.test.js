@@ -73,5 +73,61 @@ assert.match(sttSrc, /path:"direct"/, "the direct path must label itself");
 assert.match(sttSrc, /path:"gateway"/, "the gateway-only path must label itself");
 assert.match(sttSrc, /path:"gateway-fallback"/, "the fallback must label itself");
 
+/* ---- 3. every STT_ATTEMPTS reference must be in scope ---- */
+
+/* A real call on 13 Oct died on this: `STT_ATTEMPTS is not defined`. The const was
+ * declared inside runStt and read in listenFn, which is a sibling function, so
+ * every turn that ended with an unheard utterance threw instead of reporting why
+ * it had failed. It is not a rare path - it is the path taken exactly when
+ * recognition fails, which is when the message matters most.
+ *
+ * A source-shape test cannot catch a scope error, so this walks the real scope
+ * chain instead: every file-level `const X` is collected, then each reference is
+ * checked against the set of declarations visible from the function it sits in. */
+const src = controllerSrc;
+
+function enclosingScopes(index) {
+  /* Walk backwards tracking brace depth to find every function body the index is
+   * inside, then collect the file-level declarations plus the ones in those
+   * bodies. Good enough to catch a const declared in a sibling function, which is
+   * the mistake being pinned. */
+  const fileLevel = new Set();
+  for (const m of src.matchAll(/^\s{0,2}const ([A-Z][A-Z0-9_]*)\s*=/gm)) fileLevel.add(m[1]);
+
+  const bodies = [];
+  let depth = 0;
+  const stack = [];
+  let bodyStart = 0;
+  for (let i = 0; i <= Math.min(index, src.length); i++) {
+    const ch = src[i];
+    if (ch === "{") { if (depth === 0) bodyStart = i; stack.push(depth); depth++; }
+    else if (ch === "}") { depth--; if (stack.pop() === 0) bodies.push([bodyStart, i]); }
+  }
+  const visible = new Set(fileLevel);
+  for (const [a, b] of bodies) {
+    const text = src.slice(a, b);
+    for (const m of text.matchAll(/const ([A-Z][A-Z0-9_]*)\s*=/g)) {
+      /* A declaration belongs to its own body, so only add it if this body is the
+       * innermost one containing the reference - approximated by requiring the
+       * declaration to appear before the reference index. */
+      const declAt = src.indexOf(m[0], a);
+      if (declAt >= 0 && declAt < index) visible.add(m[1]);
+    }
+  }
+  return visible;
+}
+
+const references = [];
+for (const m of src.matchAll(/\$\{STT_ATTEMPTS\}|STT_ATTEMPTS(?!\s*=)/g)) references.push(m.index);
+
+assert.ok(references.length >= 2, `expected several STT_ATTEMPTS uses, found ${references.length}`);
+for (const at of references) {
+  const line = src.slice(0, at).split("\n").length;
+  const visible = enclosingScopes(at);
+  assert.ok(visible.has("STT_ATTEMPTS"),
+    `STT_ATTEMPTS referenced at line ${line} is not in scope there - it is declared inside a sibling function. ` +
+    `This is what killed a live call on 13 Oct with "STT_ATTEMPTS is not defined".`);
+}
+
 console.log("STT turn-budget contract: PASS");
-console.log(`  one ${budget}ms budget per turn across ${attempts} attempts; success and failure both timed and logged`);
+console.log(`  one ${budget}ms budget per turn across ${attempts} attempts; success and failure both timed and logged; all ${references.length} STT_ATTEMPTS references in scope`);
