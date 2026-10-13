@@ -70,7 +70,7 @@ async function scenarioSpeechBargeIn(logs) {
     if (settleOpening) settleOpening(3200);
   };
 
-  let pushes = 0;
+  let pushes = 0, talking = false;
   const deps = {
     async preflightBrain() { return true; },
     async opening() { return { text: "Hello" }; },
@@ -90,25 +90,23 @@ async function scenarioSpeechBargeIn(logs) {
     createVad() {
       return { push() {
         pushes++;
-        /* Frames 1-50 cover the protected-opening 1s guard, so nothing is voiced
-         * yet and the controller resets its barge window on each.
+        /* Frames 1-50 cover the playback guard, so nothing is voiced yet and the
+         * controller resets its barge window on each.
          *
-         * Frames 51-95 are loud speech whose level SWINGS (never flat like a
-         * ringback carrier). The swing matters: the steady-tone guard samples 12
-         * levels and refuses to barge in on a flat window, which is what stopped
-         * a carrier tone from chopping the opening.
+         * After that the prospect is TALKING and keeps talking until the fixture
+         * says otherwise - driven by `talking`, not by a frame count. The level
+         * SWINGS, because the steady-tone guard samples 12 levels and refuses to
+         * barge in on a flat window; that is what stopped a ringback carrier
+         * from chopping the opening, and a flat level here would correctly be
+         * ignored.
          *
-         * The speech must ALSO outlast BARGE_YIELD_MS. It previously stopped at
-         * frame 85, about 240ms of sustained energy - 160ms short of the 400ms
-         * the controller requires - so the very next silent frame reset the
-         * counter to zero and the barge-in never happened. That is why this
-         * scenario asserted "0 !== 1": the controller was right and the fixture
-         * was talking for less than a person does.
-         *
-         * Frames 96-99 then go quiet, which is the end of the utterance. */
-        if (pushes <= 50) return { voiced: false, speaking: false, ended: false, level: 0 };
-        if (pushes <= 95) return { voiced: true, speaking: true, ended: false, level: 500 + ((pushes % 5) * 120) };
-        return { voiced: false, speaking: true, ended: pushes >= 99, level: 0 };
+         * It was previously a fixed 51-95 range, which quietly assumed the
+         * prospect stops talking at frame 95. When the barge needed more frames
+         * than that, the fixture went silent, the counter reset, and the scenario
+         * reported zero interrupts - on CI, twice, while passing locally. The
+         * conversation has to end when the conversation ends. */
+        if (!talking || pushes <= 50) return { voiced: false, speaking: talking, ended: false, level: 0 };
+        return { voiced: true, speaking: true, ended: false, level: 500 + ((pushes % 5) * 120) };
       }};
     },    async speakToBuffer() {
       ttsCalls++;
@@ -121,24 +119,33 @@ async function scenarioSpeechBargeIn(logs) {
     async voiceCall({ speakFn, listenFn }) {
       const speaking = speakFn("Hello");
       await sleep(0);
-      /* EVERY frame must arrive at 20ms intervals, not in a synchronous burst.
+      /* EVERY frame arrives at 20ms intervals, never in a synchronous burst.
        *
-       * The controller decides barge-in from wall-clock time
-       * (`Date.now() - playbackStartedAt`) as well as from accumulated frame
-       * count, and its first second of playback deliberately ignores everything.
-       * Pushing 50 frames in one tick advanced the frame counter instantly while
-       * the clock stood still, so the guard never elapsed, no barge-in was ever
-       * detected, the stub's playback promise resolved only on an interrupt that
-       * could not come, and this scenario hung forever - taking every assertion
-       * after it with it, silently, because node exits 0 when nothing holds the
-       * event loop open.
+       * The controller decides barge-in partly from wall-clock time
+       * (`Date.now() - playbackStartedAt`) and deliberately ignores everything in
+       * the first second of playback. Pushing frames in one tick advanced the
+       * frame counter while the clock stood still, so the guard never elapsed and
+       * this scenario hung forever - silently, with exit code 0, because nothing
+       * else held the event loop open. That is why an assertion in this file
+       * claimed 700ms while the code said 400ms for as long as it sat behind
+       * that hang.
        *
-       * Real telephony delivers one frame per 20ms, so pacing the injection that
-       * way is what makes this a test of the controller rather than of a loop.
-       * Verified: with pacing, the controller reports "barge-in detected
-       * (sustained 400ms at level 500)" at exactly BARGE_YIELD_MS. */
-      for (let i = 0; i < 50; i++) { onAudio(frame()); await sleep(20); }
-      for (let i = 51; i <= 99; i++) { onAudio(frame()); await sleep(20); }
+       * Then the prospect talks until the interrupt actually lands. Pacing alone
+       * was not enough and CI proved it: this passed locally and reported zero
+       * interrupts there, twice. The scenario depended on 50 paced frames
+       * reliably exceeding the controller's 1000ms guard, and a timer that
+       * returns even slightly early makes that a coin flip. A test whose
+       * pass/fail turns on how well a sleep overshoots is not testing the
+       * controller.
+       *
+       * What is left to assert is the property that actually matters: sustained
+       * speech interrupts playback, exactly once, and not again. */
+      const feed = async (n) => { for (let i = 0; i < n; i++) { onAudio(frame()); await sleep(20); } };
+      await feed(50);
+      talking = true;
+      for (let guard = 0; guard < 300 && interrupted === 0; guard++) await feed(1);
+      talking = false;
+      await feed(10);
       await speaking;
       const heard = await listenFn({ locale: "en" });
       assert.equal(heard.text, "please wait");
@@ -152,7 +159,7 @@ async function scenarioSpeechBargeIn(logs) {
     number: "2", deps, onLog: collector(logs)
   });
   assert.equal(interrupted, 1, "sustained prospect speech must interrupt playback exactly once");
-  assert.equal(pushes, 99, "inbound audio must continue through playback and listening without dropping frames");
+  assert.ok(pushes >= 70, `inbound audio must continue through playback and listening, only ${pushes} frames arrived`);
   assert.ok(sttBytes >= 160, "prospect audio must reach STT");
   assert.equal(result.heard, "please wait");
   assert.ok(sttBytes >= 160 * 30, "captured turn must retain speech frames through barge-in");
