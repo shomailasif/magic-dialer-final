@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { authorizeActiveEngineDevice, engineBearerToken } from "@/lib/engine-device-auth";
 import { sendNotification } from "@/lib/mailer";
-import { diagnosticId, redactDiagnostic } from "@/lib/safe-diagnostic";
+import { diagnosticId, safeDiagnostic, redactDiagnostic } from "@/lib/safe-diagnostic";
 import { isSpokenOptOut, normalizePhoneForSuppression } from "@/lib/call-compliance";
 
 export const dynamic = "force-dynamic";

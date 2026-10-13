@@ -68,16 +68,19 @@ assert.match(route, /optedOut: true/,
   "the response must report the refusal rather than looking like an ordinary non-lead");
 
 /* ---- the failure must not be fatal: a refused call is already over ---- */
-/* safeDiagnostic builds a traceable diagnostic object and takes a stage, a code
- * and a status - it is not an error formatter, and its return value has no
- * .slice. redactDiagnostic is what renders a value to a string. Getting this
- * wrong passed the local type check and failed CI. */
-assert.match(route, /import \{ diagnosticId, redactDiagnostic \} from "@\/lib\/safe-diagnostic"/,
-  "safeDiagnostic is not an error formatter and must not be used to render one");
+/* Both helpers are used in this file and they are NOT interchangeable.
+ * redactDiagnostic renders a value to a string; safeDiagnostic builds the
+ * traceable object the fail() helper returns and takes (stage, code, status,
+ * requestId, callId). Calling safeDiagnostic with an error fails the type check,
+ * and removing its import fails it too - which is exactly what happened. */
+assert.match(route, /import \{ diagnosticId, safeDiagnostic, redactDiagnostic \} from "@\/lib\/safe-diagnostic"/,
+  "safeDiagnostic is still used by fail() and must stay imported; redactDiagnostic renders errors");
 assert.match(route, /redactDiagnostic\(e\)\.slice\(0, 200\)/,
   "a suppression write failure must be logged, and must not turn the refusal into a 500 that makes the engine report it again");
 assert.doesNotMatch(route, /safeDiagnostic\(e\)/,
   "safeDiagnostic takes (stage, code, status) and never an error");
+assert.match(route, /\.\.\.safeDiagnostic\(stage, code, status, requestId, callId\)/,
+  "the pre-existing fail() helper uses safeDiagnostic correctly and must keep working");
 
 /* ---- the engine must actually send the flag ---- */
 assert.match(runner, /let doNotCall = false;/,
