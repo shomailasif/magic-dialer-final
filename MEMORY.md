@@ -78,10 +78,10 @@ where the provider failed must not be mistaken for a passing run.
 
 | item | state |
 |---|---|
-| 1. gateway bypass | **DONE** — engines 1.4.70/1.4.71/1.4.72 built, installed, verified. Turn **2854ms → 1186ms** |
-| 2. DB round trip | **code done, infra blocked on you** — ~247ms/round trip is the ocean; move the Supabase region to `europe-west1`. The pooler will *not* fix it |
+| 1. gateway bypass | **DONE** — engines 1.4.70→1.4.72 built, installed, verified. Turn **2854ms → 1186ms** |
+| 2. DB round trip | **migration is NOT the fix and should not be done.** The turn spends zero DB round trips on a direct-key install. What remains is the heartbeat's 3 round trips (~740ms), which is code, and is deliberately not written yet — see below |
 | 3. VAD 700ms | **DONE** — adaptive 300–700ms, plus a real deafness bug fixed |
-| first-turn 7751ms outlier | **mechanism found and fixed** (engine 1.4.72) — a per-attempt budget that let one turn spend 24s, and successes were never timed so the case could never be diagnosed |
+| first-turn 7751ms outlier | **mechanism found and fixed** (1.4.72) — a per-attempt budget that let one turn spend 24s, and successes were never timed so the case could never be diagnosed |
 | regression suite | **was reporting passes it never ran** — a test hung and exited 0 silently; fixed, with hangs now named failures |
 
 Also found and fixed while verifying the above: the system prompt was 7362 chars
@@ -206,32 +206,53 @@ duplicates removed ("never ask twice" appeared three times). Groq does not suppo
 and **18 rules each mapped to the real defect it prevents**. A future trim has to
 come here and say which recorded failure it is willing to risk.
 
-### 2. ~500ms per database round trip inside the container — PARTLY DONE, needs your Supabase access
+## DO NOT migrate the database region — it is not the lever
 
-**Confirmed and priced: ~247ms per DB round trip.** Measured as
-(`runtime-proof` − `health`) / 3, both over one keep-alive connection.
+Earlier sections here said the region move was "the one thing left". **That was
+wrong, and this supersedes it.** Supabase binds a project to its region at
+creation and offers no in-place change, so a "move the region" is really
+"new project + data move + repoint" — a multi-hour operation with a cutover window
+and a real risk of losing the rollback. Do not do that for this.
 
-**It is genuinely the ocean, and the pooler will not fix it.** The container is
-`europe-west1`; a TCP connect from this machine to that host is **27ms**. A
-247ms round trip is not a 27ms host being busy — the database is roughly a
-transatlantic hop away. Supavisor runs in the *same region as the project
-database*, so pointing `DATABASE_URL` at the pooler leaves the ocean crossing
-exactly where it is and buys nothing. **Moving the project region to europe-west1
-is the fix.** MEMORY.md previously presented pooler and region as interchangeable
-options; they are not, and the pooler option is the one that does not work here.
+Why it is not worth it: **the turn no longer touches the database at all.**
 
-Done in code, ready for the flip:
-- `src/lib/db.ts` now picks the pool limit from the URL: **1** connection per
-  process against a pooler (Prisma's pool multiplies against Supavisor's, and a
-  container sized from a large core count will exhaust the pooler and then queue
-  on connection acquisition — which looks exactly like a slow database), **10**
-  against a direct database. An explicit `connection_limit` in the URL still wins.
-- `src/lib/db.ts` logs the real round trip **from inside the container** at
-  startup, five samples of `SELECT 1` on a warm pooled connection. Never fatal,
-  skips a local file database, and always reports a non-empty reason. Read this
-  line in the boot log after the region move to confirm the fix.
-- `sugamcp/db-distance-probe.cjs` prints the production DB host, whether it is
-  already pooled, and the TCP floor — credentials are never printed.
+| turn stage | path | database |
+|---|---|---|
+| VAD | local | none |
+| STT | direct to the provider | none — no local metering |
+| brain | direct to the provider | none |
+| TTS | bundled Python edge-tts, local | none |
+
+A direct-key install spends **zero database round trips per turn**. The gateway
+install spends exactly one (the quota write, ~247ms), and opting in removes it.
+So the ~247ms that motivated the migration is no longer on the critical path
+that the customer feels.
+
+**What actually still costs, and is worth fixing instead:** the heartbeat. It
+runs every 3 seconds for the whole length of every call and makes **three**
+serialized round trips (device read, last-seen stamp, and a batched
+user-lease + device-lease transaction) — about **740ms per heartbeat**. The
+portal's single slot cannot be taken concurrently, so a reply arriving behind an
+in-flight heartbeat waits for its remainder. The priority lane only *overtakes
+queued* heartbeats; it cannot preempt one already running. So up to ~740ms of a
+1.19s turn can still be a database round trip on an in-flight heartbeat.
+
+That is the highest-value remaining item, and it is code rather than
+infrastructure: merging the device read and the last-seen stamp into one
+`UPDATE ... WHERE "tokenHash" = $1 AND "revokedAt" IS NULL RETURNING ...` takes
+the heartbeat from three round trips to two and keeps the fail-closed behaviour
+identical (a revoked device matches no row and is not stamped).
+
+**It has deliberately NOT been written yet**, because it would be raw SQL on the
+lease-renewal path that governs whether a live call may continue, and there is no
+Postgres here to test it against — `.env` is SQLite. Shipping untested SQL to that
+path after a day of self-inflicted outages is the wrong trade. Do it against a
+real database, on staging, with `npx prisma db execute` or a psql session, and
+compare round-trip counts before and after.
+
+`src/management/build/cutover-region.mjs` is kept, because if you ever do want
+the move for reasons unrelated to latency (data residency, a regional customer
+base) the tooling is correct and gated. It is not the answer to this problem.
 
 **Still needs you, and I cannot do it from here.** Region is bound at project
 creation — there is **no in-place region change**, and neither dashboard flow
