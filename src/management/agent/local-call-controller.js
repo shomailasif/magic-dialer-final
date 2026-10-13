@@ -456,6 +456,9 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     onLog(`[local-media-v2] inbound RTP ready: ${media.gotInbound ? "yes" : "no"} after ${media.waitedMs}ms`);
   }
   let preparedOpening = { text: openingText, audio: openingAudio };
+  /* Counted so the "the agent went quiet" complaint becomes a number instead of an
+   * anecdote. Zero is the target; anything else is a turn that cost silence. */
+  let contentlessTurns = 0;
   const speakFn = async (text, turn = {}) => {
     if (sessionEnded) {
       onLog("[local-media-v2] session already ended remotely; skipping outbound turn");
@@ -470,7 +473,33 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     // who was trying to reply is exactly "it interrupts". Cap the turn and say
     // only the leading sentences when it is over the line, so the prospect
     // always gets a gap to speak in.
-    const spoken = isOpening ? line : capTurnLength(line);
+    /* The agent NEVER goes silent.
+     *
+     * `capTurnLength` deliberately returns "" for a contentless turn - "Got it.",
+     * "Thanks.", "Okay.", "Great." - on the reasoning that the caller should
+     * substitute something a person needs to hear. The caller did not.
+     * `speakToBuffer("")` returns null immediately, the turn is skipped, and the
+     * prospect gets dead air in the middle of their own sentence.
+     *
+     * Measured on the call of 13 Oct: twice, for exactly this reason, producing
+     * ~12s of silence where the agent should have been speaking. This is the
+     * complaint that has been open for two months - the agent "going quiet" mid
+     * call - and it is not a model problem and not a TTS problem. It is a missing
+     * branch here.
+     *
+     * So the substitution happens, and it asks them to repeat rather than
+     * announcing filler: the agent produced nothing usable, so the honest thing
+     * to put on the line is "I didn't catch that", which also gives the prospect
+     * the floor back. Applied AFTER capping, because the substitute is itself
+     * capped-checked - running it back through capTurnLength could return "" again
+     * and recurse straight into the silence this closes. */
+    const capped = isOpening ? line : capTurnLength(line);
+    let spoken = capped;
+    if (!spoken) {
+      onLog(`[local-media-v2] brain produced no speakable turn (${JSON.stringify(line).slice(0, 60)}); asking the prospect to repeat instead of going silent`);
+      spoken = "Sorry, I did not catch that.";
+      contentlessTurns++;
+    }
     if (line) onLog("AGENT: " + line);
     // Create capture state BEFORE awaiting TTS so inbound audio is never
     // dropped while state is null during synthesis.
