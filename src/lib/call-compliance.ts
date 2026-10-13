@@ -44,6 +44,44 @@ const TEMPORAL_EXEMPT:readonly RegExp[]=[
  * most damaging mistake available in this function. */
 const PROSPECT_WILL_CALL_RE=/\b(?:i|we)(?:'ll| will| will be| can) call you\b/;
 
+/* The same refusal, said in Urdu, Hindi and Persian.
+ *
+ * isSpokenOptOut was English-only while the agent speaks nine languages, so a
+ * refusal in any other language ended the call politely and suppressed nothing -
+ * the identical failure to the one the English phrases were just fixed for, and
+ * the one that matters most, because the caller is left believing it was
+ * understood.
+ *
+ * The bar for these is higher than for English, not lower. A false positive here
+ * suppresses a live number permanently, and matching on a short word in a
+ * language this code was not written in can easily do that: "mat" and "nahi"
+ * appear inside ordinary sentences as "not" and "no". So every entry below is a
+ * phrase that has no other reading - they are the full idioms for "do not call
+ * me", "remove my number" and "no follow up", not the words that could make
+ * them. Nothing here needs the temporal exemption either: the script has no
+ * equivalent of "for now" in these phrases, and a non-exemption fails towards
+ * suppressing, which is the correct direction for a refusal and the wrong one
+ * for anything ambiguous.
+ *
+ * If these ever need widening, they need recordings of how the recogniser
+ * actually renders the refusal, not a translation. */
+const NON_LATIN_OPT_OUT:readonly string[]=[
+ /* Urdu - each names calling or the number. "کال نہ کریں" alone ("don't call")
+  * is safe because "کال" has no other reading in a sales call. Bare "مت کریں"
+  * is NOT here: it is just "don't", and would suppress on any refusal of
+  * anything. */
+ "کال نہیں کرنا","کال نہ کریں","کال مت کریں","مجھے کال نہ کریں","دوبارہ کال نہ کریں",
+ "کال نہیں کرنا چاہیے","فولو اپ نہیں چاہیے","کوئی فولو اپ نہیں",
+ "میرا نمبر ہٹا دیں","فہرست سے ہٹا دیں","میرا نمبر حذف کر دیں",
+ /* Hindi - same rule. "मत कीजिए" alone is just "please don't" and is not here;
+  * every entry names the call, the phone, the number or the follow up. */
+ "कॉल मत कीजिए","कॉल मत करो","फोन मत कीजिए","फोन मत करो","दोबारा कॉल मत",
+ "मुझे कॉल मत","मुझे फोन मत","फॉलोअप नहीं चाहिए","कोई फॉलोअप नहीं",
+ "मेरा नंबर हटा दो","मेरा नंबर हटा दीजिए","सूची से हटा दीजिए",
+ /* Persian */
+ "تماس نگیرید","زنگ نزنید","پیگیری نکنید","شماره ام را حذف کنید",
+];
+
 function normaliseForMatching(text:string){
   return String(text||"")
    .toLowerCase()
@@ -58,9 +96,13 @@ export function isSpokenOptOut(text:string){
  const x=normaliseForMatching(text);
  if(!x)return false;
  if(PROSPECT_WILL_CALL_RE.test(x))return false;
- if(HARD_OPT_OUT.some(p=>x.includes(p)))return true;
+if(HARD_OPT_OUT.some(p=>x.includes(p)))return true;
+ /* Checked before the soft list because a time-boxed exemption must never
+  * rescue a non-latin refusal: "later" and "now" have no translations in these
+  * phrases, and if a caller did say one we still want the number suppressed. */
+ if(NON_LATIN_OPT_OUT.some(p=>x.includes(p)))return true;
  if(!SOFT_OPT_OUT.some(p=>x.includes(p)))return false;
-return !TEMPORAL_EXEMPT.some(re=>re.test(x));
+ return !TEMPORAL_EXEMPT.some(re=>re.test(x));
 }
 
 export function normalizePhoneForSuppression(phone:string|null|undefined){return String(phone||"").replace(/\D/g,"");}

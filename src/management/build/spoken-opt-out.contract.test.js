@@ -156,9 +156,56 @@ assert.equal(optOut("I DO NOT WANT YOU TO FOLLOW UP"), true, "shouting must not 
 assert.equal(optOut(""), false);
 assert.equal(optOut("   "), false);
 assert.equal(optOut(undefined), false);
-assert.equal(optOut("تھبئی کال نہیں کرنا"), false,
-  "non-latin text must be safe, not suppress by accident");
 assert.equal(optOut("Sure, that works. My MC number is 123456."), false);
+
+/* ===================================================================
+ * NON-LATIN REFUSALS.
+ *
+ * The detector was English-only while the agent answers in nine languages, so a
+ * refusal in Urdu or Hindi ended the call politely and suppressed nothing. The
+ * caller is left believing it was understood, and the number is dialled again -
+ * the identical bug to the English one, and worse because nobody was watching
+ * for it in that language.
+ *
+ * These entries are held to a stricter bar than the English ones, and the test
+ * enforces the bar rather than trusting it: a phrase that is merely a refusal of
+ * something ("no", "please don't") must NOT suppress, because suppressing a live
+ * number permanently is the one failure here with no recovery.
+ * =================================================================== */
+for (const u of [
+  "کال نہ کریں",                 // Urdu: do not call
+  "مجھے کال مت کریں",           // do not call me
+  "میرا نمبر ہٹا دیں",           // remove my number
+  "फॉलोअप नहीं चाहिए",           // Hindi: no follow up
+  "कॉल मत करो",                  // do not call
+  "मेरा नंबर हटा दो",           // delete my number
+  "تماس نگیرید",                 // Persian: do not contact
+]) {
+  assert.equal(optOut(u), true, `a non-latin refusal must suppress: "${u}"`);
+}
+
+/* The near-misses that must NOT suppress. "mat" alone is just "don't" and can
+ * refuse anything; a bare "nahi" is just "no". */
+for (const u of [
+  "मत कीजिए",                   // Hindi: just "please don't"
+  "नहीं",                        // Hindi: just "no"
+  "مجھے نہیں",                   // Urdu: just "no"
+  "میرا نام احمد ہے",            // Urdu: "my name is Ahmed"
+  "मेरा नाम अहमद है",            // Hindi: "my name is Ahmed"
+]) {
+  assert.equal(optOut(u), false, `must NOT suppress on a bare refusal: "${u}"`);
+}
+
+/* A non-latin refusal must not be rescued by a time qualifier it cannot parse. */
+assert.equal(optOut("कॉल मत करो, बाद में"), true,
+  "a non-latin refusal still suppresses; the temporal exemption is English-only");
+
+assert.match(compliance, /NON_LATIN_OPT_OUT/,
+  "the non-latin list must exist and be checked");
+assert.ok(
+  compliance.indexOf("NON_LATIN_OPT_OUT.some") < compliance.indexOf("TEMPORAL_EXEMPT.some"),
+  "the non-latin check must come BEFORE the temporal exemption, or 'for now' could rescue a refusal");
 
 console.log("spoken opt-out: PASS");
 console.log(`  ${MUST_SUPPRESS.length} refusals suppress the number, ${MUST_NOT_SUPPRESS.length} live replies do not`);
+console.log("  7 non-latin refusals suppress; bare 'no'/'don't' in those scripts do not");
