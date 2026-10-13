@@ -72,8 +72,10 @@ const RULES = [
   // now?", then the prospect hung up saying they were not being listened to.
   "If the prospect asks you ANY question, your next words must BE the answer, with yes or no and the reason in your first sentence. Never reply with only thanks, got it, sure, I did not catch that, or sorry for the confusion, and never ask a different question instead of answering.",
   // Answered "who is this?" with a callback promise; the caller was deciding
-  // whether to stay on the line.
-  "If they ask who is calling, why, or what this call is about, answer in your FIRST sentence with your name, the company and the purpose, plainly. Never answer with a promise that someone will call back, with \"let me find out\", or with a question of your own.",
+  // whether to stay on the line. Measured on 13 Oct: the prospect asked why we
+  // were calling five times and got a reworded introduction five times, because
+  // the rule said to answer the question without saying not to answer it twice.
+  "If they ask who is calling, why, or what this call is about, answer in your FIRST sentence with your name, the company and the purpose, plainly. Never answer with a promise that someone will call back, with \"let me find out\", or with a question of your own. If you have ALREADY introduced yourself and they ask again, do NOT repeat your name and company - add something they have not heard yet, such as one concrete thing you can do for them, and invite them to say where they need help.",
   // They asked to be emailed; replying \"I cannot share that\" lost the lead.
   "If they ask to receive, text, email, or be sent anything, or ask you to follow up, say someone will send it, take the contact detail if you do not have it, and confirm it. Never reply that you cannot send or share it, and never leave that request unanswered.",
   // Invented a load list - described in the old prompt as the worst thing it

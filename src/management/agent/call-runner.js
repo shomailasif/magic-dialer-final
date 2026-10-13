@@ -592,6 +592,10 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   /* "Who is it?" and "what is this about?" are the same request and are answered
    * from the configuration, in every language, the same way. */
   let identityAsked = false;
+  /* Has the agent already told this prospect who we are? Answering once is right
+   * and must not be blocked; answering again because they asked again is the
+   * machine-loop the guard exists to prevent. */
+  let identityAnswered = false;
   // The first thing the agent said, kept because it IS the identity answer in the
   // language of the call - see identityAnswer.
   let firstSpokenLine = null;
@@ -1086,9 +1090,34 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
           openingSpoken = true;
           firstSpokenLine = line;
         } else if (askedWhoIsThis || identityAsked) {
-          // On the 18:44Z call the prospect asked "Who is this?" and the guard
-          // removed "This is Atlas with Zaz Logistics" for being a repeat
-          // introduction. Skip the strip when they are asking what we are.
+          /* Answering WHO we are, ONCE, is correct - the guard used to delete
+           * exactly that answer on the 18:44Z call, which was the bug it was
+           * written for.
+           *
+           * But the exemption was unconditional, so it became a hole: the
+           * prospect asked "Why are you calling me?" five times on the call of
+           * 13 Oct and got essentially the same introduction five times. The
+           * prospect repeating the question is a signal the first answer did not
+           * land - and the right response is something NEW, not the same words
+           * louder.
+           *
+           * So the exemption now holds only until the identity has been given.
+           * After that this turn is an ordinary turn again and the repetition
+           * guard applies, which is what routes a second identity answer into the
+           * "say something different" path below. */
+          if (!identityAnswered) {
+            identityAnswered = true;
+          } else {
+            const strip = lastSpokenLine
+              ? stripRepeatedAsks(line, askedFor, askedTokens)
+              : { text: line, forbidden: false };
+            if (strip.forbidden) {
+              try { log("[repeat-ask] identity already given; replacing the second introduction"); } catch {}
+              line = "";
+            } else {
+              line = strip.text;
+            }
+          }
         } else {
           const strip = lastSpokenLine
             ? stripRepeatedAsks(line, askedFor, askedTokens)
