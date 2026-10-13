@@ -345,9 +345,14 @@ async function assertNoTelephony() {
   assert.match(harnessCode, /sipPassword:\s*"audio-sim-offline"/, "the harness's voip password must be a literal placeholder");
   assert.doesNotMatch(harnessCode, /\.voip\b[^;]*sipPassword|config\.voip/, "the harness must not read the real voip credentials");
 
-  // The VAD options the harness reports against are the controller's own.
-  assert.match(controllerSrc, /makeVad\(\{ minSpeechMs: 160, endSilenceMs: 700 \}\)/, "the harness must measure the VAD options the controller actually uses");
-  assert.deepEqual(VAD_OPTS, { minSpeechMs: 160, endSilenceMs: 700 });
+  // The VAD options the harness reports against are the controller's own, and the
+  // controller passes none of its own: an endSilenceMs here would be an override
+  // that disables the adaptive schedule in the measurement as well as in
+  // production, which is how the harness and the controller agreed on 700ms for
+  // the entire life of the adaptive VAD.
+  assert.match(controllerSrc, /makeVad\(\{ minSpeechMs: 160 \}\)/, "the harness must measure the VAD options the controller actually uses");
+  assert.doesNotMatch(controllerSrc, /makeVad\(\{[^}]*endSilenceMs/, "the controller must not pin endSilenceMs");
+  assert.deepEqual(VAD_OPTS, { minSpeechMs: 160 });
   assert.match(controllerSrc, /const SPEECH_HOLD_MS = 250;/, "SPEECH_HOLD_MS must still be 250ms");
   assert.equal(SPEECH_HOLD_MS, 250);
 

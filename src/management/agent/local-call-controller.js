@@ -546,7 +546,7 @@ const capped = isOpening ? line : capTurnLength(line);
     if (!state) {
       let release;
       const ended = new Promise((r) => { release = r; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
+      state = { vad: makeVad({ minSpeechMs: 160 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
     }
     let out;
     if (isOpening) {
@@ -587,7 +587,7 @@ const capped = isOpening ? line : capTurnLength(line);
     if (!state) {
       let release;
       const ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
+      state = { vad: makeVad({ minSpeechMs: 160 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: true, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: Date.now(), openingProtected: isOpening, ended, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
     } else {
       state.playing = true;
       state.interrupted = false;
@@ -645,7 +645,7 @@ const capped = isOpening ? line : capTurnLength(line);
     } else {
       let release;
       ended = new Promise((resolve) => { release = resolve; });
-      state = { vad: makeVad({ minSpeechMs: 160, endSilenceMs: 700 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, lastVoicedAt: 0, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
+      state = { vad: makeVad({ minSpeechMs: 160 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, lastVoicedAt: 0, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
       win = state;
     }
     /* A prospect who has stopped talking is answered in well under a second by

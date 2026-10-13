@@ -71,17 +71,33 @@ function main() {
     "a genuine pause of over a second must end the turn so the agent can reply"
   );
 
-  // The controller must not override the VAD back down to something that
-  // truncates. It passed 250ms while the module default was 700ms.
+  // The controller must not configure the VAD down to something that truncates.
+  // It passed 250ms while the module default was 700ms, and "it's the" plus the
+  // number after it arrived as two turns.
+  //
+  // It must also not PIN it. It pinned 700ms at all three makeVad() sites for
+  // the life of the feature, which is an explicit override, so the adaptive
+  // schedule never ran on a single live call - while this file and
+  // vad-adaptive-eos.behavior.test.js both passed the whole time. The assertion
+  // below is now "no value below a safe floor", checked against the module's own
+  // constants rather than against a hardcoded number that drifts.
   const controller = fs.readFileSync(path.join(__dirname, "local-call-controller.js"), "utf8");
   const settings = [...controller.matchAll(/endSilenceMs:\s*(\d+)/g)].map((m) => Number(m[1]));
-  assert.ok(settings.length >= 3, `expected the controller to configure the VAD, found ${settings.length}`);
   for (const value of settings) {
     assert.ok(
       value >= 500,
       `the controller must not end a turn after ${value}ms of silence; that truncates mid-sentence. Measured live: "it's the" and the number arrived as two turns.`
     );
   }
+  assert.ok(
+    settings.length === 0,
+    `no controller call site may pin endSilenceMs (found ${settings.length}). createVad treats an explicit value as an override, so a pin silently disables the adaptive schedule - which is exactly what happened for the entire life of the adaptive VAD.`
+  );
+
+  // The schedule itself has to stay clear of the truncation value.
+  const { QUIET_FLOOR_MS, QUIET_MAX_MS } = require("./vad");
+  assert.ok(QUIET_FLOOR_MS >= 500, `adaptive floor of ${QUIET_FLOOR_MS}ms truncates mid-sentence`);
+  assert.ok(QUIET_MAX_MS >= QUIET_FLOOR_MS, "patience must never invert");
 
   // And the hold that covers trailing digits must be long enough to matter.
   const hold = Number((controller.match(/const SPEECH_HOLD_MS = (\d+);/) || [])[1]);

@@ -98,11 +98,17 @@ require(path.join(AGENT, "intelligent-brain.js"));
 
 const { runLocalCallBody } = require(path.join(AGENT, "local-call-controller.js"));
 
-/* Must match local-call-controller.js, which calls
- * makeVad({ minSpeechMs: 160, endSilenceMs: 700 }) and then holds the window
- * open a further SPEECH_HOLD_MS. Those are the numbers every turn is measured
- * against. */
-const VAD_OPTS = { minSpeechMs: 160, endSilenceMs: 700 };
+/* Must match local-call-controller.js, which calls makeVad({ minSpeechMs: 160 })
+ * and then holds the window open a further SPEECH_HOLD_MS. Those are the numbers
+ * every turn is measured against.
+ *
+ * No endSilenceMs, deliberately: the controller no longer passes one, so the
+ * harness must not invent one either. This harness previously pinned 700ms here
+ * while the controller pinned it too, which is how the adaptive schedule stayed
+ * unreachable - the harness would have kept measuring a configuration that no
+ * live call used. Whatever the controller passes is what gets measured, and now
+ * that is the adaptive default. */
+const VAD_OPTS = { minSpeechMs: 160 };
 const SPEECH_HOLD_MS = 250;
 const FRAME_BYTES = 160;          // 20ms of PCMU/8000 - the engine's contract
 const FRAME_MS = 20;

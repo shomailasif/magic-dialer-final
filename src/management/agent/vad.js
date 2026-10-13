@@ -53,8 +53,23 @@ function rmsPcmu(buf) {
  * produce it. The 350ms failure was a *floor* problem - the window closed at
  * 350ms regardless of what the person was doing - and this keeps a floor.
  */
-const QUIET_FLOOR_MS = 300;
+const QUIET_FLOOR_MS = 500;
 const QUIET_MAX_MS = 700;
+
+/* 300ms was tried here and rejected on the evidence, not on taste.
+ *
+ * vad-turn-boundary.behavior.test.js carries a measured live failure: at a 250ms
+ * floor, "it's the" and the number that followed it arrived as two turns, and
+ * the prospect was talked over mid-sentence. Cutting somebody off is the worst
+ * thing this agent can do, and 300ms sat only 50ms above a value already known to
+ * break on a real call - which is not a margin, it is a coincidence waiting to
+ * vary.
+ *
+ * So the adaptive range is 500-700ms: the schedule still shortens the wait for a
+ * prospect who has already spoken at length, which is where the latency win was
+ * actually wanted, and it never approaches the failure that put this whole
+ * mechanism under suspicion. If a lower floor is ever justified it needs a live
+ * measurement showing it does not split utterances, not a plausible argument. */
 
 /* Above this the frame is a voice, not a room. Well under real speech (a normal
  * telephone voice measures 4000-10000 RMS here) and well over a noisy office, so
@@ -64,8 +79,8 @@ const NOISE_TRAIN_CEILING = 1200;
 /* Speech duration at which each level of patience applies. Long enough to have
  * reached a clause break, in that order. */
 const PATIENCE_STEPS = [
-  { speechMs: 2500, quietMs: 300 },
-  { speechMs: 1200, quietMs: 400 },
+  { speechMs: 2500, quietMs: 500 },
+  { speechMs: 1200, quietMs: 600 },
   { speechMs: 0, quietMs: 700 },
 ];
 

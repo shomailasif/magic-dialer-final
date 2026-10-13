@@ -23,6 +23,7 @@
  * frames are what the VAD actually sees on a call, not a convenient approximation.
  */
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const sim = require(path.join(__dirname, "..", "build", "audio-sim.js"));
@@ -91,7 +92,13 @@ test("a mid-sentence pause does not end the turn", () => {
 test("a long utterance is released on a short pause, never under the floor", () => {
   const r = run({ speechMs: 4000, silenceMs: 3000 });
   assert.ok(r.endedAfter >= QUIET_FLOOR_MS, `ended after ${r.endedAfter}ms, under the ${QUIET_FLOOR_MS}ms floor`);
-  assert.ok(r.endedAfter <= 380, `a 4s utterance should be released near the floor, ended at ${r.endedAfter}ms`);
+  /* "Near the floor" is bounded above the floor, not at 380ms. The floor itself
+   * moved from 300 to 500 because a 250ms floor was measured splitting "it's the"
+   * from the number after it on a live call - see QUIET_FLOOR_MS in vad.js. The
+   * claim being tested is that a long utterance is released SOONER than a short
+   * one, not that it is released dangerously early. */
+  assert.ok(r.endedAfter <= QUIET_FLOOR_MS + 120,
+    `a 4s utterance should be released near the ${QUIET_FLOOR_MS}ms floor, ended at ${r.endedAfter}ms`);
   assert.ok(r.endedAfter < run({ speechMs: 400, silenceMs: 3000 }).endedAfter,
     "a long utterance must be answered faster than a short one");
 });
@@ -180,6 +187,33 @@ test("quiet-room noise does not trigger the guard either", () => {
   }
   const shortU = run({ speechMs: 200, silenceMs: 3000 }).endedAfter;
   const longU = run({ speechMs: 4000, silenceMs: 3000 }).endedAfter;
+  /* ---- the wiring, which is where this actually went wrong ----
+   *
+   * Every test above passes while the production VAD is pinned at 700ms. That is
+   * exactly what happened: createVad honours an explicit endSilenceMs as an
+   * override, and all three makeVad() call sites in local-call-controller.js
+   * passed one, so the adaptive schedule below never ran on a single live call.
+   *
+   * A tested feature that is unreachable is worse than no feature, because it
+   * reads as coverage. So the controller is asserted here too: no call site may
+   * pin endSilenceMs, and that is the only thing standing between this and the
+   * same silent regression. */
+  const controller = fs.readFileSync(path.join(__dirname, "local-call-controller.js"), "utf8");
+  const pins = [...controller.matchAll(/makeVad\(\{[^}]*endSilenceMs/g)];
+  tests.push(() => {
+    if (pins.length) {
+      throw new Error(
+        `${pins.length} makeVad() call site(s) pin endSilenceMs: ` +
+        pins.map((m) => m[0]).join(" | ") +
+        ". That override disables the adaptive schedule entirely - the tests here " +
+        "still pass, but no live call ever adapts.",
+      );
+    }
+  });
+  tests.push(() => {
+    const sites = (controller.match(/makeVad\(\{/g) || []).length;
+    if (sites < 3) throw new Error(`expected the 3 controller VAD sites, found ${sites}`);
+  });
   console.log(`\nPASS: ${tests.length} adaptive end-of-speech tests`);
   console.log(`  short utterance ${shortU}ms (was 700) · long utterance ${longU}ms (was 700) · floor ${QUIET_FLOOR_MS}ms`);
 })();

@@ -389,12 +389,20 @@ async function scenarioRemoteHangup(logs) {
     await step("opening barge-in", () => scenarioSpeechBargeIn(logs));
     await step("steady-tone barge-in guard", () => scenarioSteadyTone(logs));
 
-    /* The VAD guard. Read the declared value rather than asserting a literal
-     * that can drift: what matters is that it is not the old flat 700ms, because
-     * the controller now relies on the adaptive schedule in vad.js. */
-    const declaredSilence = Number((/makeVad\(\{[^}]*endSilenceMs:\s*(\d+)/.exec(controllerSrc) || [])[1]);
-    assert.ok(declaredSilence >= 700,
-      `the controller pins endSilenceMs at ${declaredSilence}ms, which DISABLES the adaptive schedule in vad.js and silently restores the flat 700ms wait`);
+    /* The VAD guard, inverted.
+     *
+     * This asserted `declaredSilence >= 700`, which is precisely the assertion
+     * that kept the adaptive schedule unreachable: the controller pinned
+     * endSilenceMs at 700, createVad treats any explicit value as an override,
+     * and the floor-and-patience schedule in vad.js never ran on a live call.
+     * The test passed by documenting the defect rather than failing on it.
+     *
+     * The controller now passes no endSilenceMs at all, so the assertion is its
+     * absence. The schedule itself is range-checked in vad-adaptive-eos and
+     * vad-turn-boundary. */
+    const pinnedSilence = /makeVad\(\{[^}]*endSilenceMs:\s*(\d+)/.exec(controllerSrc);
+    assert.equal(pinnedSilence, null,
+      `the controller pins endSilenceMs at ${pinnedSilence && pinnedSilence[1]}ms, which DISABLES the adaptive schedule in vad.js; omit it so the adaptive default applies`);
     {
       const src = require("node:fs").readFileSync(require.resolve("./local-call-controller"), "utf8");
       assert.match(src, /function isUsableOpening\(/, "the opening must be validated before it is spoken");
