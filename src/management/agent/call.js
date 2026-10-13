@@ -75,7 +75,7 @@ async function voiceCall({
       const timer = setTimeout(() => ac.abort(), 15000);
       const res = await fetch(`${portal.replace(/\/+$/, "")}/api/call-result`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, product, transcript: result.transcript, score: result.score, goodLead: result.goodLead, escalateToHuman: result.escalateToHuman, strategies: result.strategies || [], summary: result.summary }),
+        body: JSON.stringify({ token, product, transcript: result.transcript, score: result.score, goodLead: result.goodLead, escalateToHuman: result.escalateToHuman, escalateReason: result.escalateReason, doNotCall: result.doNotCall === true, strategies: result.strategies || [], summary: result.summary }),
         signal: ac.signal,
       });
       clearTimeout(timer);

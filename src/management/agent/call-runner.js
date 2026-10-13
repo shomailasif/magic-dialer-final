@@ -583,6 +583,12 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   // a check-in spoken in between rather than 15s of nothing.
   let quietMs = 0;
   let stopRequested = false;
+  /* Set by every refusal branch, so the CALL RESULT can carry it. The agent was
+   * already refusing correctly in conversation - that part worked on the call of
+   * 13 Oct - but nothing reported it outward, so the number was never suppressed
+   * and the next campaign called the same person again. Behaviour is not
+   * compliance; the refusal has to leave the process to take effect. */
+  let doNotCall = false;
   let humanRequested = false;
   let pendingDetected = null;
   // Recent substantial detections, so two agreeing turns need not be adjacent.
@@ -1615,6 +1621,7 @@ if (neverHeard && firstQuiet) {
     askedWhoIsThis = WHO_IS_THIS_RE.test(heard);
     identityAsked = askedWhoIsThis || CALL_PURPOSE_RE.test(heard);
     stopRequested = STOP_RE.test(heard);
+    if (stopRequested) doNotCall = true;
     humanRequested = HUMAN_RE.test(heard) && /\b(speak|talk|transfer|connect|want|need)\b/i.test(heard);
 
     if (stopRequested) {
@@ -1670,6 +1677,7 @@ if (neverHeard && firstQuiet) {
      * pressing a prospect for a phone number after they told us not to follow up.
      * See NO_FOLLOWUP_RE. */
     if (NO_FOLLOWUP_RE.test(heard)) {
+      doNotCall = true;
       busyRefused = true;
       closingSpoken = true;
       /* No callback promise. closingLine() appends "someone will call you back
@@ -1910,7 +1918,11 @@ if (neverHeard && firstQuiet) {
     score: Number(verdict.score.toFixed(2)),
     goodLead: verdict.goodLead,
     escalateToHuman,
-    escalateReason: stopRequested ? "do-not-call request" : (humanRequested ? "human requested" : (llmOutageSustained() ? "AI gateway outage" : legacyEsc.reason)),
+    escalateReason: doNotCall ? "do-not-call request" : (stopRequested ? "do-not-call request" : (humanRequested ? "human requested" : (llmOutageSustained() ? "AI gateway outage" : legacyEsc.reason))),
+    /* Reported outward so the refusal is persisted. Without this the agent was
+     * perfectly correct in conversation and the number stayed diallable, which is
+     * the failure this flag exists to end. */
+    doNotCall,
     learning: updatedLearning,
     strategies,
     summary: `Call about ${product || "customer offering"}: ${verdict.goodLead ? "QUALIFIED LEAD" : "not a lead"}. Lead said: ${leadLines.join(" | ") || "nothing detected"}.`,
