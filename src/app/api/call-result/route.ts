@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { authorizeActiveEngineDevice, engineBearerToken } from "@/lib/engine-device-auth";
 import { sendNotification } from "@/lib/mailer";
-import { diagnosticId, safeDiagnostic } from "@/lib/safe-diagnostic";
+import { diagnosticId, redactDiagnostic } from "@/lib/safe-diagnostic";
 import { isSpokenOptOut, normalizePhoneForSuppression } from "@/lib/call-compliance";
 
 export const dynamic = "force-dynamic";
@@ -58,7 +58,7 @@ function firstString(v: unknown): string {
  * easy way to lose leads by accident.
  */
 function parseTranscript(raw: unknown): { full: string; prospect: string } {
-  const lines: string[] = [];
+  const lines: { lead: boolean; text: string }[] = [];
   if (Array.isArray(raw)) {
     for (const entry of raw) {
       if (!entry || typeof entry !== "object") continue;
@@ -156,7 +156,12 @@ export async function POST(r: Request) {
           },
         });
       } catch (e) {
-        console.error(`call-result: failed to persist opt-out suppression: ${safeDiagnostic(e).slice(0, 200)}`);
+        /* safeDiagnostic is not an error formatter - it builds a traceable
+         * diagnostic with a stage and a code, and returns an object. Calling it
+         * with the error, or calling .slice on what it returns, is a type error
+         * the local check missed and CI caught. redactDiagnostic is the one that
+         * renders a value to a string. */
+        console.error(`call-result: failed to persist opt-out suppression: ${redactDiagnostic(e).slice(0, 200)}`);
       }
     }
     return NextResponse.json({ ok: true, lead: false, optedOut: true, suppressed: !!normalised, emailed: [], requestId, callId });

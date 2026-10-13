@@ -68,8 +68,16 @@ assert.match(route, /optedOut: true/,
   "the response must report the refusal rather than looking like an ordinary non-lead");
 
 /* ---- the failure must not be fatal: a refused call is already over ---- */
-assert.match(route, /catch \(e\) \{\s*\n\s*console\.error\(`call-result: failed to persist opt-out suppression/,
-  "a suppression write failure must not turn the refusal into a 500 that makes the engine report it again");
+/* safeDiagnostic builds a traceable diagnostic object and takes a stage, a code
+ * and a status - it is not an error formatter, and its return value has no
+ * .slice. redactDiagnostic is what renders a value to a string. Getting this
+ * wrong passed the local type check and failed CI. */
+assert.match(route, /import \{ diagnosticId, redactDiagnostic \} from "@\/lib\/safe-diagnostic"/,
+  "safeDiagnostic is not an error formatter and must not be used to render one");
+assert.match(route, /redactDiagnostic\(e\)\.slice\(0, 200\)/,
+  "a suppression write failure must be logged, and must not turn the refusal into a 500 that makes the engine report it again");
+assert.doesNotMatch(route, /safeDiagnostic\(e\)/,
+  "safeDiagnostic takes (stage, code, status) and never an error");
 
 /* ---- the engine must actually send the flag ---- */
 assert.match(runner, /let doNotCall = false;/,
@@ -97,7 +105,7 @@ assert.ok(fnStart > -1, "parseTranscript must exist");
 const fnEnd = route.indexOf("\n}", route.indexOf("prospect: lines.filter", fnStart)) + 2;
 const js = route.slice(fnStart, fnEnd)
   .replace(/\(raw: unknown\):\s*\{\s*full:\s*string;\s*prospect:\s*string\s*\}\s*\{/, "(raw) {")
-  .replace(/const lines: string\[\] = \[\];/, "const lines = [];")
+  .replace(/const lines: \{ lead: boolean; text: string \}\[\] = \[\];/, "const lines = [];")
   .replace(/const e = entry as Record<string, unknown>;/, "const e = entry;");
 const parseTranscript = new Function("firstString", `${js}; return parseTranscript;`)(function firstString(v) {
   if (typeof v === "string" && v.trim()) return v.trim();
