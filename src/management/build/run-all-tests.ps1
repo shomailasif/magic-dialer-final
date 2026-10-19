@@ -41,6 +41,8 @@ $tests = @(
   "agent\engine-health.behavior.test.js",
   "agent\auto-update.behavior.test.js",
   "agent\watchdog-lock.behavior.test.js",
+  "agent\offline-lead-cache.behavior.test.js",
+  "agent\portal-down-messaging.behavior.test.js",
   "build\release-version-consistency.test.js",
   "build\\ai-gateway-contract.test.js",
   "build\\groq-direct-probe-contract.test.js",
@@ -85,7 +87,8 @@ $tests = @(
   "build\\db-round-trip-contract.test.js",
   "build\\db-connection-audit.behavior.test.js",
   "build\production-deployment-recovery-contract.test.js",
-  "build\postgres-raw-sql-identifiers.contract.test.js"
+  "build\postgres-raw-sql-identifiers.contract.test.js",
+  "build\lead-mapping.test.ts"
 )
 $fail = 0
 foreach ($t in $tests) {

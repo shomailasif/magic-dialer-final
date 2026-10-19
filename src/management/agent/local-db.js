@@ -61,6 +61,40 @@ function open(agentDir) {
       created_at   INTEGER NOT NULL,
       synced       INTEGER NOT NULL DEFAULT 0
     );
+    /* A copy of the portal's due-lead list, kept so a campaign survives the
+     * portal being unreachable.
+     *
+     * This is deliberately NOT the leads table. That table feeds
+     * getUnsyncedLeads(), which the heartbeat PUSHES UP to the portal. Writing
+     * the portal's own rows into it would make the engine upload the customer's
+     * list back at them on every beat - a sync loop, and a way to pollute
+     * production data from a local file. This table is read locally and never
+     * sent anywhere.
+     *
+     * Keyed by phone rather than by portal id, because the phone is the thing
+     * that must never be dialled twice. The same subscriber under two portal
+     * ids is still one person, and a portal restore can renumber ids while the
+     * number stays the same. */
+    CREATE TABLE IF NOT EXISTS lead_cache (
+      phone       TEXT PRIMARY KEY,
+      lead        TEXT NOT NULL,
+      cached_at   INTEGER NOT NULL,
+      called_at   INTEGER
+    );
+    /* Refusals heard on this PC, remembered locally.
+     *
+     * During an outage the call result 404s, so the portal never learns that
+     * someone said stop. Without this the next cached page would dial them
+     * again - the exact failure the spoken-opt-out work exists to prevent,
+     * reintroduced by the offline path. Held by phone so it covers a lead that
+     * is not in the cache at all, and applied to a live portal fetch as well
+     * as a cached one, because a portal that comes back still lists them as
+     * due until it has seen the result we could not deliver. */
+    CREATE TABLE IF NOT EXISTS do_not_call (
+      phone       TEXT PRIMARY KEY,
+      at          INTEGER NOT NULL,
+      reason      TEXT
+    );
   `);
   _db = db;
   return db;
@@ -118,6 +152,62 @@ function markLeadSynced(id) {
 
 function allLeads(limit = 100) {
   try { return db().prepare("SELECT * FROM leads ORDER BY created_at DESC LIMIT ?").all(limit); } catch { return []; }
+}
+
+// ── Offline lead cache ────────────────────────────────────────────────
+
+/* Store a page of due leads so the campaign survives the portal being down.
+ *
+ * Upsert by phone. A lead already marked called keeps that mark: the portal
+ * refreshes the row's contents but must not make a dialed subscriber dialable
+ * again, which is what a blind INSERT OR REPLACE would do. */
+function cacheLeads(leads) {
+  if (!Array.isArray(leads) || !leads.length) return 0;
+  const d = db();
+  const now = Date.now();
+  let n = 0;
+  const stmt = d.prepare(`INSERT INTO lead_cache (phone, lead, cached_at) VALUES (?, ?, ?)
+    ON CONFLICT(phone) DO UPDATE SET lead = excluded.lead, cached_at = excluded.cached_at`);
+  for (const l of leads) {
+    const phone = String((l && l.phone) || "").trim();
+    if (!phone) continue;
+    try { stmt.run(phone, JSON.stringify(l), now); n++; } catch {}
+  }
+  return n;
+}
+
+/* The leads still worth dialling from the cache, oldest first.
+ *
+ * Excludes anything this PC has already called or been told not to call. The
+ * exclusion is by phone, so a subscriber reached under a different portal id
+ * is still skipped. */
+function cachedLeads(limit = 200) {
+  try {
+    return db().prepare(`SELECT lead FROM lead_cache
+      WHERE called_at IS NULL AND phone NOT IN (SELECT phone FROM do_not_call)
+      ORDER BY cached_at ASC LIMIT ?`).all(limit)
+      .map((r) => { try { return JSON.parse(r.lead); } catch { return null; } })
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+function markCachedLeadCalled(phone) {
+  const p = String(phone || "").trim();
+  if (!p) return;
+  try { db().prepare("UPDATE lead_cache SET called_at = ? WHERE phone = ?").run(Date.now(), p); } catch {}
+}
+
+/* Remember a refusal on this PC, so an outage cannot turn it into a second call. */
+function addDoNotCall(phone, reason) {
+  const p = String(phone || "").trim();
+  if (!p) return;
+  try { db().prepare("INSERT OR REPLACE INTO do_not_call (phone, at, reason) VALUES (?, ?, ?)").run(p, Date.now(), String(reason || "spoken opt-out")); } catch {}
+}
+
+function isDoNotCall(phone) {
+  const p = String(phone || "").trim();
+  if (!p) return false;
+  try { return !!db().prepare("SELECT 1 AS x FROM do_not_call WHERE phone = ?").get(p); } catch { return false; }
 }
 
 // ── Calls ──────────────────────────────────────────────────────────────
@@ -196,6 +286,7 @@ process.on("exit", close);
 
 module.exports = {
   open, close, saveLead, updateLead, getUnsyncedLeads, markLeadSynced, allLeads,
+  cacheLeads, cachedLeads, markCachedLeadCalled, addDoNotCall, isDoNotCall,
   saveCall, getUnsyncedCalls, markCallSynced,
   saveLearning, getLearning,
   queueSync, getUnsyncedSyncLog, markSyncLogSynced,

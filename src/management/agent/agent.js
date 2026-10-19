@@ -264,7 +264,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.79";
+const VERSION = "1.4.80";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -700,6 +700,9 @@ async function runAgent(opts = {}) {
 
   const enrolledToken = config.deviceToken || config.token;
   let stopHeartbeat = false;
+  /* When the portal first stopped answering, in ms since epoch; 0 while healthy.
+   * Feeds portalDownState() so the dashboard can tell a blip from an outage. */
+  let portalDownSince = 0;
 
   const heartbeatTask = (async () => {
     while (!stopHeartbeat) {
@@ -747,6 +750,7 @@ async function runAgent(opts = {}) {
         const stats = localDb.stats();
         const hl = `heartbeat OK | ${stats.leads} leads, ${stats.calls} calls, ${stats.leadsUnsynced} unsynced`;
         log(hl);
+        portalDownSince = 0;
         ui({ status: "ONLINE", mode: config.mode || "on", line: hl });
       } else if (res.status === 401 || res.status === 403 || res.status === 409) {
         /* The portal has forgotten this device, or the account it belonged to is
@@ -757,6 +761,7 @@ async function runAgent(opts = {}) {
          * upserts the device by {userId, machineId}. Self-healing, so it works
          * for every existing PC and every future one with nobody involved. */
         const healed = await reEnrollSelf(cfgPath, config, "heartbeat rejected with status " + res.status);
+        portalDownSince = 0;
         if (healed) {
           log("This PC re-enrolled itself with the portal and is working again.");
           ui({ status: "ONLINE", mode: config.mode || "on", line: "Reconnected to your account automatically." });
@@ -770,13 +775,33 @@ async function runAgent(opts = {}) {
          * certainly not while a call is running. The old code lumped every
          * non-200 together and flipped the agent OFFLINE mid-call, which reads
          * to the operator as a broken product when the phone line is fine.
-         * Keep the last known state and carry on. */
-        log(`heartbeat unavailable (status ${res.status}) - keeping last known state.`);
-        ui({ status: config.portalSyncedAt ? "ONLINE" : "OFFLINE", mode: config.mode || "on", line: config.portalSyncedAt ? "Portal briefly unavailable - call is unaffected." : "Connecting to portal..." });
+         * Keep the last known state and carry on.
+         *
+         * What it must NOT do is describe a portal that never returns as a blip
+         * forever. A suspended deployment answers 404 on every beat, and "briefly
+         * unavailable - call is unaffected" kept reading as healthy while the
+         * customer's site was actually gone. Two minutes of downtime is the line
+         * between a moment and a problem, so past that the wording names the
+         * duration and points at their site, while still reporting the part that
+         * stays true: calls keep going from the local list. */
+        if (!portalDownSince) portalDownSince = Date.now();
+        const downMs = Date.now() - portalDownSince;
+        const brief = downMs < PORTAL_DOWN_HONEST_MS;
+        const st = portalDownState(downMs, !!config.portalSyncedAt, true);
+        log(brief
+          ? `heartbeat unavailable (status ${res.status}) - keeping last known state.`
+          : `heartbeat unavailable (status ${res.status}) for ${Math.round(downMs / 60000)} min - keeping last known state.`);
+        ui({ status: st.status, mode: config.mode || "on", line: st.line });
       }
     } catch (err) {
+      /* Same rule as an unwell portal: a refusal to connect at all, sustained,
+       * is not a momentary reconnect. Count it on the same clock so a machine
+       * whose portal is unreachable says so instead of "Reconnecting..." for
+       * hours with no way to tell the difference. */
+      if (!portalDownSince) portalDownSince = Date.now();
+      const st = portalDownState(Date.now() - portalDownSince, !!config.portalSyncedAt, false);
       log(`heartbeat failed (${safeLog(err,[enrolledToken])}) - retrying. Agent continues offline.`);
-      ui({ status: "OFFLINE", mode: config.mode || "on", line: "Reconnecting to portal..." });
+      ui({ status: st.status, mode: config.mode || "on", line: st.line });
     }
       if (!stopHeartbeat) await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
     }
@@ -868,6 +893,16 @@ async function runAgent(opts = {}) {
           onProgress: markProgress,
           maxCalls: limit,
           shouldStop: () => Boolean(queueControl && queueControl.stop),
+          /* Local memory of the lead list and of refusals, so a suspended or
+           * unreachable portal does not stop the campaign, and so a refusal
+           * heard during an outage is not forgotten when it comes back. */
+          cache: {
+            cacheLeads: (leads) => localDb.cacheLeads(leads),
+            cachedLeads: (limit2) => localDb.cachedLeads(limit2),
+            markCachedLeadCalled: (phone) => localDb.markCachedLeadCalled(phone),
+            addDoNotCall: (phone, reason) => localDb.addDoNotCall(phone, reason),
+            isDoNotCall: (phone) => localDb.isDoNotCall(phone),
+          },
           placeCall: async (lead) => {
             /* A PC that has lost its authorisation repairs itself before ringing
              * anyone, rather than dialling deaf. */
@@ -975,7 +1010,46 @@ function reEnrollSelf(cfgPath, liveConfig, reason) {
   await heartbeatTask;
 }
 
-module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity, _watchdog: { takeWatchdogLock, pidIsOurSupervisor, pidAlive, WATCHDOG_LOCK, WATCHDOG_LOG, supervisorNote } };
+/* How long a portal may be unreachable before the dashboard stops calling it a
+ * moment. Two minutes is several missed beats, long enough that a normal blip
+ * has recovered, short enough that a real outage is named while there is still
+ * time to do something about it. */
+const PORTAL_DOWN_HONEST_MS = 120000;
+
+/* What the dashboard should say after a heartbeat could not be completed.
+ *
+ * Pure and exported because this wording is a claim the operator acts on. "Portal
+ * briefly unavailable - call is unaffected" is true for a blip and dangerous for
+ * an outage: a suspended deployment answers 404 on every beat, and for the days
+ * it was down that beat kept reporting healthy while the customer's site was
+ * gone. The two cases differ only in elapsed time, so the decision lives here
+ * where a test can pin it, instead of inline inside the heartbeat loop where
+ * nothing could.
+ *
+ * reachedPortal=false means the request never got an answer at all (DNS, refused,
+ * timed out) rather than coming back non-200; that path was never keeping last
+ * known state, so it stays OFFLINE and only the wording escalates.
+ */
+function portalDownState(downMs, portalSyncedAt, reachedPortal) {
+  const honest = downMs >= PORTAL_DOWN_HONEST_MS;
+  const min = Math.max(1, Math.round(downMs / 60000));
+  if (!reachedPortal) {
+    return {
+      status: "OFFLINE",
+      line: honest
+        ? `Portal unreachable for ${min} min - your site may be suspended. Calls continue from the local list.`
+        : "Reconnecting to portal...",
+    };
+  }
+  return {
+    status: portalSyncedAt ? "ONLINE" : "OFFLINE",
+    line: honest
+      ? `Portal down for ${min} min - your site may be suspended. Calls continue from the local list.`
+      : (portalSyncedAt ? "Portal briefly unavailable - call is unaffected." : "Connecting to portal..."),
+  };
+}
+
+module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity, _watchdog: { takeWatchdogLock, pidIsOurSupervisor, pidAlive, WATCHDOG_LOCK, WATCHDOG_LOG, supervisorNote }, _portal: { portalDownState, PORTAL_DOWN_HONEST_MS } };
 
 // Allow running directly: agent.exe [token] [portalUrl] [--setup] [--open] [--watchdog] [--no-browser] [--call]
 if (require.main === module) {

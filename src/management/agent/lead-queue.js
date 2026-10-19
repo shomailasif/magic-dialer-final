@@ -64,6 +64,48 @@ async function fetchDueLeads({ portal, token, limit = 200, deviceToken, offset =
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 /**
+ * Read the next page of due leads, preferring the portal and falling back to
+ * the local cache when the portal cannot be reached.
+ *
+ * The portal is always asked first, so a working account never dials from a
+ * stale copy. The cache is only consulted when that ask fails, and it only
+ * holds leads the portal itself handed us on a previous successful read - this
+ * never invents a lead.
+ *
+ * A cache hit is reported through `onOffline` so the operator can see that the
+ * campaign is running from a snapshot rather than the live list. Without that
+ * signal a suspended account looks identical to a healthy one from the
+ * dashboard, which is how a customer discovers the problem days later.
+ */
+async function readPage({
+  portal, token, deviceToken, offset, limit = 200,
+  cache: cacheApi = null, onOffline = () => {},
+}) {
+  try {
+    const page = await fetchDueLeads({ portal, token, limit, deviceToken, offset });
+    /* Keep the cache warm while the portal is healthy. A campaign that runs for
+     * a week then hits an outage has a snapshot from this morning, not from the
+     * day it was uploaded. */
+    if (cacheApi && cacheApi.cacheLeads && page.leads.length) {
+      try { cacheApi.cacheLeads(page.leads); } catch {}
+    }
+    return { page, fromCache: false };
+  } catch (e) {
+    if (!cacheApi || !cacheApi.cachedLeads) throw e;
+    let cached = [];
+    try { cached = cacheApi.cachedLeads(limit) || []; } catch {}
+    if (!cached.length) throw e;
+    onOffline(e && e.message);
+    /* No pagination on the cache: it returns everything still worth dialling,
+     * so hasMore is false and the loop stops once they are consumed. */
+    return {
+      page: { leads: cached, hasMore: false, offset: 0, limit: cached.length },
+      fromCache: true,
+    };
+  }
+}
+
+/**
  * Run the queue until it is empty or stopped.
  *
  * `placeCall` is injected so this is testable without a phone: the engine passes
@@ -72,6 +114,7 @@ function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
 async function runQueue({
   portal, token, deviceToken, placeCall, log = () => {}, onProgress = () => {},
   gapMs = DEFAULT_GAP_MS, maxCalls = Infinity, shouldStop = () => false, leadFilter = null,
+  cache: cacheApi = null,
 }) {
   const summary = { started: Date.now(), attempted: 0, connected: 0, qualified: 0, skipped: 0, errors: 0, results: [] };
   /* Leads already called in this run. The portal may not have marked them yet
@@ -79,16 +122,26 @@ async function runQueue({
    * calls the same first lead forever. */
   const seen = new Set();
   /* Page cursor. Without it the queue re-read the first page forever and an
-   * account with more leads than one page never got past them. */
+   * account with more than one page never got past them. */
   let offset = 0;
+  /* Set once the portal has failed and the cache is carrying the campaign, so
+   * every later message can say which list it is reading. */
+  let offlineNoted = false;
+  const noteOffline = (why) => {
+    if (offlineNoted) return;
+    offlineNoted = true;
+    log("Portal unreachable (" + String(why || "no response").slice(0, 80) + ") - calling from the local lead list saved on this PC.");
+  };
   log("Dial queue started.");
 
   while (summary.attempted < maxCalls && !shouldStop()) {
     let page;
+    let fromCache = false;
     try {
-      page = await fetchDueLeads({ portal, token, limit: 200, deviceToken, offset });
+      ({ page, fromCache } = await readPage({ portal, token, deviceToken, offset, limit: 200, cache: cacheApi, onOffline: noteOffline }));
     } catch (e) {
-      // The portal being briefly unreachable must not end a campaign.
+      // The portal being briefly unreachable must not end a campaign, and with
+      // no cache there is nothing else to read, so wait and ask again.
       summary.errors++;
       log("Could not read the lead list: " + (e && e.message) + " - retrying shortly.");
       await delay(5000);
@@ -97,6 +150,15 @@ async function runQueue({
 
     let leads = page.leads;
     if (leadFilter) leads = leads.filter(leadFilter);
+    /* A number this PC was told not to call is skipped on the live list too.
+     * A portal that comes back still lists them as due until it has seen the
+     * result the outage prevented us from delivering, so the local list is the
+     * only place that knows. */
+    if (cacheApi && cacheApi.isDoNotCall) {
+      const before = leads.length;
+      leads = leads.filter((l) => !cacheApi.isDoNotCall(l && l.phone));
+      summary.skipped += before - leads.length;
+    }
     const fresh = leads.filter((l) => l && !seen.has(String(l.id)));
 
     if (!fresh.length) {
@@ -108,8 +170,12 @@ async function runQueue({
         continue;
       }
       log(leads.length
-        ? "Every lead in the list has been called. Queue finished."
-        : "No more leads to call. Queue finished.");
+        ? (fromCache
+          ? "Every saved lead has been called. Queue finished."
+          : "Every lead in the list has been called. Queue finished.")
+        : (fromCache
+          ? "No saved leads left to call. Queue finished."
+          : "No more leads to call. Queue finished."));
       onProgress(summary);
       break;
     }
@@ -126,6 +192,12 @@ async function runQueue({
        * per read so the portal can record it, so advancing by a whole page here
        * would skip every lead between here and the end of that page. */
       offset++;
+      /* Mark in the cache the moment we commit to dialling, not after the call
+       * returns. A crash mid-call must not leave the number dialable, or the
+       * next run rings them a second time. */
+      if (cacheApi && cacheApi.markCachedLeadCalled) {
+        try { cacheApi.markCachedLeadCalled(lead.phone); } catch {}
+      }
       progressed = true;
       const label = lead.name || lead.company || digits(lead.phone);
       log("Calling " + label + " (" + lead.phone + ") - " + summary.attempted + ".");
@@ -134,6 +206,13 @@ async function runQueue({
       const startedAt = Date.now();
       try {
         const result = await placeCall(lead, { timeoutMs: MAX_CALL_SECONDS * 1000 });
+        /* A refusal has to survive the outage. The portal normally suppresses
+         * the number the moment the result lands, but during an outage that
+         * POST 404s and the portal still lists them as due. Remembered here so
+         * the next read - cached or live - skips them. */
+        if (result && result.doNotCall === true && cacheApi && cacheApi.addDoNotCall) {
+          try { cacheApi.addDoNotCall(lead.phone, result.escalateReason || "spoken opt-out"); } catch {}
+        }
         const entry = {
           leadId: lead.id, name: label, phone: lead.phone,
           connected: !!(result && result.connected),
@@ -170,4 +249,4 @@ async function runQueue({
   return summary;
 }
 
-module.exports = { runQueue, fetchDueLeads, dialable, digits, DEFAULT_GAP_MS, MAX_CALL_SECONDS };
+module.exports = { runQueue, fetchDueLeads, readPage, dialable, digits, DEFAULT_GAP_MS, MAX_CALL_SECONDS };
