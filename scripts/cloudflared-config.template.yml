@@ -1,0 +1,32 @@
+# Cloudflare Tunnel config for hosting the Magic Dialer portal on this PC.
+#
+# Save as:  C:\Users\USER\.cloudflared\config.yml
+# then replace the three placeholders below and run the two commands at the
+# bottom. A named tunnel keeps one stable hostname forever; a free "quick"
+# tunnel would mint a new random URL on every restart, which would break the
+# portalUrl stored on every customer PC and every bookmark.
+#
+# PLACEHOLDERS
+#   <TUNNEL_ID>            from `cloudflared tunnel create magic-dialer`
+#   <YOUR-DOMAIN>          the domain already in your Cloudflare account
+#   <PORTAL-SUBDOMAIN>     e.g. "dial"  ->  dial.yourdomain.com
+#
+# The certificate.pem path below is the default for a logged-in cloudflared.
+
+tunnel: <TUNNEL_ID>
+credentials-file: C:\Users\USER\.cloudflared\<TUNNEL_ID>.json
+
+ingress:
+  # The portal itself. Keep this on 127.0.0.1 - the tunnel is outbound only, so
+  # no port is ever opened on the router and your home IP is never exposed.
+  - hostname: <PORTAL-SUBDOMAIN>.<YOUR-DOMAIN>
+    service: http://127.0.0.1:3000
+
+    # No TLS termination needed; cloudflared fronts this with its own cert.
+    originRequest:
+      noTLSVerify: true
+
+  # Anything unmatched is refused rather than proxied. An ingress list that does
+  # not end in a catch-all is rejected by cloudflared, and a permissive tail
+  # would hand out the local portal to anyone who guessed the hostname.
+  - service: http_status:404
