@@ -63,12 +63,19 @@ async function voiceCall({
     result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, preparedOpeningText, portal, deviceToken: token, callId, waitForFirstSpeech });
   } catch (e) {
     onLog("Call failed [" + callId + "]: " + safeError(e,[token]));
-    return { transcript: [], score: 0, goodLead: false, strategies: [], summary: "Call failed", callId, learning: learning || {}, posted: null };
+    return { transcript: [], score: 0, goodLead: false, strategies: [], summary: "Call failed", callId, learning: learning || {}, posted: null, emailed: false };
   }
   onLog("Call finished.");
 
   const updatedLearning = result.learning || learning || {};
   let posted = null;
+  /* Whether the portal itself emailed the qualified lead. The agent needs this
+   * and not just the HTTP status: a 404 from suspended hosting is a "result
+   * nobody took", and without this flag the caller cannot tell a portal that
+   * emailed the lead from one that answered with an error page. When it is
+   * false the lead is emailed from this PC instead, so the operator's qualified
+   * lead still arrives whether their hosting is alive or gone. */
+  let emailed = false;
   if (portal && token) {
     try {
       const ac = new AbortController();
@@ -81,10 +88,11 @@ async function voiceCall({
       clearTimeout(timer);
       posted = res.status;
       const body = await res.json().catch(() => ({}));
-      onLog(body.emailed ? "Qualified lead email sent ✓" : "Result reported.");
+      emailed = Boolean(body && body.emailed) && res.status >= 200 && res.status < 300;
+      onLog(emailed ? "Qualified lead email sent ✓" : "Result reported.");
     } catch (e) { clearTimeout(timer); onLog(`Could not report result [${callId}] (${safeError(e,[token])}).`); }
   }
-  return { ...result, callId, posted, learning: updatedLearning };
+  return { ...result, callId, posted, emailed, learning: updatedLearning };
 }
 
 module.exports = { voiceCall };

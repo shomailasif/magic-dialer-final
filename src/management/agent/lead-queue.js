@@ -127,6 +127,11 @@ async function runQueue({
   /* Set once the portal has failed and the cache is carrying the campaign, so
    * every later message can say which list it is reading. */
   let offlineNoted = false;
+  /* Set once the cache has actually served a page in this run. It separates
+   * "there was nothing to read yet" from "the saved list has now been used up",
+   * which look identical to readPage - both make it throw - and only one of
+   * them can ever succeed by retrying. */
+  let servedFromCache = false;
   const noteOffline = (why) => {
     if (offlineNoted) return;
     offlineNoted = true;
@@ -139,7 +144,21 @@ async function runQueue({
     let fromCache = false;
     try {
       ({ page, fromCache } = await readPage({ portal, token, deviceToken, offset, limit: 200, cache: cacheApi, onOffline: noteOffline }));
+      if (fromCache) servedFromCache = true;
     } catch (e) {
+      /* readPage throws only when the portal failed AND the cache had nothing
+       * to give. Once the cache has carried this campaign, "nothing to give"
+       * means the saved list is finished: every number has been dialled and
+       * marked, so no retry can ever produce a lead. Ending here with a summary
+       * is the difference between a campaign that completed and one that sits
+       * reporting an error every five seconds for ever against hosting that is
+       * never coming back. Before the first cache page there is genuinely
+       * nothing known yet, so that case still waits for the portal. */
+      if (servedFromCache) {
+        log("No saved leads left to call. Queue finished.");
+        onProgress(summary);
+        break;
+      }
       // The portal being briefly unreachable must not end a campaign, and with
       // no cache there is nothing else to read, so wait and ask again.
       summary.errors++;
@@ -224,7 +243,13 @@ async function runQueue({
         // nothing to send from here and no reason to send it twice.
         if (entry.goodLead) {
           summary.qualified++;
-          log("Qualified: " + label + " - the portal has emailed the lead already.");
+          /* The email has already been attempted by the time the call returns -
+           * by the portal if it took the result, from this PC if it could not.
+           * Saying which one happened is what stops the operator wondering
+           * whether their lead was ever sent anywhere. */
+          log("Qualified: " + label + (result && result.leadEmailed === false
+            ? " - the email could not be sent, see the log."
+            : " - the operator has been emailed."));
         }
         summary.results.push(entry);
       } catch (e) {

@@ -126,4 +126,50 @@ async function emailQualifiedLead(opts) {
   }
 }
 
-module.exports = { sendEmail, emailQualifiedLead };
+/**
+ * Send a qualified lead from this PC when nobody else has.
+ *
+ * The portal emails every result it accepts (call.js reports that back as
+ * `emailed`), so this fires only when the portal could not take the result -
+ * suspended hosting, a dead network, a result POST that timed out. A qualified
+ * lead is the one thing an operator cannot regenerate, and when their site is
+ * gone it must still arrive in the mailbox they configured during setup.
+ *
+ * Never both: a duplicate email is worse than a delayed one, so `emailed` from
+ * the portal short-circuits before any SMTP work happens.
+ *
+ * opts: { config, result, lead, log }
+ * Returns { ok, method?, error?, skipped? }.
+ */
+async function deliverQualifiedLead({ config = {}, result = {}, lead = null, log = () => {} }) {
+  if (!result || !result.goodLead) return { ok: false, skipped: "not a qualified lead" };
+  if (result.emailed) return { ok: true, method: "portal" };
+  const to = String(config.contactEmail || "").trim();
+  if (!to) return { ok: false, error: "No contact email configured" };
+
+  const l = lead || {};
+  /* A failing email must never take a call path down with it: the call has
+   * already happened and the result is already recorded, so this reports and
+   * moves on. */
+  let r;
+  try {
+    r = await emailQualifiedLead({
+      lead: {
+        company: l.company || null, name: l.name || null, phone: l.phone || null,
+        email: l.email || null, score: result.score, summary: result.summary,
+        answers: result.answers,
+      },
+      smtp: config.smtp,
+      contactEmail: to,
+      product: config.product,
+    });
+  } catch (e) {
+    r = { ok: false, error: String((e && e.message) || e) };
+  }
+  log(r.ok
+    ? `Qualified lead emailed to ${to} (${r.method === "smtp" ? "smtp" : "outbox file" + (r.file ? " " + r.file : "")}).`
+    : `Qualified lead email to ${to} failed: ${r.error}`);
+  return r;
+}
+
+module.exports = { sendEmail, emailQualifiedLead, deliverQualifiedLead };

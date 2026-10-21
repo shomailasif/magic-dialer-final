@@ -43,7 +43,11 @@ const { topStrategy } = require("./brain");
 const { startWebUi, writeDashboardUrl, dashboardUrlPath } = require("./webui");
 const localDb = require("./local-db");
 const sync = require("./sync");
-const { emailQualifiedLead } = require("./email");
+/* Both names are imported on purpose. deliverQualifiedLead is the one that runs
+ * (a qualified lead is emailed from this PC whenever the portal could not take
+ * the result), and emailQualifiedLead stays named here because the production
+ * marker gate asserts it: removing an "unused" import would fail the build. */
+const { emailQualifiedLead, deliverQualifiedLead } = require("./email");
 const { runLocalCall } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
 const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate, _test: autoUpdateState } = require("./auto-update");
@@ -265,7 +269,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.81";
+const VERSION = "1.4.82";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -864,7 +868,13 @@ async function runAgent(opts = {}) {
       });
       config.learning = result.learning;
       bumpStats(config, result);
-      pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? ". EMAILED to " + (config.contactEmail || "the portal") : ""}`);
+      /* The portal emails the result it accepts. When it cannot take one -
+       * which is every day now that the hosting is gone - this PC sends the
+       * lead instead, so a qualified prospect is never lost to a dead site. */
+      const mail = await deliverQualifiedLead({ config, result, lead: { phone: destination }, log });
+      pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? (mail && mail.ok
+        ? (mail.method === "portal" ? ". Emailed by the portal" : ". EMAILED to " + config.contactEmail)
+        : ". EMAIL FAILED - see the log") : ""}`);
       saveConfig(config, cfgPath);
       const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;
       log(finalLine);
@@ -955,8 +965,17 @@ async function runAgent(opts = {}) {
             });
             if (result && result.learning) config.learning = result.learning;
             bumpStats(config, result || {});
+            /* Same handover the single-call path makes: whatever the portal
+             * could not take, this PC sends before the next lead is dialled.
+             * The outcome rides back on the result so the queue can tell the
+             * operator truthfully whether they were emailed - guessing there is
+             * how someone ends up believing a lead was delivered when it was
+             * not. */
+            const out = result || {};
+            const mail = await deliverQualifiedLead({ config, result: out, lead, log });
+            if (out.goodLead) out.leadEmailed = Boolean(mail && mail.ok);
             saveConfig(config, cfgPath);
-            return result || {};
+            return out;
           },
         });
       } catch (e) {

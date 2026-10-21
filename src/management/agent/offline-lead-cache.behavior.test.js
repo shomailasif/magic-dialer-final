@@ -97,36 +97,42 @@ async function main() {
   assert.equal(cache1.cachedLeads().length, 40, "the 10 called must be excluded, the 40 untouched must remain");
   console.log("  ok  a healthy portal is used and its list is cached (" + cache1.cachedLeads().length + " left)");
 
-  // 2. Portal goes down. The campaign carries on from the saved list rather
-  //    than spinning on retries, and it says so.
-  //
-  //    Stopped once the saved list is consumed rather than left to run: with
-  //    nothing left to read and the portal still down the queue correctly
-  //    reverts to polling every 5s (a campaign waiting for its source is the
-  //    right behaviour), which would hang this test rather than finish it.
+  // 2. Portal goes down. The campaign carries on from the saved list, and when
+  //    that list is used up the queue FINISHES with a summary instead of
+  //    polling a portal that has been gone for days. It must still poll when
+  //    the cache never served anything (case 3): an empty read before the first
+  //    page is not the same as an exhausted campaign.
   portal1.set(false);
   logs.length = 0;
   const seen2 = [];
-  /* Wall-clock bound as well as a completion condition.
-   *
-   * Without the cache the queue polls the dead portal every 5s for ever -
-   * correct behaviour, and exactly what this test exists to prove has changed.
-   * But a test that stalls on the old behaviour hangs the suite instead of
-   * failing it, and a hang is not a failure anyone can read. So the run also
-   * stops when it runs out of time, which turns "the feature is missing" into
-   * a fast assertion failure rather than a stuck build. */
+  /* Wall-clock safety net only, not a completion condition. The run finishes on
+   * its own once the saved list is consumed; if it does not, the assertions
+   * below fail. Without the cache the queue would poll the dead portal every 5s
+   * for ever - which is why the deadline still exists: a test that stalls hangs
+   * the suite instead of failing it. */
   const deadline = Date.now() + 20000;
-  await runQueue({
+  const s2 = await runQueue({
     portal: "https://p", token: "t", cache: cache1,
     placeCall: async (l) => { seen2.push(l.phone); return { connected: true, goodLead: false }; },
     log: (m) => logs.push(m), gapMs: 0,
-    shouldStop: () => seen2.length >= 40 || Date.now() > deadline,
+    shouldStop: () => Date.now() > deadline,
   });
   assert.equal(seen2.length, 40, "all 40 cached leads must be called with the portal down, got " + seen2.length);
   assert.ok(!seen2.includes(seen1[0]), "a lead already called must not be called again from the copy");
   assert.ok(logs.some((m) => /local lead list/i.test(m)),
     "the operator must be told the campaign is running from a saved copy, logs: " + JSON.stringify(logs.slice(0, 3)));
   console.log("  ok  portal down: " + seen2.length + " called from cache, none repeated, and it says so");
+
+  // 2a. An exhausted saved list ENDS the queue. This is the case that used to
+  //     loop forever: readPage throws when the cache is empty, the queue read
+  //     that as "portal down, retry shortly", and after every lead had already
+  //     been dialled it reported an error every five seconds for ever.
+  assert.ok(logs.some((m) => /No saved leads left to call\. Queue finished\./.test(m)),
+    "an exhausted saved list must end the queue with a finish line, logs: " + JSON.stringify(logs.slice(-5)));
+  assert.ok(!logs.some((m) => /retrying shortly/.test(m)),
+    "the exhausted list must not be reported as a retryable read failure: " + JSON.stringify(logs.slice(-5)));
+  assert.equal(s2.errors, 0, "finishing the saved list is not an error, got errors=" + s2.errors);
+  console.log("  ok  the exhausted saved list finishes the queue instead of retrying");
 
   // 2b. The saved list finishing must END the queue, not leave it polling.
   //     Seed the cache directly with numbers that cannot be dialled, so the
