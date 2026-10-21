@@ -260,6 +260,21 @@ const PAGE = `<!doctype html>
       <div class="stat"><div class="lab">Qualified leads</div><div class="val" id="sQualified">&ndash;</div><div class="sub" id="sRate">0% rate</div></div>
       <div class="stat"><div class="lab">Best score</div><div class="val" id="sBest">&ndash;</div><div class="sub">qualification</div></div>
     </div>
+    <div class="card" style="padding:16px 24px">
+      <div class="inl" style="justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1;min-width:260px">
+          <div class="lab">Subscription</div>
+          <div id="licLine" style="margin-top:6px">Checking&hellip;</div>
+          <div id="licCode" class="sub" style="margin-top:6px"></div>
+        </div>
+        <div class="inl" style="gap:8px;flex-wrap:wrap;align-self:center">
+          <input id="licKey" type="text" placeholder="Paste licence key (MDL1&hellip;)" style="width:300px">
+          <button id="licApply" class="btn teal">Activate</button>
+          <button id="licClear" class="btn ghost hidden">Remove key</button>
+        </div>
+      </div>
+      <div class="err hidden" id="licErr"></div>
+    </div>
     <div class="card" style="padding:20px 24px">
       <h2 style="font-size:14px;font-weight:600;margin-bottom:8px">Recent activity</h2>
       <ul class="feed" id="feed"><li class="empty">No activity yet.</li></ul>
@@ -286,12 +301,20 @@ function statusClass(p){
   if(p.status==="ONLINE")return "on";
   if(p.status==="DISABLED")return "err";
   if(p.status==="OFFLINE")return "warn";
+  /* Two states this badge has never had to show, and they are the ones the
+   * customer must not be able to misread. Suspended is red because calling
+   * has actually stopped; not activated is amber because it stops the moment
+   * the trial runs out, and there is something they can do about it. */
+  if(p.status==="SUSPENDED")return "err";
+  if(p.status==="UNLICENSED")return "warn";
   return "warn";
 }
 function statusText(p){
   if(p.status==="ONLINE")return "Online";
   if(p.status==="DISABLED")return "Disabled";
   if(p.status==="OFFLINE")return "Offline";
+  if(p.status==="SUSPENDED")return "Suspended";
+  if(p.status==="UNLICENSED")return "Not activated";
   return p.status||"Starting";
 }
 function renderPill(p){
@@ -324,6 +347,11 @@ function renderStatus(p){
   if(!p)return;
   var stale = p.ts && (Date.now()-p.ts>25000);
   var eff = stale?Object.assign({},p,{status:"OFFLINE",line:p.line||"Agent heartbeat lost - the app process stopped."}):p;
+  /* A stopped subscription outranks everything, including a dead heartbeat:
+   * whatever else is wrong, the reason calling has stopped is the one the
+   * operator has to be told. Applied after the stale check for that reason. */
+  if(p.license&&p.license.ok===false){eff=Object.assign({},eff,{status:p.license.status,line:p.license.line||eff.line});}
+  renderLicense(p.license);
   renderPill(eff);
   renderStats(eff.stats);
   renderFeed(eff.logs);
@@ -334,6 +362,33 @@ function renderStatus(p){
   $id("resumeBtn").classList.toggle("hidden",!paused);
   $id("topPillTxt").textContent=paused?"Paused":(statusText(eff)||"—");
 }
+/* Subscription card. Every word here is something the customer can act on:
+ * how long they have, what to paste, and the one string we need from them. */
+function renderLicense(l){
+  if(!l)return;
+  var txt=l.line||"";
+  if(l.state==="active")txt="Subscription active"+(l.until?(" until "+String(l.until).slice(0,10)):" - no expiry")+".";
+  else if(l.state==="trial")txt="Trial - "+(l.daysLeft||1)+" day(s) left before a licence key is required.";
+  else if(l.state==="checking")txt=l.line||"Could not re-check the subscription just now - calling continues.";
+  $id("licLine").textContent=txt||"—";
+  $id("licCode").textContent=l.machineId
+    ? "Activation code - send this to activate: "+l.machineId
+    : "Activation code appears once this PC is enrolled.";
+  $id("licClear").classList.toggle("hidden",!l.activated);
+}
+async function applyLicense(clear){
+  var err=$id("licErr");err.classList.add("hidden");err.textContent="";
+  try{
+    var r=await fetch("/api/license",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(clear?{clear:true}:{key:$id("licKey").value.trim()})});
+    var d=await r.json();
+    if(!d.ok){err.textContent=d.error||"That licence key was not accepted.";err.classList.remove("hidden");}
+    else{$id("licKey").value="";}
+    renderLicense(d.license);
+  }catch(e){err.textContent="Could not reach the engine. Try again in a moment.";err.classList.remove("hidden");}
+}
+$id("licApply").addEventListener("click",function(){applyLicense(false)});
+$id("licClear").addEventListener("click",function(){if(window.confirm("Remove the licence key from this PC?"))applyLicense(true)});
+$id("licKey").addEventListener("keydown",function(e){if(e.key==="Enter")applyLicense(false)});
 async function loadState(){
   try{
     var r=await fetch("/api/state");var s=await r.json();
@@ -532,7 +587,52 @@ async function startWebUi(opts) {
       if (opts.statusPath) {
         try { feed = Object.assign(feed, JSON.parse(fs.readFileSync(opts.statusPath, "utf8"))); } catch {}
       }
+      /* Subscription state rides along on the same feed the badge already
+       * polls. When it blocks, it takes over the status and the line: a
+       * customer whose subscription stopped must not be shown "Online" next
+       * to a queue that is refusing to dial. When it does not block, it stays
+       * out of the way, so a healthy subscription never repaints a genuine
+       * portal outage as something else. */
+      if (opts.licenseGate && typeof opts.licenseGate.status === "function") {
+        try {
+          const l = opts.licenseGate.status();
+          feed.license = l;
+          if (l && l.ok === false) { feed.status = l.status; feed.line = l.line || feed.line; }
+        } catch {}
+      }
       sendJson(res, 200, feed);
+      return;
+    }
+    /* The activation handshake, and the only place the activation code leaves
+     * this PC - it is the machineId, an opaque id with no portal data, sent
+     * nowhere except to whoever grants the key. Loopback only, like every
+     * route here. GET never returns the stored key; POST never echoes it. */
+    if (req.method === "GET" && p === "/api/license") {
+      if (!opts.licenseGate) { sendJson(res, 503, { ok: false, error: "Licence service unavailable." }); return; }
+      try { sendJson(res, 200, { ok: true, error: null, license: opts.licenseGate.status() }); }
+      catch (e) { sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not read the licence status." }); }
+      return;
+    }
+    if (req.method === "POST" && p === "/api/license") {
+      if (!opts.licenseGate) { sendJson(res, 503, { ok: false, error: "Licence service unavailable." }); return; }
+      const body = await readJson(req);
+      if (!body || typeof body !== "object") { sendJson(res, 400, { ok: false, error: "Bad request." }); return; }
+      try {
+        const clearing = body.clear === true || !String(body.key || "").trim();
+        const r = clearing
+          ? opts.licenseGate.clear()
+          : await opts.licenseGate.activate(String(body.key || ""));
+        /* `ok` answers "did that action work" and `license.ok` answers "may
+         * this PC call" - they are different questions, so they are kept in
+         * different fields instead of overwriting one another. */
+        sendJson(res, r && r.ok ? 200 : 400, {
+          ok: !!(r && r.ok),
+          error: (r && r.error) || null,
+          license: opts.licenseGate.status(),
+        });
+      } catch (e) {
+        sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not store the licence key." });
+      }
       return;
     }
     if (req.method === "GET" && p === "/api/health") {

@@ -69,3 +69,9 @@ src/management/portal/rc-credentials.json
 # The generator is committed (fixtures/make-fixtures.ps1) and the harness
 # synthesizes any missing clip on demand, so the binaries are not sources.
 src/management/build/fixtures/*.wav
+
+# Licence signing material. The key that signs licences and your private
+# ledger of which customer holds which licence must never leave this PC.
+# Only licenses/revoked.json is published - the engines have to read it.
+/licenses/license.private.key
+/licenses/grants.local.json

@@ -43,6 +43,7 @@ $tests = @(
   "agent\watchdog-lock.behavior.test.js",
   "agent\offline-lead-cache.behavior.test.js",
   "agent\portal-down-messaging.behavior.test.js",
+  "agent\license-gate.behavior.test.js",
   "build\release-version-consistency.test.js",
   "build\\ai-gateway-contract.test.js",
   "build\\groq-direct-probe-contract.test.js",

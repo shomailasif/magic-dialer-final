@@ -49,6 +49,7 @@ const { startEngineHealthServer } = require("./engine-health");
 const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate, _test: autoUpdateState } = require("./auto-update");
 const { reEnrollSelf: reEnrollSelfImpl } = require("./self-reenroll");
 const { safeLog } = require("./safe-diagnostic");
+const { createLicenseGate } = require("./license-gate");
 
 /**
  * Customer PC agent.
@@ -264,7 +265,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.80";
+const VERSION = "1.4.81";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -487,6 +488,21 @@ async function runAgent(opts = {}) {
   const configDir = path.dirname(cfgPath);
   let config = loadConfig(cfgPath);
 
+  /* The subscription gate. It reads its own file every time rather than
+   * holding state on the config object, because `saveConfig(config)` runs
+   * after every single call to store stats - an in-memory copy written before
+   * activation would put the old config back and silently unlicence the PC. */
+  const licenseGate = createLicenseGate({
+    file: path.join(configDir, "license.json"),
+    readConfig: () => loadConfig(cfgPath) || {},
+    log: (m) => log(m),
+  });
+  licenseGate.boot().then(() => {
+    const s = licenseGate.status();
+    log(`licence: ${s.state}` + (s.activated ? "" : ` (${s.trialDays} day trial from first run)`) + (s.revocationError ? ` - revocation check failed: ${s.revocationError}` : ""));
+  }).catch((e) => log("licence check at startup failed: " + safeLog(e)));
+  licenseGate.start();
+
   // Ownership must be established before either fixed local port is bound.
   // A duplicate child must never create a partial 18787-only engine.
   if (!takeAgentLock()) {
@@ -506,6 +522,7 @@ async function runAgent(opts = {}) {
       onCall: async (number) => {
         const liveConfig = loadConfig(cfgPath);
         if (!liveConfig || !liveConfig.deviceToken || !liveConfig.portalUrl || !liveConfig.portalSyncedAt) throw new Error("This PC is not enrolled and synchronized with the portal");
+        licenseGate.assertAllowsCall();
         log("LOCAL CALL CONTROL: " + number);
         return runLocalCall({
           config: liveConfig,
@@ -562,6 +579,7 @@ async function runAgent(opts = {}) {
       onCall: async (number) => {
         const liveConfig = loadConfig(cfgPath);
         if (!liveConfig || !liveConfig.deviceToken || !liveConfig.portalUrl || !liveConfig.portalSyncedAt) throw new Error("This PC is not enrolled and synchronized with the portal");
+        licenseGate.assertAllowsCall();
         log("LOCAL DASHBOARD CALL CONTROL: " + number);
         return runLocalCall({ config: liveConfig, number, onLog: (m) => log(m), onMode: () => {} });
       },
@@ -580,6 +598,9 @@ async function runAgent(opts = {}) {
         return { ok: true, started: true };
       },
       serviceName: "Magic Dialer",
+      /* The dashboard reads this to show whether this PC may call, and to
+       * collect the activation code the customer sends us to be granted a key. */
+      licenseGate,
     });
     try { writeDashboardUrl(uiServer.url); } catch {}
     log(`dashboard: ${uiServer.url}`);
@@ -904,6 +925,12 @@ async function runAgent(opts = {}) {
             isDoNotCall: (phone) => localDb.isDoNotCall(phone),
           },
           placeCall: async (lead) => {
+            /* The subscription gate, checked once here for the whole campaign.
+             * Checked per lead rather than once at queue start, so a revocation
+             * that lands mid-run stops the next call instead of the rest of the
+             * day. Thrown, like the authorisation failure below, so the queue
+             * stops with a line the dashboard can show. */
+            licenseGate.assertAllowsCall();
             /* A PC that has lost its authorisation repairs itself before ringing
              * anyone, rather than dialling deaf. */
             try {
