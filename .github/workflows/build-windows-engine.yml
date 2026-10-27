@@ -1,10 +1,11 @@
 name: Build Windows Engine
 
-# The engine version, readable by every step. Steps run in separate shells, so a
-# variable assigned inside one step is not visible in another; the smoke test
-# needs this to check what the installer actually installed.
-env:
-  ENGINE_VERSION: "1.4.85"
+# The engine version is NOT declared in this file. It is read from
+# src/management/agent/agent.js by the first step and exported as
+# ENGINE_VERSION for every later step, so this workflow cannot drift from the
+# build it is testing or publishing. Steps run in separate shells, so the value
+# travels through GITHUB_ENV rather than a shell variable.
+#
 # CI rerun marker: fresh runner after 6617c5d upgrade-step hang
 on:
   workflow_dispatch: {}
@@ -33,6 +34,17 @@ jobs:
         working-directory: src/management
     steps:
       - uses: actions/checkout@v4
+      - name: Read engine version
+        shell: pwsh
+        # Single source of truth: whatever agent.js reports as its VERSION is
+        # what the smoke test expects and what the release is tagged with.
+        run: |
+          $match = Select-String -Path agent/agent.js -Pattern '^const VERSION = "(\d+\.\d+\.\d+)";$'
+          if (-not $match) { throw "agent/agent.js must declare const VERSION = \"x.y.z\";" }
+          $version = $match.Matches[0].Groups[1].Value
+          if (-not $version) { throw "Could not read the engine version from agent/agent.js" }
+          "ENGINE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Engine version for this run: $version"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -444,7 +456,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
-          $version = "1.4.86"
+          # Derived from agent.js by the "Read engine version" step, never typed
+          # here: a stale literal once tagged the wrong version and failed the
+          # smoke test because the engine reported a newer build.
+          $version = $env:ENGINE_VERSION
+          if (-not $version) { throw "ENGINE_VERSION is not set; the version read step must run first" }
           $tag = "engine-v$version"
           $assetUrl = "https://github.com/shomailasif/magic-dialer-final/releases/download/$tag/magic-dialer-engine-windows.exe"
           $sha = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()

@@ -22,7 +22,18 @@ const installerVersion = one(installer, /^AppVersion=(\d+\.\d+\.\d+)$/gm, "insta
 const launcherAssembly = one(launcher, /AssemblyVersion\("(\d+\.\d+\.\d+)\.0"\)/g, "launcher assembly");
 const launcherFile = one(launcher, /AssemblyFileVersion\("(\d+\.\d+\.\d+)\.0"\)/g, "launcher file");
 const launcherInfo = one(launcher, /AssemblyInformationalVersion\("(\d+\.\d+\.\d+)"\)/g, "launcher informational");
-const manifestVersion = one(workflow, /\$version = "(\d+\.\d+\.\d+)"/g, "release version");
+/* The workflow no longer carries a version literal at all. It reads VERSION
+ * from agent.js and exports it as ENGINE_VERSION, which is what the smoke test
+ * compares against the installed engine and what the immutable tag is built
+ * from. A hardcoded literal here is exactly how 1.4.86 was built but tested and
+ * published as 1.4.85, so the literal itself is now forbidden. */
+assert.equal((workflow.match(/\$version = "(\d+\.\d+\.\d+)"/g) || []).length, 0, "the workflow must not hardcode a release version");
+assert.equal((workflow.match(/^\s*ENGINE_VERSION:\s*"/gm) || []).length, 0, "the workflow env must not hardcode ENGINE_VERSION");
+assert.ok(workflow.includes('const VERSION = "(\\d+\\.\\d+\\.\\d+)";'), "the workflow must read the version from agent.js");
+assert.ok(workflow.includes("agent/agent.js"), "the version must come from agent/agent.js");
+assert.ok(workflow.includes("GITHUB_ENV"), "the derived version must be exported to later steps");
+assert.ok(workflow.includes("$version = $env:ENGINE_VERSION"), "the release tag must be derived from the read version");
+assert.ok(workflow.includes('$tag = "engine-v$version"'), "the immutable tag must still be derived from the release version");
 assert.equal((workflow.match(/gh release create \$tag/g) || []).length, 1, "immutable versioned release must be created exactly once");
 assert.ok(workflow.includes("Immutable release $tag already exists and engine sources are unchanged; preserving release and skipping republish."), "unchanged engine must preserve existing immutable release");
 assert.ok(workflow.includes("Engine sources changed after immutable $tag; bump engine version before publishing."), "changed engine must require a version bump");
@@ -32,7 +43,7 @@ assert.equal((workflow.match(/--clobber/g) || []).length, 1, "only the legacy 1.
 assert.ok(workflow.includes("sourceCommit = $env:GITHUB_SHA"), "immutable manifest must bind source commit");
 assert.ok(workflow.includes("tag = $tag"), "immutable manifest must bind release tag");
 
-for (const [label, value] of Object.entries({installerVersion, launcherAssembly, launcherFile, launcherInfo, manifestVersion})) {
+for (const [label, value] of Object.entries({installerVersion, launcherAssembly, launcherFile, launcherInfo})) {
   assert.equal(value, agentVersion, label + " must equal agent version " + agentVersion);
 }
 
