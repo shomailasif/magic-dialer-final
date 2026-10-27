@@ -61,6 +61,23 @@ immediately from **Calls**.
   features (dialer calls, AI lead gen, campaigns) require an `ACTIVE`
   subscription; pending/suspended accounts see a banner but keep the portal.
 
+## Subscriptions and the Windows engine
+
+The portal above is not how customers are licensed. Each customer PC runs the
+Windows engine (`src/management`), which holds a signed licence key and reads
+two small public lists from this repo: `licenses/suspended.json` (a temporary
+hold for non-payment, reversible) and `licenses/revoked.json` (a cancelled
+account, terminal). No hosted service is involved.
+
+The vendor side — create, suspend, reinstate, cancel, renew — is a loopback-only
+page, `node scripts/admin-server.cjs`. It refuses to start without
+`licenses/license.private.key`, which is gitignored and never bundled, so no
+customer installer can contain it. Full instructions: [ADMIN.md](ADMIN.md).
+
+The engine is separate from the portal simulation below: its sales research is
+live and free (the customer's own site plus Wikipedia and public search), and it
+places calls through a real RingCentral softphone, not a stub.
+
 ## Notes on Simulation
 
 Dialer calls and AI lead generation are **simulated** (no live
