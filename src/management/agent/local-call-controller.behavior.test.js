@@ -521,12 +521,21 @@ async function scenarioRemoteHangup(logs) {
 
   // Text the active voice genuinely cannot read must never reach the wire: the
   // 21:05Z call put Devanagari and Arabic through an English voice, which is
-  // what produced "the dumb AI is not understanding what I'm saying".
+  // what produced "the dumb AI is not understanding what I'm saying". The turn
+  // is now spoken as a short fallback in the voice that does work, rather than
+  // dropped, and the native script must never be synthesized.
   assert.ok(
     dead.logs.some(l => /mostly non-Latin/.test(l)),
-    `a non-Latin turn for an English call must be refused, logs: ${JSON.stringify(dead.logs.filter(l => /non-Latin|tts/.test(l)))}`
+    `a non-Latin turn for an English call must be detected, logs: ${JSON.stringify(dead.logs.filter(l => /non-Latin|tts/.test(l)))}`
   );
-  assert.equal(dead.ttsTexts.length, 1, `only the opening may be synthesized, got ${JSON.stringify(dead.ttsTexts)}`);
+  assert.ok(
+    dead.ttsTexts.length >= 1 && dead.ttsTexts.length <= 3,
+    `an unspeakable turn may fall back at most twice, got ${JSON.stringify(dead.ttsTexts)}`
+  );
+  assert.ok(
+    dead.ttsTexts.every(t => !/[\u0600-\u06FF\u0900-\u097F]/.test(String(t))),
+    `native script must never be synthesized by an English voice, got ${JSON.stringify(dead.ttsTexts)}`
+  );
 
   // A turn longer than a person would listen to must be trimmed to whole words
   // and whole sentences. The 20:44Z call ran a 229-character / 14.1-second

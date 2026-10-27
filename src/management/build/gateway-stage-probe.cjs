@@ -85,7 +85,8 @@ function envKey(name) {
 const med = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
 
 (async () => {
-  const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".magicdialer", "config.json"), "utf8"));
+  const { readInstalledConfig } = require("./installed-config.cjs");
+  const cfg = readInstalledConfig();
   const portal = String(cfg.portalUrl || "").replace(/\/+$/, "");
   const bearer = cfg.deviceToken || cfg.token;
   if (!portal || !bearer) throw new Error("no portal/bearer in ~/.magicdialer/config.json");

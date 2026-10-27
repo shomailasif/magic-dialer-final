@@ -1,6 +1,7 @@
 ﻿const fs=require("fs"),path=require("path"),os=require("node:os");
+const { readInstalledConfig } = require("./installed-config.cjs");
 (async()=>{
- const cfg=JSON.parse(fs.readFileSync(path.join(os.homedir(),".magicdialer","config.json"),"utf8"));
+ const cfg=readInstalledConfig();
  const portal=String(cfg.portalUrl||"").replace(/\/+$/,"");
  const bearer=cfg.deviceToken||cfg.token;
  for (let i=0;i<4;i++){

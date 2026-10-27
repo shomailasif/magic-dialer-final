@@ -22,15 +22,17 @@ const os = require("node:os");
 const MGMT = path.join(__dirname, "..");
 const { runCall } = require(path.join(MGMT, "agent", "call-runner.js"));
 const { MAX_TURN_CHARS, MAX_TURN_OVERSHOOT } = require(path.join(MGMT, "agent", "turn-length.js"));
+/* Secrets in config.json are sealed at rest; read them opened, exactly as the
+ * agent does. A raw JSON.parse would see enc:v1:... where a token belongs. */
+const { readInstalledConfig } = require("./installed-config.cjs");
 
 const VERBOSE = process.argv.includes("--verbose");
 
 /* Real gateway credentials, so the simulator exercises the live brain and not
  * the offline fallback. Falls back to direct Groq if the agent has a key. */
 function loadLiveConfig() {
-  const file = path.join(process.env.USERPROFILE || os.homedir(), ".magicdialer", "config.json");
   try {
-    const c = JSON.parse(fs.readFileSync(file, "utf8"));
+    const c = readInstalledConfig();
     return { portal: c.portalUrl || null, deviceToken: c.deviceToken || null };
   } catch { return { portal: null, deviceToken: null }; }
 }
@@ -41,8 +43,7 @@ const LIVE = loadLiveConfig();
 const CONFIG = (() => {
   const base = { product: "Dispatch Services for trucks", companyName: "Zaz Logistics", persona: "Atlas", leadFields: [], callbackNumber: null, callbackIn: null, contactEmail: "sa@zazlogistics.com" };
   try {
-    const f = path.join(process.env.USERPROFILE || os.homedir(), ".magicdialer", "config.json");
-    const c = JSON.parse(fs.readFileSync(f, "utf8"));
+    const c = readInstalledConfig();
     return {
       ...base,
       product: c.product || base.product,

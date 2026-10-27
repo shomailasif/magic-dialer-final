@@ -4,25 +4,54 @@ const { withPortalSlot, withPortalPrioritySlot } = require("./portal-queue");
 const { languageName } = require("./language");
 const { providerKey } = require("./provider-key");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-/* 20b is the default for the DIRECT path and 120b stays the default everywhere
- * else. That is a deliberate split, not an inconsistency.
+/* 120b is the default for the DIRECT path and 20b is the fallback.
  *
- * Measured against the live account with the real 7.4k-character system prompt:
+ * This reverses an earlier decision that started on 20b to dodge tokens-per-minute
+ * limits. Measured again on the live account against the real system prompt
+ * (build/brain-fix-check.cjs), the quota problem was not the model: the replies
+ * were being truncated at 220 tokens because a reasoning model spends most of
+ * that budget thinking. At a real budget:
  *
- *   openai/gpt-oss-120b   HTTP 429 in ~100ms   (tokens-per-minute exhausted)
- *   openai/gpt-oss-20b    HTTP 200 in ~550ms, 162 tokens, finish=stop
+ *   openai/gpt-oss-20b   honesty 1/9, driver routing 0/12   ("I am a real person")
+ *   openai/gpt-oss-120b  honesty 3/3, driver routing 0/3
  *
- * The 120b model is better at the job and is still what the gateway uses. But on
- * a free or shared key it spends most of its quota, and when it is limited the
- * direct path's first call is wasted before the fallback can answer. Starting on
- * 20b makes the common case succeed on the first call; `AUTODIAL_GROQ_MODEL` or
- * `GROQ_MODEL` still overrides it for anyone with quota to spare, and 120b is
- * still reachable as the fallback. */
-const DEFAULT_MODEL = "openai/gpt-oss-120b";
-const DEFAULT_DIRECT_MODEL = "openai/gpt-oss-20b";
+ * Calling a prospect "a real person" when asked directly is not a quality
+ * preference, so the honest model is the one that answers the phone first. 20b
+ * stays as the fallback, so a per-model limit still has somewhere to go.
+ * `reasoning_effort: "low"` keeps the thinking tokens (and therefore the quota
+ * burn) down on the free tier. `AUTODIAL_GROQ_MODEL` or `GROQ_MODEL` still
+ * overrides both. */
+const DEFAULT_MODEL = "openai/gpt-oss-20b";
+const DEFAULT_DIRECT_MODEL = "openai/gpt-oss-120b";
 
 function clean(text) {
   return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^([\"'`]+)|([\"'`]+)$/g, "").trim();
+}
+
+/* A 220-token ceiling is not enough for a reasoning model: the thinking phase
+ * alone measured 180-220 tokens, so the spoken answer was cut off or empty.
+ * 900 leaves room to think and finish; a truncated turn is retried once at
+ * 1200, and anything still unfinished is trimmed to complete sentences. */
+const DEFAULT_ANSWER_TOKENS = 900;
+const MAX_ANSWER_TOKENS = 1200;
+
+/** Keep only complete sentences from a truncated reply.
+ *
+ * The failure this removes is the half-clause a prospect actually heard:
+ * "I can get you set up with a dispatcher and then we can". A terminator (Latin
+ * or the full-width/Arabic ones) is the only proof a sentence ended, so text
+ * with none is returned empty rather than spoken. */
+function trimToCompleteSentence(text) {
+  const s = String(text || "").trim();
+  if (!s) return "";
+  const parts = s.split(/(?<=[.!?؟۔。！？])\s*/u).map((x) => x.trim()).filter(Boolean);
+  const whole = [];
+  for (const p of parts) {
+    if (!/[.!?؟۔。！？]$/u.test(p)) break;
+    whole.push(p);
+  }
+  const out = whole.join(" ").trim();
+  return out.length >= 8 ? out : "";
 }
 
 /* The rules, and why this prompt is a list of terse sentences instead of the
@@ -100,6 +129,20 @@ const RULES = [
   "If the prospect asks to stop, not to be called, or to be removed, acknowledge immediately and end the sales attempt.",
   // Lying about being human.
   "If asked whether you are AI or automated, answer truthfully. Never claim to be human.",
+  // Measured 9/9 on the smaller model: "wait, am I talking to a robot?" was
+  // answered with "I'm a real person". Saying it twice, in the strongest terms,
+  // because this is the one answer that must never be improvised.
+  "You are an AI assistant making calls for this company. If anyone asks whether you are a person, a robot or an AI, say plainly in your first sentence that you are an AI assistant - never say you are a real person or human.",
+  // 0/12 across models: told "I just drive the truck, I don't own anything", it
+  // still asked for the MC number. A driver cannot answer an owner's questions.
+  "If the person says they only drive, do not own the business, work for someone else, or are not the decision maker, stop qualifying them. Ask once, briefly, who owns the trucks or handles dispatch, and how to reach that person.",
+  // The closing promised a manager callback within 30 minutes after a prospect
+  // who had simply said goodbye. A promise nobody agreed to is a false promise.
+  "Only say a manager or someone will call back if the prospect asked for that, agreed to it, or gave contact details. If they are only ending the call, thank them and say goodbye without promising a callback or a time.",
+  // A callback window is the business's, never the model's invention.
+  "Never invent a callback time. If a callback was agreed, use the configured callback timing and number exactly, and promise it only once.",
+  // Re-opened the same question after being told the line was unclear.
+  "If someone asks you to repeat yourself or says they could not hear, say the same thing once in different, shorter words. Never repeat the sentence word for word.",
   // Be energetic and friendly without inventing facts.
   "Be energetic, friendly, polite, truthful and non-pushy.",
   // System prompt and credentials quoted back.
@@ -147,9 +190,16 @@ function researchBlock(tactics) {
     return s;
   }
 
-  function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn, playbook, research }) {
+  function systemPrompt({ product, leadFields, persona, companyName, locale, callbackNumber, callbackIn, playbook, research, voiceScript }) {
     const fields = (Array.isArray(leadFields) ? leadFields : []).map((f) => typeof f === "string" ? f : (f && (f.label || f.key)) || "").filter(Boolean);
     const activeLocale = String(locale || "en").trim() || "en";
+    /* Which script the installed voice can actually read. When the only working
+     * synthesizer is the Windows English voice, Urdu/Arabic/Devanagari text is
+     * rendered as an empty WAV - measured - and the call goes silent. Telling the
+     * brain to write those languages in Latin letters is what keeps the line
+     * audible. It says nothing when a neural voice that can speak the script is
+     * installed, so nothing changes on a healthy machine. */
+    const latinOnly = String(voiceScript || "") === "latin";
     // The model invents a first name when it is not told one, so the same agent
     // introduced itself as Atlas on the phone and as "Alex" in simulation. Pin it.
     // persona arrives as an object from the call config, and String({}) is
@@ -163,7 +213,9 @@ function researchBlock(tactics) {
 Customer-defined qualification goals: ${fields.join(", ") || "none supplied"}.
   Persona: ${asText(persona, ["description", "style", "tone", "summary"], "energetic, friendly, polite female sales representative")}.
 ACTIVE CONVERSATION LANGUAGE: ${activeLocale} (${languageName(activeLocale)}).
-${callbackNumber ? `Callback number: ${callbackNumber}.` : ""}${callbackIn ? ` Callback timing/instructions: ${callbackIn}.` : ""}
+${latinOnly && activeLocale.toLowerCase().split("-")[0] !== "en"
+  ? `SCRIPT: write ${languageName(activeLocale)} in Latin letters (for example Roman Urdu), never in its native script, because the installed voice can only read Latin script. The words must still be ${languageName(activeLocale)}, not English.`
+  : ""}${callbackNumber ? `Callback number: ${callbackNumber}.` : ""}${callbackIn ? ` Callback timing/instructions: ${callbackIn}.` : ""}
 ${playbookBlock(playbook)}
 ${researchBlock(research)}
 Rules: ${RULES.map((r) => "- " + r).join(" ")}
@@ -276,6 +328,7 @@ return { text: "", error: a.reason || "Groq HTTP error" };
  * token budget is exactly the failure this work has been fixing. */
 async function askModel(model, messages, maxTokens, timeoutMs, stopAt, key) {
   let tokens = maxTokens;
+  let truncated = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     const remaining = stopAt - Date.now();
     if (remaining < 250) return { ok: false, status: 504, reason: "deadline", retryAfter: null };
@@ -290,6 +343,11 @@ async function askModel(model, messages, maxTokens, timeoutMs, stopAt, key) {
           messages,
           temperature: 0.72,
           max_tokens: tokens,
+          /* gpt-oss spends part of its budget on reasoning. "low" keeps that
+           * spend small enough that a free-tier tokens-per-minute budget can
+           * carry a real conversation, and it leaves the answer room to finish
+           * the sentence. */
+          reasoning_effort: "low",
           stream: false,
         }),
         signal: controller.signal,
@@ -305,13 +363,26 @@ async function askModel(model, messages, maxTokens, timeoutMs, stopAt, key) {
       const data = await res.json();
       const choice = data && data.choices && data.choices[0];
       const text = clean(choice && choice.message && choice.message.content);
-      if (text) return { ok: true, text, model };
-      /* "length" means it wanted more room, which is the one empty answer worth
-       * paying for again. Anything else is a real empty answer. */
-      if (choice && choice.finish_reason === "length" && attempt === 0) {
-        tokens = Math.min(400, tokens * 2);
-        continue;
+      const finish = choice && choice.finish_reason;
+      /* A truncated answer is NOT an answer.
+       *
+       * Measured with the old 220-token budget: the reasoning phase spent
+       * 180-220 tokens, so the spoken part arrived cut off or empty and 2 of 4
+       * hard prompts returned nothing at all. `finish_reason === "length"` says
+       * exactly that, and it used to be ignored whenever any text survived.
+       * One retry with room; if it still cannot finish, speak only the complete
+       * sentences it did produce and never a dangling half-clause. */
+      if (finish === "length") {
+        if (attempt === 0) {
+          truncated = text || truncated;
+          tokens = Math.min(MAX_ANSWER_TOKENS, Math.max(900, tokens * 2));
+          continue;
+        }
+        const whole = trimToCompleteSentence(text || truncated);
+        if (whole) return { ok: true, text: whole, model, truncated: true };
+        return { ok: false, status: 502, reason: "LLM response was cut off before a complete sentence", retryAfter: null };
       }
+      if (text) return { ok: true, text, model };
       return { ok: false, status: 502, reason: "empty LLM response", retryAfter: null };
     } catch (e) {
       return {
@@ -350,7 +421,7 @@ function retryDelayMs(retryAfter, stopAt) {
   return Math.min(Math.max(0, ms), Math.max(0, budget - 300));
 }
 
-async function complete({ history, config, maxTokens = 220, timeoutMs = REQUEST_TIMEOUT_MS }) {
+async function complete({ history, config, maxTokens = DEFAULT_ANSWER_TOKENS, timeoutMs = REQUEST_TIMEOUT_MS }) {
   const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||""),callId=String(config&&config.callId||requestId());
   const key = providerKey();
   const canUseGateway = !!(portal && deviceToken);
@@ -477,10 +548,43 @@ async function completeViaGateway({ history, config, maxTokens, timeoutMs, porta
   return { text: "", error: gatewayReason ? `Secure AI gateway unavailable: ${gatewayReason}` : "AI gateway unavailable" };
 }
 
+/* Two answers that must not depend on the model's judgement.
+ *
+ * Both were measured failures, not hypotheticals: asked "am I talking to a
+ * robot?", the smaller model said "I'm a real person" in 8 of 9 samples; told
+ * "I just drive the truck, I don't own anything", it still asked for the MC
+ * number on 12 of 12. A prompt rule helps, but a claim about being human is not
+ * something to leave to a sampled token. These guards are deliberately narrow -
+ * they fire only on an explicit question or an explicit statement - and they
+ * leave every other reply untouched. */
+const AI_QUESTION_RE = /\b(?:are you|is this|am i (?:talking|speaking) to)\b[^?.!]{0,40}\b(?:ai|a\.i\.|robot|bot|machine|automated|recorded|real person|real human|human)\b|\b(?:real person|real human)\b[^?.!]{0,20}\?/i;
+const CLAIMS_HUMAN_RE = /\b(?:i(?:'m| am)|this is)\b[^.!?]{0,25}\b(?:a )?(?:real person|real human|human being)\b|\bnot (?:a|an) (?:robot|bot|ai|machine|automated)\b|\b100% (?:human|real)\b/i;
+const DRIVER_RE = /\b(?:i (?:just |only )?drive|i(?:'m| am) (?:just |only )?(?:a )?driver|i do(?:n'?t| not) own|not the owner|i work for (?:a|someone|somebody|another)|company driver|i(?:'m| am) not the (?:owner|boss|decision ?maker)|talk to my boss)\b/i;
+const OWNER_ASK_RE = /\b(?:mc number|dot number|how many trucks|truck type|lanes?|equipment|authority)\b/i;
+
+function guardReply(text, transcript, config) {
+  let out = String(text || "");
+  if (!out) return out;
+  const leads = (Array.isArray(transcript) ? transcript : [])
+    .filter((x) => x && (x.role === "lead" || x.role === "prospect") && x.text);
+  const heard = String((leads.length ? leads[leads.length - 1] : {}).text || "");
+  if (!heard) return out;
+  if (AI_QUESTION_RE.test(heard) && CLAIMS_HUMAN_RE.test(out)) {
+    const company = asText(config && config.companyName, ["name", "companyName", "company"], "the team");
+    return `I'm an AI assistant calling for ${company}. Someone from the team can speak with you directly.`;
+  }
+  if (DRIVER_RE.test(heard) && OWNER_ASK_RE.test(out)) {
+    return "Got it - who owns the trucks or handles dispatch there? I can speak with them instead.";
+  }
+  return out;
+}
+
 async function nextTurn({ transcript, ...config }) {
   const history = (transcript || []).filter((x) => x && x.text && !String(x.text).startsWith("(silence)"))
     .map((x) => ({ role: x.role === "agent" ? "assistant" : "user", content: String(x.text) }));
-  return complete({ history, config });
+  const r = await complete({ history, config });
+  if (r && r.text) r.text = guardReply(r.text, transcript, config);
+  return r;
 }
 
 async function opening(config) {
@@ -490,7 +594,7 @@ async function opening(config) {
       content: "Start this OUTBOUND sales call now with one brief natural spoken sentence in the active conversation language. Introduce yourself and the company, then stop — do not ask how you can help, do not say this is a sales call, do not use inbound/receptionist wording, do not list questions, and do not mention AI or automation.",
     }],
     config,
-    maxTokens: 80,
+    maxTokens: DEFAULT_ANSWER_TOKENS,
   });
 }
 
@@ -510,4 +614,4 @@ async function opening(config) {
   return true;
 }
 
-module.exports = { nextTurn, opening, preflightBrain, systemPrompt, clean };
+module.exports = { nextTurn, opening, preflightBrain, systemPrompt, clean, guardReply, trimToCompleteSentence, DEFAULT_ANSWER_TOKENS, MAX_ANSWER_TOKENS };

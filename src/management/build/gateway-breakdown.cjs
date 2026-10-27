@@ -19,7 +19,8 @@ const os = require("node:os");
 const WAV = process.argv[2] || path.join(__dirname, "fixtures", "who-is-it.wav");
 
 (async () => {
-  const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".magicdialer", "config.json"), "utf8"));
+  const { readInstalledConfig } = require("./installed-config.cjs");
+  const cfg = readInstalledConfig();
   const portal = String(cfg.portalUrl || "").replace(/\/+$/, "");
   const bearer = cfg.deviceToken || cfg.token;
   const auth = { Authorization: "Bearer " + bearer, "Content-Type": "application/json" };

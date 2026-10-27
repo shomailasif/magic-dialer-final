@@ -265,13 +265,10 @@ test("a rate limit that persists falls to the second model, not to a canned line
   assert.ok(seen.includes("openai/gpt-oss-20b"), `the second model must be tried, saw ${seen.join(",")}`);
 });
 
-/* The direct path starts on 20b, not 120b.
- *
- * Measured on the live account with the real 7.4k-character system prompt: 120b
- * returns HTTP 429 in ~100ms because the account's tokens-per-minute for it is
- * spent, while 20b answers 200 in ~550ms. Starting on the limited model spends
- * the first call of every turn on a failure. */
-test("the direct path prefers the model that is not rate-limited", async () => {
+/* The direct path starts on 120b, the model that told the truth when asked
+ * whether it was a person (3/3 against 1/9 on 20b at a real token budget), and
+ * falls back to 20b if it is limited. See intelligent-brain.js DEFAULT_MODEL. */
+test("the direct path starts on the model that answers honestly", async () => {
   reset();
   pk.setProviderKey("gsk_unit_test_key_value");
   const seen = [];
@@ -279,8 +276,8 @@ test("the direct path prefers the model that is not rate-limited", async () => {
     provider: (url, init) => { seen.push(JSON.parse(init.body).model); return json(200, { choices: [{ message: { content: "ok" } }] }); },
   });
   await brain.nextTurn({ transcript: [{ role: "prospect", text: "hello" }], portal: PORTAL, deviceToken: TOKEN });
-  assert.equal(seen[0], "openai/gpt-oss-20b",
-    `the direct path must start on 20b, started on ${seen[0]}`);
+  assert.equal(seen[0], "openai/gpt-oss-120b",
+    `the direct path must start on 120b, started on ${seen[0]}`);
 });
 
 test("a rate limit on the first model still reaches the other one", async () => {
@@ -341,7 +338,7 @@ test("a bad model name is retried against the known-good default", async () => {
   if (prevModel === undefined) delete process.env.AUTODIAL_GROQ_MODEL; else process.env.AUTODIAL_GROQ_MODEL = prevModel;
   assert.equal(r.text, "recovered");
   assert.ok(seen.length >= 2, "a rejected model must be retried");
-  assert.ok(seen.includes("openai/gpt-oss-20b"), `the known-good model must be tried, saw ${seen.join(",")}`);
+  assert.ok(seen.includes("openai/gpt-oss-120b"), `the known-good model must be tried, saw ${seen.join(",")}`);
 });
 
 test("retries stay inside the turn budget", async () => {

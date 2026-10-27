@@ -42,12 +42,12 @@ a.match(b,/if \(remaining < 250\) return \{ ok: false, status: 504/);
 a.match(b,/function retryDelayMs\(retryAfter, stopAt\)/);
 a.match(b,/Math\.min\(Math\.max\(0, ms\), Math\.max\(0, budget - 300\)\)/);
 a.match(b,/const TRANSIENT_STATUS = new Set\(\[429, 500, 502, 503, 504\]\)/);
-/* The direct path starts on 20b and falls back to 120b, because on a live key the
- * 120b model's tokens-per-minute is the one that runs out and turns every turn
- * into HTTP 429. Either model can be first, so the fallback is derived rather
- * than a constant. */
-a.match(b,/const DEFAULT_DIRECT_MODEL = "openai\/gpt-oss-20b"/);
-a.match(b,/const DEFAULT_MODEL = "openai\/gpt-oss-120b"/);
+/* The direct path starts on 120b, the model that answers honestly when asked
+ * whether it is a person (3/3 against 1/9 on 20b at a real token budget), and
+ * falls back to 20b if it is limited. Either model can be first, so the
+ * fallback is derived rather than a constant. */
+a.match(b,/const DEFAULT_DIRECT_MODEL = "openai\/gpt-oss-120b"/);
+a.match(b,/const DEFAULT_MODEL = "openai\/gpt-oss-20b"/);
 a.match(b,/function directModelFallback\(preferred\)/);
 a.match(b,/return preferred === DEFAULT_DIRECT_MODEL \? DEFAULT_MODEL : DEFAULT_DIRECT_MODEL/);
 a.match(b,/const secondModel = directModelFallback\(preferred\)/);

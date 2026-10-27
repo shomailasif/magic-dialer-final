@@ -55,6 +55,7 @@ const { reEnrollSelf: reEnrollSelfImpl } = require("./self-reenroll");
 const { safeLog } = require("./safe-diagnostic");
 const { createLicenseGate } = require("./license-gate");
 const { parseLeadText } = require("./lead-queue");
+const configSecrets = require("./config-secrets");
 
 /**
  * Customer PC agent.
@@ -79,9 +80,18 @@ function defaultConfigPath() {
   return path.join(base, "config.json");
 }
 
+/* Secrets (SIP password, SMTP password, device/bearer tokens) are stored in the
+ * config file as encrypted envelopes and are transparently plaintext here.
+ * See config-secrets.js: the runtime keeps using them normally, while a copied
+ * config, a backup or a sync folder holds nothing usable. */
 function loadConfig(cfgPath = defaultConfigPath()) {
   try {
-    return JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const raw = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const opened = configSecrets.openConfig(raw);
+    if (opened.unreadable.length) {
+      log("stored credentials cannot be decrypted on this machine (" + opened.unreadable.join(", ") + "); those fields are empty until re-entered");
+    }
+    return opened.config;
   } catch {
     return null;
   }
@@ -89,8 +99,8 @@ function loadConfig(cfgPath = defaultConfigPath()) {
 
 function saveConfig(config, cfgPath = defaultConfigPath()) {
   try {
-    fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-    fs.writeFileSync(cfgPath, JSON.stringify(config, null, 2), "utf8");
+    // Seals a copy; the caller keeps plaintext for the rest of the call.
+    configSecrets.writeConfigFile(cfgPath, config);
   } catch (err) {
     log("saveConfig failed: " + safeLog(err));
   }
@@ -270,7 +280,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.85";
+const VERSION = "1.4.86";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -381,8 +391,22 @@ function applyPortalConfig(config, portalCfg, cfgPath) {
   return changed;
 }
 
+/* The dashboard's "today" is the operator's midnight, not UTC's. The counter
+ * used to reset on the UTC date while the label read "since midnight", so for
+ * part of every day the two disagreed. */
+function localDayKey(now = Date.now()) {
+  const d = new Date(now);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function startOfLocalDay(now = Date.now()) {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
 function bumpStats(config, result) {
-  const day = new Date().toISOString().slice(0, 10);
+  const day = localDayKey();
   const s = config.stats || { since: day, day, calls: 0, qualified: 0, today: 0, qualifiedToday: 0, lastScore: 0, bestScore: 0, qualifiedRate: 0 };
   if (s.day !== day) {
     s.day = day;
@@ -400,6 +424,42 @@ function bumpStats(config, result) {
   s.qualifiedRate = Math.round((100 * s.qualified) / Math.max(1, s.calls)) / 100;
   config.stats = s;
   return s;
+}
+
+/* What the dashboard counters should show.
+ *
+ * Two records exist and neither is complete on its own. config.stats is a
+ * running counter that survived versions where the calls table was created but
+ * never written to; the calls table is the durable record and is empty on those
+ * same installs. Reading config.stats alone reported "1 call today" weeks after
+ * that day while "Recent calls" was empty; reading the table alone would hide
+ * real calls that happened before it was written to.
+ *
+ * Every call made now advances both, so the larger of the two totals is the
+ * truthful total and the larger of the two daily counts is the truthful daily
+ * count - legacy history can never be counted twice, because it is only ever
+ * the part that the table does not have. A stale `day` in the counter is
+ * ignored outright rather than being reported as today. */
+function mergedStats(config, dbStats) {
+  const legacy = (config && config.stats) || {};
+  const db = dbStats || { calls: 0, today: 0, qualified: 0, qualifiedToday: 0, bestScore: 0 };
+  const day = localDayKey();
+  const fresh = legacy.day === day;
+  const legacyToday = fresh ? Math.max(0, Number(legacy.today) || 0) : 0;
+  const legacyQualifiedToday = fresh ? Math.max(0, Number(legacy.qualifiedToday) || 0) : 0;
+  const calls = Math.max(Number(legacy.calls) || 0, Number(db.calls) || 0);
+  const qualified = Math.max(Number(legacy.qualified) || 0, Number(db.qualified) || 0);
+  return {
+    since: legacy.since || day,
+    day,
+    calls,
+    qualified,
+    today: Math.max(legacyToday, Number(db.today) || 0),
+    qualifiedToday: Math.max(legacyQualifiedToday, Number(db.qualifiedToday) || 0),
+    lastScore: Number(legacy.lastScore) || 0,
+    bestScore: Math.max(Number(legacy.bestScore) || 0, Number(db.bestScore) || 0),
+    qualifiedRate: Math.round((100 * qualified) / Math.max(1, calls)) / 100,
+  };
 }
 
 /** Keep a bounded, newest-first activity feed written to status.json. */
@@ -522,6 +582,11 @@ async function runAgent(opts = {}) {
   }
   const cfgPath = opts.configPath || defaultConfigPath();
   const configDir = path.dirname(cfgPath);
+  /* A config written by an older build holds plaintext secrets. Seal them once,
+   * here, before anything else touches the file; a config that is already
+   * sealed is left untouched. Best effort by design - a read-only profile must
+   * not stop the agent, and the next normal save seals it anyway. */
+  if (configSecrets.migrateFile(cfgPath)) log("sealed stored credentials in config.json (SIP, SMTP, device token)");
   let config = loadConfig(cfgPath);
 
   /* The subscription gate. It reads its own file every time rather than
@@ -785,7 +850,12 @@ async function runAgent(opts = {}) {
     company: config.companyName || "our team",
     product: productLabel,
     machineId: config.machineId,
-    stats: config.stats || null,
+    /* Read the durable calls table every time, never the bare counter: the
+     * counter is historical on installs that predate recordCall(), and the
+     * dashboard must match the Recent calls list underneath it. */
+    stats: mergedStats(config, (() => {
+      try { return localDb.callStats(startOfLocalDay()); } catch { return null; }
+    })()),
     strategy: (config.learning ? topStrategy(config.learning) : null),
     callListCount: Array.isArray(config.callList) ? config.callList.length : 0,
     logs: (config.activity || []).slice(0, 12),
@@ -907,7 +977,7 @@ async function runAgent(opts = {}) {
         if (!portalDownSince) portalDownSince = Date.now();
         const downMs = Date.now() - portalDownSince;
         const brief = downMs < PORTAL_DOWN_HONEST_MS;
-        const st = portalDownState(downMs, !!config.portalSyncedAt, true);
+        const st = portalDownState(downMs, !!config.portalSyncedAt, true, res.status);
         log(brief
           ? `heartbeat unavailable (status ${res.status}) - keeping last known state.`
           : `heartbeat unavailable (status ${res.status}) for ${Math.round(downMs / 60000)} min - keeping last known state.`);
@@ -1187,26 +1257,27 @@ const PORTAL_DOWN_HONEST_MS = 120000;
  * timed out) rather than coming back non-200; that path was never keeping last
  * known state, so it stays OFFLINE and only the wording escalates.
  */
-function portalDownState(downMs, portalSyncedAt, reachedPortal) {
+function portalDownState(downMs, portalSyncedAt, reachedPortal, httpStatus) {
   const honest = downMs >= PORTAL_DOWN_HONEST_MS;
   const min = Math.max(1, Math.round(downMs / 60000));
   if (!reachedPortal) {
     return {
       status: "OFFLINE",
       line: honest
-        ? `Portal unreachable for ${min} min - your site may be suspended. Calls continue from the local list.`
+        ? `Portal site unreachable for ${min} min (no answer). Calls continue from the local list.`
         : "Reconnecting to portal...",
     };
   }
+  const code = Number(httpStatus) || 0;
   return {
     status: portalSyncedAt ? "ONLINE" : "OFFLINE",
     line: honest
-      ? `Portal down for ${min} min - your site may be suspended. Calls continue from the local list.`
+      ? `Hosted portal site is not available${code ? ` (HTTP ${code})` : ""} after ${min} min. Calls continue from the local list.`
       : (portalSyncedAt ? "Portal briefly unavailable - call is unaffected." : "Connecting to portal..."),
   };
 }
 
-module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, pushActivity, _watchdog: { takeWatchdogLock, pidIsOurSupervisor, pidAlive, WATCHDOG_LOCK, WATCHDOG_LOG, supervisorNote }, _portal: { portalDownState, PORTAL_DOWN_HONEST_MS } };
+module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, mergedStats, localDayKey, startOfLocalDay, pushActivity, _watchdog: { takeWatchdogLock, pidIsOurSupervisor, pidAlive, WATCHDOG_LOCK, WATCHDOG_LOG, supervisorNote }, _portal: { portalDownState, PORTAL_DOWN_HONEST_MS } };
 
 // Allow running directly: agent.exe [token] [portalUrl] [--setup] [--open] [--watchdog] [--no-browser] [--call]
 if (require.main === module) {

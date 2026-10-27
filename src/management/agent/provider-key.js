@@ -181,4 +181,9 @@ function clearProviderKey() {
   }
 }
 
-module.exports = { providerKey, hasProviderKey, setProviderKey, clearProviderKey, providerKeyStatus, agentDir, storePath };
+/** True when a stored value is one of our envelopes, not a plaintext secret. */
+function isSealed(value) {
+  return typeof value === "string" && value.startsWith(PREFIX);
+}
+
+module.exports = { providerKey, hasProviderKey, setProviderKey, clearProviderKey, providerKeyStatus, agentDir, storePath, seal, open: open_, isSealed, PREFIX };

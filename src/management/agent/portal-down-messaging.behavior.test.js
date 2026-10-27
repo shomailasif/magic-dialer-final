@@ -48,16 +48,22 @@ check("a blip before the portal was ever synced still reads as connecting", () =
 });
 
 check("sustained downtime names the duration instead of saying briefly", () => {
-  const s = state(THRESHOLD, true, true);
+  const s = state(THRESHOLD, true, true, 404);
   assert.ok(!/briefly/i.test(s.line), "still says 'briefly' after " + THRESHOLD + "ms: " + s.line);
   assert.ok(/min/.test(s.line), "does not name the duration: " + s.line);
   assert.ok(/site/i.test(s.line), "does not point at the operator's site: " + s.line);
+  assert.ok(!/suspend/i.test(s.line), "must not guess that the site was suspended: " + s.line);
 });
 
 check("the honest line keeps reporting the part that stays true", () => {
-  const s = state(10 * MINUTE, true, true);
+  const s = state(10 * MINUTE, true, true, 503);
   assert.ok(/Calls continue from the local list/i.test(s.line), "dropped the reassurance that matters mid-call: " + s.line);
   assert.ok(!/briefly/i.test(s.line), "contradicts itself: " + s.line);
+});
+
+check("the HTTP status is named when the portal answered", () => {
+  assert.match(state(10 * MINUTE, true, true, 404).line, /HTTP 404/, "a gone site must say what it answered");
+  assert.match(state(10 * MINUTE, true, true, 503).line, /HTTP 503/);
 });
 
 check("an outage does not flip a synced portal OFFLINE mid-call", () => {
@@ -80,21 +86,21 @@ check("no answer at all reads as reconnecting while it is still short", () => {
 
 check("no answer at all escalates once it is sustained", () => {
   const s = state(THRESHOLD, true, false);
-  assert.strictEqual(s.line, "Portal unreachable for 2 min - your site may be suspended. Calls continue from the local list.");
+  assert.strictEqual(s.line, "Portal site unreachable for 2 min (no answer). Calls continue from the local list.");
   assert.strictEqual(s.status, "OFFLINE");
 });
 
 check("the boundary is exact, so neither side can drift", () => {
-  assert.ok(/briefly/i.test(state(THRESHOLD - 1, true, true).line), "escalated one millisecond early");
-  assert.ok(!/briefly/i.test(state(THRESHOLD, true, true).line), "stayed gentle one millisecond too long");
+  assert.ok(/briefly/i.test(state(THRESHOLD - 1, true, true, 404).line), "escalated one millisecond early");
+  assert.ok(!/briefly/i.test(state(THRESHOLD, true, true, 404).line), "stayed gentle one millisecond too long");
 });
 
 check("duration is reported in whole minutes and never as zero", () => {
-  const line = (ms) => state(ms, true, true).line;
-  assert.ok(/for 10 min /.test(line(10 * MINUTE)), "10 whole minutes did not render as 10: " + line(10 * MINUTE));
-  assert.ok(/for 90 min /.test(line(90 * MINUTE)), "90 whole minutes did not render as 90: " + line(90 * MINUTE));
+  const line = (ms) => state(ms, true, true, 503).line;
+  assert.ok(/after 10 min\b/.test(line(10 * MINUTE)), "10 whole minutes did not render as 10: " + line(10 * MINUTE));
+  assert.ok(/after 90 min\b/.test(line(90 * MINUTE)), "90 whole minutes did not render as 90: " + line(90 * MINUTE));
   // A fractional minute must round, not truncate - 90.5 is 91, not 90.
-  assert.ok(/for 91 min /.test(line(90 * MINUTE + 30000)), "fractional minute was truncated: " + line(90 * MINUTE + 30000));
+  assert.ok(/after 91 min\b/.test(line(90 * MINUTE + 30000)), "fractional minute was truncated: " + line(90 * MINUTE + 30000));
   assert.ok(!/ 0 min /.test(line(THRESHOLD)), "reported 0 minutes");
   assert.ok(!/NaN|\[object/.test(line(THRESHOLD)), "duration did not render: " + line(THRESHOLD));
 });

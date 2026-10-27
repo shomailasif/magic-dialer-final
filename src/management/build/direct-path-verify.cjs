@@ -52,7 +52,8 @@ if (process.env.MD_VERIFY_CHILD === "1") {
   const brain = require(path.join(agentDir, "intelligent-brain.js"));
   const audio = require("./probe-audio.cjs").engineAudio(path.join(__dirname, "fixtures", "who-is-it.wav"));
 
-  const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".magicdialer", "config.json"), "utf8"));
+  const { readInstalledConfig } = require("./installed-config.cjs");
+  const cfg = readInstalledConfig();
   const portal = String(cfg.portalUrl || "").replace(/\/+$/, "");
   const deviceToken = cfg.deviceToken || cfg.token;
   const rounds = Number(process.env.MD_VERIFY_ROUNDS || 4);

@@ -1,7 +1,7 @@
 "use strict";
 
 const { voiceCall } = require("./call");
-const { speakToBuffer } = require("./voice");
+const { speakToBuffer, canSpeakScript } = require("./voice");
 const { createVad } = require("./vad");
 const { createLocalRingCentralEngine } = require("./local-ringcentral-engine");
 const { registerSession } = require("../portal/softphone");
@@ -219,6 +219,17 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     portal: config.portalUrl,
     deviceToken: config.deviceToken,
   };
+  /* ASK THE VOICE, ONCE, BEFORE THE PHONE RINGS.
+   *
+   * On this machine the only working synthesizer is the Windows English voice.
+   * It renders Urdu/Arabic/Devanagari as an empty WAV, so an Urdu call used to
+   * be refused at the opening TTS preflight (or, if it got past it, go silent on
+   * the first turn). The probe tells us which script the brain should write in,
+   * and it also warms the tier cooldowns so the opening itself is not spent
+   * re-dialling services we already know are down. */
+  const scriptOk = await canSpeakScript(activeLocale).catch(() => true);
+  brainConfig.voiceScript = scriptOk ? "native" : "latin";
+  if (!scriptOk) onLog(`[local-media-v2] voice cannot speak the ${activeLocale} script; asking the brain for Latin-letter ${activeLocale}`);
   /* These two ran back to back and the caller heard nothing for 3.3s before
    * the phone even started ringing (measured 20:44:41.736 call control ->
    * 20:44:44.998 pre-render done). The brain check and the opening line are
@@ -285,7 +296,19 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     onLog(`[local-media-v2] AI opening was unusable (${JSON.stringify(openingText.slice(0, 40))}); using the local opening`);
     openingText = `Hi, this is ${agentName} with ${company}. Is now a good time to talk?`;
   }
-  const openingAudio = await tts(openingText, { locale: activeLocale, style: config.voiceStyle || "friendly" });
+  let openingAudio = await tts(openingText, { locale: activeLocale, style: config.voiceStyle || "friendly" });
+  /* One last try in the voice that always works before refusing the call. A
+   * script the installed voice cannot read (measured: Urdu -> 46-byte WAV) must
+   * not cost the prospect the call; a plain English opener is worse than a
+   * correct one and far better than a refused call or a silent line. */
+  if (!openingAudio || !Buffer.isBuffer(openingAudio.buffer) || openingAudio.buffer.length < 160) {
+    const agentName = pick(config.persona, ["name", "agentName", "firstName"]) || "Atlas";
+    const company = pick(config.companyName, ["name", "companyName", "company"]) || "your team";
+    const plain = `Hi, this is ${agentName} with ${company}. Is now a good time to talk?`;
+    onLog(`[local-media-v2] opening could not be spoken in ${activeLocale}; using the plain English opening`);
+    openingText = plain;
+    openingAudio = await tts(plain, { locale: "en", style: config.voiceStyle || "friendly" });
+  }
   if (!openingAudio || !Buffer.isBuffer(openingAudio.buffer) || openingAudio.buffer.length < 160) {
     throw new Error("Opening TTS preflight failed; refusing to place call");
   }
@@ -481,6 +504,18 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     zh: "当然 - 告诉我您的需求，我来帮您。",
     hi: "बिल्कुल - बताइए आपको क्या चाहिए, मैं मदद करूँगा।",
   });
+  /* What to say when the installed voice cannot pronounce the line at all.
+   *
+   * Urdu and Hindi are written here in Latin letters on purpose: the only voice
+   * on this machine reads Latin script, and a Roman line is still comprehensible
+   * to the listener. The alternative - the empty WAV measured for native script
+   * - is dead air on a live call. */
+  const VOICE_FALLBACK = Object.freeze({
+    en: "Sorry, I did not quite catch that. Please say it once more.",
+    ur: "Maaf kijiye, main theek se sun nahi paya. Dobara bata dijiye?",
+    hi: "Maaf kijiye, main theek se sun nahi paya. Phir se bata dijiye?",
+  });
+  const voiceFallbackLine = (loc) => VOICE_FALLBACK[String(loc || "").split("-")[0]] || VOICE_FALLBACK.en;
   const speakFn = async (text, turn = {}) => {
     if (sessionEnded) {
       onLog("[local-media-v2] session already ended remotely; skipping outbound turn");
@@ -552,19 +587,18 @@ const capped = isOpening ? line : capTurnLength(line);
       state = { vad: makeVad({ minSpeechMs: 160 }), pre: seedPre(), chunks: [], started: false, done: false, resolve: release, playing: false, interrupted: false, speechDuringPlaybackMs: 0, playbackStartedAt: 0, openingProtected: false, ended, eosLatched: false, voicedAfterEos: 0, onEos: null, finalChunks: null };
     }
     let out;
+    let spokeThis = spoken;
+    /* A script the locale's voice cannot read must not be sent to it. Before
+     * this, the turn was dropped and the prospect heard silence; now the same
+     * thought is said in the voice that works, so the conversation continues. */
+    const unspeakableScript = isMostlyNonLatin(spoken) && !NON_LATIN_LOCALE.has(String(locale || "").toLowerCase());
     if (isOpening) {
       out = preparedOpening.audio;
       preparedOpening = null;
-    } else if (isMostlyNonLatin(spoken) && !NON_LATIN_LOCALE.has(String(locale || "").toLowerCase())) {
-      /* Refuse to put a script on the wire that the current voice cannot speak -
-       * and only then. This check used to fire on any non-Latin text regardless
-       * of the locale, so on a call correctly switched to Urdu the model replied
-       * in Urdu and the agent went silent for 25 seconds rather than speak it.
-       * The prospect heard nothing at all. For a ur/ar/zh/... call, non-Latin
-       * text is the right answer and must always be spoken. */
-      onLog(`[local-media-v2] agent turn is mostly non-Latin but the ${locale} voice cannot speak it; not speaking it`);
-      if (state) { state.playing = false; state.playbackStartedAt = 0; }
-      return;
+    } else if (unspeakableScript) {
+      onLog(`[local-media-v2] agent turn is mostly non-Latin but the ${locale} voice cannot speak it; speaking a short fallback line instead of silence`);
+      spokeThis = voiceFallbackLine(locale);
+      out = await tts(spokeThis, { locale: "en", style: config.voiceStyle || "friendly", intent: turn.intent });
     } else {
       // Keep RTP warm while Edge/python TTS synthesizes so the carrier does
       // not hear a dead/broken gap between turns.
@@ -576,6 +610,15 @@ const capped = isOpening ? line : capTurnLength(line);
       } finally {
         if (ka) clearInterval(ka);
       }
+    }
+    if ((!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) && !isOpening && spokeThis !== VOICE_FALLBACK.en) {
+      /* The turn synthesized to nothing. One attempt in the voice that always
+       * works, rather than the silence this used to leave on the line. */
+      onLog(`[local-media-v2] tts produced no audio for locale=${locale}; trying a plain English line before letting the turn go`);
+      try {
+        out = await tts(VOICE_FALLBACK.en, { locale: "en", style: config.voiceStyle || "friendly", intent: turn.intent });
+        if (out && Buffer.isBuffer(out.buffer) && out.buffer.length >= 160) spokeThis = VOICE_FALLBACK.en;
+      } catch { /* fall through to the skip below */ }
     }
     if (!out || !Buffer.isBuffer(out.buffer) || out.buffer.length < 160) {
       // One unspeakable turn must not end a live call. On the 20:25Z call an
@@ -971,6 +1014,7 @@ const capped = isOpening ? line : capTurnLength(line);
       learning: config.learning,
       locale: config.lang || "auto",
       voiceStyle: config.voiceStyle || "friendly",
+        voiceScript: brainConfig.voiceScript,
         preparedOpeningText: openingText,
         portal: config.portalUrl,
         token: config.deviceToken,

@@ -569,7 +569,7 @@ function stripRepeatedAsks(text, askedFor, askedTokens) {
   return { text: kept.join(" ").trim(), forbidden: false };
 }
 
-async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", preparedOpeningText = null, portal = null, deviceToken = null, callId = null, waitForFirstSpeech = null }) {
+async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", voiceScript = null, preparedOpeningText = null, portal = null, deviceToken = null, callId = null, waitForFirstSpeech = null }) {
   const transcript = [];
   const timeline = [];
   let heardSomething = false;
@@ -695,7 +695,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let busyRefused = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
-  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId, learning: learning || {} };
+  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId, learning: learning || {}, voiceScript };
   // The learned playbook has to reach the live brain, or learning only records
   // scores and never changes a call. The highest-scoring strategies, and the
   // objection-handling ones this vertical actually hits, are named in the prompt.
@@ -894,6 +894,12 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     const fn = CALLBACK_TEXT[loc];
     return fn ? () => fn(captured) : null;
   };
+  /* "A manager will call you back" is only true if the prospect asked for it,
+   * agreed to it, or gave a number for it. The call of 27 Oct ended with that
+   * promise after a prospect who had simply said goodbye, which is a promise
+   * nobody made and nobody can keep. This is set by the turn loop below. */
+  let callbackAgreed = false;
+  const CALLBACK_REQUEST_RE = /\b(?:call|ring|phone|contact)\s+(?:me|us)\s+back\b|\bhave\s+(?:someone|somebody|a manager|your manager|the owner)\s+(?:call|contact|ring)\b|\b(?:send|email|text|whatsapp)\s+(?:me|it|that|the details)\b|\bget back to me\b|\bi(?:'ll| will) be\s+(?:waiting|here|around)\b|\bcall me\b/i;
   const alreadyPromisesCallback = (line, loc) => {
     const re = CALLBACK_MEANS[loc];
     return re ? re.test(line) : false;
@@ -996,8 +1002,8 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     return normaliseCallbackWindow(fn ? fn(cb) : BUSY_CLOSE.en(cb));
   };
 
-  const closingLine = (loc, captured) => {
-    const cb = callbackSentence(loc, captured);
+  const closingLine = (loc, captured, allowCallback = true) => {
+    const cb = allowCallback ? callbackSentence(loc, captured) : null;
     const text = cb ? `${thanksLine(loc)} ${cb(captured)}` : thanksLine(loc);
     return normaliseCallbackWindow(text);
   };
@@ -1703,6 +1709,7 @@ if (neverHeard && firstQuiet) {
 
     lead(heard, detected);
     leadSpeech.push(heard);
+    if (CALLBACK_REQUEST_RE.test(heard)) callbackAgreed = true;
     // Attribute the answer to the field we just asked for, and to any field the
     // words themselves fill in ("26 feet bucks" answers both truck fields).
     if (lastAskedField) Object.assign(collected, qual.attribute(lastAskedField, heard));
@@ -1721,8 +1728,11 @@ if (neverHeard && firstQuiet) {
     if (FAREWELL_RE.test(heard) || closingPromiseSpoken && noMoreQuestions) {
       closingSpoken = true;
       const captured = capturePhoneNumber(leadSpeech.join(" ")) || callbackNumber;
-      await agent(closingPromiseSpoken ? farewellLine(activeLocale) : closingLine(activeLocale, captured),
-        { intent: "closing", noRetry: true });
+      /* Thanks only when no callback was asked for: the promise must match
+       * something the prospect actually agreed to. */
+      const closeText = closingPromiseSpoken ? farewellLine(activeLocale)
+        : closingLine(activeLocale, captured, callbackAgreed || !!capturePhoneNumber(leadSpeech.join(" ")));
+      await agent(closeText, { intent: "closing", noRetry: true });
       break;
     }
     // "Who is this?" has to be answered with the name, and "is this a good time"
@@ -1943,13 +1953,18 @@ if (neverHeard && firstQuiet) {
      * "Thank you for your time; we'll follow up shortly with the requested
      * information" - no number, no commitment, nothing for the prospect to
      * hold on to. */
-    const captured = capturePhoneNumber(leadSpeech.join(" ")) || callbackNumber;
+    const gaveNumber = capturePhoneNumber(leadSpeech.join(" "));
+    const captured = gaveNumber || callbackNumber;
+    /* A callback is only promised when the prospect asked for one, agreed to
+     * one, or gave a number for one. The 27 Oct call promised one after a plain
+     * "goodbye" - that is the false promise this gate removes. */
+    const allowCallback = callbackAgreed || !!gaveNumber;
     const closing = await askBrain({
       transcript: [
         ...transcript,
         {
           role: "lead",
-          text: `The conversation is over. Speak a short, warm professional closing. ${captured ? `State the callback number exactly as "${captured}".` : "Never state or invent any phone number - you do not have one."} Say that a manager will call back within the next 30 minutes. Thank them once, say goodbye, and stop. One or two sentences, no new questions.`,
+          text: `The conversation is over. Speak a short, warm professional closing. ${captured ? `State the callback number exactly as "${captured}".` : "Never state or invent any phone number - you do not have one."} ${allowCallback ? "Say that a manager will call back within the next 30 minutes." : "Do NOT promise a callback and do NOT name a time - the prospect did not agree to one. Just thank them and say goodbye."} Thank them once, say goodbye, and stop. One or two sentences, no new questions.`,
         },
       ],
       ...config(),
@@ -1974,7 +1989,7 @@ if (neverHeard && firstQuiet) {
          * instead: it is ours, it is always different, and saying it is exactly
          * what a closing is for. */
         if (isNearDuplicate(capTurnLength(line), spokenOrder)) {
-          line = closingLine(activeLocale, captured);
+          line = closingLine(activeLocale, captured, allowCallback);
         }
         // Strip any number the model produced that we did not capture.
         if (captured) {
@@ -1991,16 +2006,21 @@ if (neverHeard && firstQuiet) {
          * switching to English at the end of the call. */
         const cb = callbackSentence(activeLocale, captured);
         const saysCallback = alreadyPromisesCallback(line, activeLocale);
-        if (!saysCallback && cb) {
+        if (!allowCallback && saysCallback) {
+          /* The model promised one anyway. Nothing in that closing can be kept
+           * safely, so use our own thanks-only farewell. */
+          line = farewellLine(activeLocale);
+        }
+        if (allowCallback && !saysCallback && cb) {
           line = line.replace(/[.!]?\s*$/, ". " + (captured ? cb(captured) : cb()));
-        } else if (captured && !line.includes(captured)) {
+        } else if (allowCallback && captured && !line.includes(captured)) {
           // It promised a callback but never gave the number. Add just the number.
           line = line.replace(/[.!]?\s*$/, ` ${captured}.`);
         }
         await agent(capTurnLength(line), { intent: "closing", noRetry: true });
       } else {
         const cb = callbackSentence(activeLocale, captured);
-        await agent(cb ? `Thanks for your time. ${cb(captured)} Goodbye.` : "");
+        await agent(allowCallback && cb ? `Thanks for your time. ${cb(captured)} Goodbye.` : thanksLine(activeLocale));
       }
   }
 

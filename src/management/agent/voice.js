@@ -23,6 +23,38 @@ const { expressionFor } = require("./expression");
 const TMP = path.join(os.tmpdir(), "autodial-voice");
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true });
 
+/* A DEAD TIER MUST FAIL FAST.
+ *
+ * On this host both neural tiers are dead: the Edge read-aloud endpoint answers
+ * 403 to the websocket and to edge-tts, and no local HeadTTS server is running.
+ * Every turn therefore paid for the same doomed dial before reaching Windows
+ * SAPI - measured as seconds of silence per turn, on a live call.
+ *
+ * A cooldown remembers that a tier just failed, so the next turn skips it in
+ * milliseconds instead of re-discovering the same outage. Windows is never
+ * cooled: it is the tier that always works and the chain must always end in
+ * speech. The window is short enough that a recovered service is picked up
+ * again during a normal call campaign, and any success clears the cooldown
+ * immediately. */
+const TIER_COOLDOWN_MS = Object.freeze({
+  "edge-ws": 10 * 60 * 1000,
+  edge: 10 * 60 * 1000,
+  headtts: 5 * 60 * 1000,
+});
+const tierCooldownUntil = new Map();
+
+function tierCooling(engine) {
+  const until = tierCooldownUntil.get(engine) || 0;
+  return until > Date.now();
+}
+function noteTierFailure(engine) {
+  const ms = TIER_COOLDOWN_MS[engine];
+  if (ms) tierCooldownUntil.set(engine, Date.now() + ms);
+}
+function noteTierSuccess(engine) {
+  tierCooldownUntil.delete(engine);
+}
+
 // Map our persona (energetic female) to the best neural voice per language.
 // Keys are our locale codes (see i18n). Falls back to en-US Ava.
 const NEURAL_VOICES = {
@@ -379,25 +411,94 @@ function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 /** Speak via Windows System.Speech (always available). Returns true. */
 async function speakWindows(text, { rate = 1, volume = 100 } = {}) {
-  const chosen = "Microsoft Zira Desktop";
-  const rate10 = Math.round(rate * 10);
-  const script = `
-    Add-Type -AssemblyName System.Speech
-    $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-    foreach($v in $s.GetInstalledVoices()) { if($v.VoiceInfo.Name -eq '${ps(chosen)}') { $s.SelectVoice($v.VoiceInfo.Name); break } }
-    $s.Rate = ${rate10}
-    $s.Volume = ${Number(volume) || 100}
-    $s.Speak('${ps(text)}')
-  `;
-  const r = await runAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], 60000);
-  return r.status === 0;
+  const file = path.join(TMP, `sapi-play-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.wav`);
+  try {
+    const built = await sapiToWav(text, { rate, volume, out: file });
+    if (!built) return false;
+    return await playFile(file);
+  } catch {
+    return false;
+  } finally {
+    try { fs.unlinkSync(file); } catch {}
+  }
 }
 
+/* Text safety for the Windows voice.
+ *
+ * MEASURED DEFECT: the utterance used to be pasted into a PowerShell -Command
+ * string. A single curly apostrophe (U+2019) - which the brain writes constantly
+ * ("that's", "I'm") - ended the PowerShell string early, the synthesizer wrote a
+ * 0-byte WAV, and the turn was silent. Replacing that one character with "'"
+ * made the same line render. Urdu script rendered a 46-byte empty WAV.
+ *
+ * So the text is no longer part of any command line: it is written to a UTF-8
+ * file and read by the script, and typographic punctuation is folded to the
+ * ASCII the desktop voice is known to pronounce. This is deterministic and does
+ * not depend on how PowerShell feels about the character. */
+function sapiSafeText(text) {
+  return String(text || "")
+    .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/[\u00A0\u2007\u202F]/g, " ")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ")
+    .replace(/[^\S\r\n]+/g, " ")
+    .replace(/\s*\n\s*/g, " ")
+    .trim();
+}
+
+/** Single-quote a path for PowerShell without letting a quote break out. */
+function psQuote(v) {
+  return String(v || "").replace(/'/g, "''");
+}
+
+/** Render text to a WAV file with Windows System.Speech. Returns true/false. */
+async function sapiToWav(text, { rate = 1, volume = 100, out }) {
+  const body = sapiSafeText(text);
+  if (!body) return false;
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const textFile = path.join(TMP, `sapi-text-${id}.txt`);
+  const scriptFile = path.join(TMP, `sapi-${id}.ps1`);
+  const wavFile = out || path.join(TMP, `sapi-${id}.wav`);
+  try {
+    fs.writeFileSync(textFile, body, "utf8");
+    const chosen = "Microsoft Zira Desktop";
+    /* Rate is the System.Speech scale (-10..10); volume is ours and was left at
+     * the synthesizer default before, which is why every line arrived quiet
+     * (peak -18 dBFS measured). */
+    const volume10 = Math.max(0, Math.min(100, Math.round(Number(volume) || 100)));
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      "Add-Type -AssemblyName System.Speech",
+      `$text = [System.IO.File]::ReadAllText('${psQuote(textFile)}', [System.Text.Encoding]::UTF8)`,
+      "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer",
+      `foreach($v in $s.GetInstalledVoices()) { if($v.VoiceInfo.Name -eq '${psQuote(chosen)}') { $s.SelectVoice($v.VoiceInfo.Name); break } }`,
+      `$s.Rate = ${Math.max(-10, Math.min(10, Math.round(Number(rate) * 10)))}`,
+      `$s.Volume = ${volume10}`,
+      `$s.SetOutputToWaveFile('${psQuote(wavFile)}')`,
+      "$s.Speak($text)",
+      "$s.SetOutputToNull()",
+      "$s.Dispose()",
+    ].join("\r\n");
+    fs.writeFileSync(scriptFile, script, "utf8");
+    const r = await runAsync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptFile],
+      45000,
+    );
+    return r.status === 0 && fs.existsSync(wavFile) && fs.statSync(wavFile).size > 500;
+  } catch {
+    return false;
+  } finally {
+    try { fs.unlinkSync(textFile); } catch {}
+    try { fs.unlinkSync(scriptFile); } catch {}
+  }
+}
+
+/** Back-compat: old callers used ps() to escape inline PowerShell text. */
 function ps(v) {
-  return String(v || "")
-    .replace(/[\r\n]+/g, " ")
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "''");
+  return sapiSafeText(v).replace(/'/g, "''");
 }
 
 /**
@@ -567,12 +668,39 @@ function resampleTo8k(samples, rate) {
   return out;
 }
 
+/** Bring a PCM16 render up to a consistent telephone level.
+ *
+ * Measured on the deployed machine: SAPI's own output peaked at -18 dBFS with
+ * RMS around -34 dBFS, which on a phone line reads as a quiet, distant voice
+ * that a prospect keeps asking to repeat. Peak-normalising to just under full
+ * scale is a single deterministic gain, so every tier reaches the line at the
+ * same loudness without a compressor or any dynamic behaviour. */
+function normalisePeak(samples, target = 0.89) {
+  if (!samples || !samples.length) return samples;
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const v = samples[i] < 0 ? -samples[i] : samples[i];
+    if (v > peak) peak = v;
+  }
+  if (!peak) return samples;
+  const ceiling = 32767 * target;
+  if (peak >= ceiling) return samples;
+  const gain = ceiling / peak;
+  const out = new Int16Array(samples.length);
+  for (let i = 0; i < samples.length; i++) {
+    const v = Math.round(samples[i] * gain);
+    out[i] = v < -32768 ? -32768 : v > 32767 ? 32767 : v;
+  }
+  return out;
+}
+
 /** Convert any PCM WAV to raw PCMU/8000 telephone audio, or null. */
 function wavToMulaw(wav) {
   const parsed = wavToMono16(wav);
   if (!parsed) return null;
-  const samples = resampleTo8k(parsed.samples, parsed.rate);
-  if (!samples || !samples.length) return null;
+  const resampled = resampleTo8k(parsed.samples, parsed.rate);
+  if (!resampled || !resampled.length) return null;
+  const samples = normalisePeak(resampled);
   const out = Buffer.allocUnsafe(samples.length);
   for (let i = 0; i < samples.length; i++) out[i] = mulawEncode(samples[i]);
   return out;
@@ -915,34 +1043,18 @@ async function headTtsToBuffer(text, { locale, style, rate }) {
 }
 
 /** Tier 3: Windows SAPI -> WAV -> pure-JS PCMU (always available on Windows). */
-async function sapiToBuffer(text, { rate = 1 } = {}) {
+async function sapiToBuffer(text, { rate = 1, volume = 100 } = {}) {
   const file = path.join(TMP, `sapi-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.wav`);
   try {
-    const chosen = "Microsoft Zira Desktop";
-    const rate10 = Math.round(rate * 10);
-    const wavPath = file.replace(/\\/g, "/").replace(/'/g, "''");
-    const script = `
-      Add-Type -AssemblyName System.Speech
-      $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-      foreach($v in $s.GetInstalledVoices()) { if($v.VoiceInfo.Name -eq '${ps(chosen)}') { $s.SelectVoice($v.VoiceInfo.Name); break } }
-      $s.Rate = ${rate10}
-      $s.SetOutputToWaveFile('${wavPath}')
-      $s.Speak('${ps(text)}')
-      $s.SetOutputToNull()
-      $s.Dispose()
-    `;
-    const r = await runAsync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], 30000);
-    if (r.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 100) {
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-      return null;
-    }
+    const ok = await sapiToWav(text, { rate, volume, out: file });
+    if (!ok) return null;
     const wav = fs.readFileSync(file);
-    try { fs.unlinkSync(file); } catch {}
     const buffer = wavToMulaw(wav);
     return buffer && buffer.length >= 160 ? { buffer, engine: "windows" } : null;
   } catch {
-    if (fs.existsSync(file)) fs.unlinkSync(file);
     return null;
+  } finally {
+    try { fs.unlinkSync(file); } catch {}
   }
 }
 
@@ -1073,11 +1185,17 @@ async function speakToBuffer(text, { locale = "en", style = "human", rate = 1, i
      * really happened is stored. So a tier that fails falls through to the next
      * one exactly as it does today, and its failure leaves nothing behind. */
     for (const [engine, run] of ttsTiers) {
+      /* A tier that just failed is skipped in milliseconds. This is what keeps
+       * a live turn off a service that is already known to be down (see
+       * TIER_COOLDOWN_MS). Windows has no cooldown, so the chain always ends in
+       * speech. */
+      if (tierCooling(engine)) continue;
       const key = ttsCacheKey(engine, body, loc, style, rate, intent);
       const hit = ttsCacheResult(ttsCacheGet(key));
       if (hit) return hit;
       const out = await run(body, { locale: loc, style, rate, intent });
-      if (!out) continue;
+      if (!out) { noteTierFailure(engine); continue; }
+      noteTierSuccess(engine);
       return ttsCacheSet(key, out);
     }
     return null;
@@ -1095,17 +1213,90 @@ async function speakToBuffer(text, { locale = "en", style = "human", rate = 1, i
   return null;
 }
 
+/** A short sample in the locale's own script, used to find out whether the
+ *  installed voice can actually speak it.
+ *
+ *  This machine's only working tier is Windows SAPI, which can read Latin text
+ *  and renders Urdu/Arabic/Devanagari as a 46-byte empty WAV (measured). Asking
+ *  the brain for native-script Urdu and then trying to speak it produced
+ *  exactly one outcome: silence, and a refused call at the opening preflight.
+ *  The probe answers the question once, before the phone rings, and the answer
+ *  decides which script the brain is told to write in. */
+const SCRIPT_SAMPLE = Object.freeze({
+  ur: "السلام علیکم",
+  ar: "مرحبا",
+  fa: "سلام",
+  hi: "नमस्ते",
+  bn: "নমস্কার",
+  pa: "ਸਤ ਸ੍ਰੀ ਅਕਾਲ",
+  ta: "வணக்கம்",
+  te: "నమస్కారం",
+  kn: "ನಮಸ್ಕಾರ",
+  ml: "നമസ്കാരം",
+  gu: "નમસ્તે",
+  mr: "नमस्कार",
+  ne: "नमस्कार",
+  si: "ආයුබෝවන්",
+  zh: "你好",
+  ja: "こんにちは",
+  ko: "안녕하세요",
+  ru: "Здравствуйте",
+  uk: "Вітаю",
+  bg: "Здравейте",
+  el: "Γεια σας",
+  he: "שלום",
+  th: "สวัสดี",
+  ka: "გამარჯობა",
+  hy: "Բարեւ",
+  am: "ሰላም",
+  my: "မင်္ဂလာပါ",
+  km: "សួស្តី",
+});
+
+const scriptSupport = new Map();
+
+function normalizeLocaleBase(locale) {
+  return String(locale || "en").toLowerCase().trim().split(/[-_]/)[0] || "en";
+}
+
+/** Can the installed voice speak this locale's normal script? Cached per
+ *  language. Latin-script locales always probe as supported because "Hello" is
+ *  speakable by every tier. */
+async function canSpeakScript(locale) {
+  const base = normalizeLocaleBase(locale);
+  if (scriptSupport.has(base)) return scriptSupport.get(base);
+  const sample = SCRIPT_SAMPLE[base] || "Hello";
+  let ok = false;
+  try {
+    const out = await speakToBuffer(sample, { locale: base });
+    ok = !!(out && Buffer.isBuffer(out.buffer) && out.buffer.length >= 320);
+  } catch {
+    ok = false;
+  }
+  scriptSupport.set(base, ok);
+  return ok;
+}
+
 module.exports = {
   speak, speakEdge, speakHeadTTS, speakWindows, speakToBuffer, edgeVoiceFor, normalizeStyle, styleRate,
-  wavToMulaw, mulawEncode, edgeWsToBuffer, edgeWsSynth,
+  wavToMulaw, mulawEncode, edgeWsToBuffer, edgeWsSynth, sapiToWav, sapiSafeText, normalisePeak,
+  canSpeakScript,
   ttsCacheKey, ttsCacheGet, ttsCacheSet, ttsCacheResult, ttsCacheClear, ttsCacheSize,
   TTS_CACHE_MAX, TTS_CACHE_MIN_BYTES, HEADTTS_TIMEOUT_MS,
   /* Offline tests need to know how many times a synthesis ACTUALLY ran, which is
    * only observable by replacing the tier list - there is no other injection
    * point into the fallback chain, and no production path sets this. */
   _test: {
-    setTiers(list) { ttsTiers = list && list.length ? list : TTS_TIERS; },
-    resetTiers() { ttsTiers = TTS_TIERS; },
+    setTiers(list) {
+      ttsTiers = list && list.length ? list : TTS_TIERS;
+      tierCooldownUntil.clear();
+    },
+    resetTiers() {
+      ttsTiers = TTS_TIERS;
+      tierCooldownUntil.clear();
+    },
     tiers() { return ttsTiers; },
+    cooling(engine) { return tierCooling(engine); },
+    clearCooldowns() { tierCooldownUntil.clear(); },
   },
 };

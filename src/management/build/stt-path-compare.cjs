@@ -107,7 +107,8 @@ function envKey(name) {
 }
 
 (async () => {
-  const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".magicdialer", "config.json"), "utf8"));
+  const { readInstalledConfig } = require("./installed-config.cjs");
+  const cfg = readInstalledConfig();
   const portal = String(cfg.portalUrl || "").replace(/\/+$/, "");
   const bearer = cfg.deviceToken || cfg.token;
   const groqKey = envKey("GROQ_API_KEY");

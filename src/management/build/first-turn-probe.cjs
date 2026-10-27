@@ -37,7 +37,8 @@ const ROOT = path.join(__dirname, "..");
 
 /* ---- one request, run in this process. Reports elapsed to stdout as JSON. ---- */
 if (process.env.MD_PROBE_CHILD === "1") {
-  const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".magicdialer", "config.json"), "utf8"));
+  const { readInstalledConfig } = require("./installed-config.cjs");
+  const cfg = readInstalledConfig();
   const portal = String(cfg.portalUrl || "").replace(/\/+$/, "");
   const bearer = cfg.deviceToken || cfg.token;
   /* The STT route mu-law-decodes its input, so the 16kHz WAV fixture must be

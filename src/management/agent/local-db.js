@@ -296,6 +296,28 @@ function markSyncLogSynced(id) {
 
 // ── Stats ──────────────────────────────────────────────────────────────
 
+/* Call counters for the dashboard.
+ *
+ * `sinceMs` is midnight, so "calls today" is answered from the rows themselves
+ * instead of a counter that keeps yesterday's number when nobody resets it.
+ * Everything here is read from the calls table - the durable record - and the
+ * legacy config counter is folded in by mergedStats() in agent.js. */
+function callStats(sinceMs = 0) {
+  try {
+    const d = db();
+    const calls = d.prepare("SELECT COUNT(*) AS n FROM calls").get().n;
+    const qualified = d.prepare("SELECT COUNT(*) AS n FROM calls WHERE good_lead = 1").get().n;
+    const best = d.prepare("SELECT MAX(score) AS s FROM calls").get().s;
+    const today = sinceMs > 0
+      ? d.prepare("SELECT COUNT(*) AS n FROM calls WHERE created_at >= ?").get(sinceMs).n
+      : 0;
+    const qualifiedToday = sinceMs > 0
+      ? d.prepare("SELECT COUNT(*) AS n FROM calls WHERE good_lead = 1 AND created_at >= ?").get(sinceMs).n
+      : 0;
+    return { calls, today, qualified, qualifiedToday, bestScore: Number(best) || 0 };
+  } catch { return { calls: 0, today: 0, qualified: 0, qualifiedToday: 0, bestScore: 0 }; }
+}
+
 function stats() {
   const d = db();
   try {
@@ -322,5 +344,5 @@ module.exports = {
   saveCall, getUnsyncedCalls, markCallSynced,
   saveLearning, getLearning,
   queueSync, getUnsyncedSyncLog, markSyncLogSynced,
-  stats,
+  stats, callStats,
 };

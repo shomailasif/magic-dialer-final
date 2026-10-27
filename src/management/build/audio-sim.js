@@ -97,6 +97,8 @@ require(path.join(AGENT, "intelligent-brain.js"));
 })();
 
 const { runLocalCallBody } = require(path.join(AGENT, "local-call-controller.js"));
+/* Secrets in config.json are sealed at rest; read them opened. */
+const { readInstalledConfig } = require("./installed-config.cjs");
 
 /* Must match local-call-controller.js, which calls makeVad({ minSpeechMs: 160 })
  * and then holds the window open a further SPEECH_HOLD_MS. Those are the numbers
@@ -387,9 +389,8 @@ const SCENARIOS = {
 /* ---------- configuration and provider resolution ---------- */
 
 function loadLiveConfig() {
-  const file = path.join(process.env.USERPROFILE || os.homedir(), ".magicdialer", "config.json");
   try {
-    const c = JSON.parse(fs.readFileSync(file, "utf8"));
+    const c = readInstalledConfig();
     return {
       portal: c.portalUrl || null,
       deviceToken: c.deviceToken || null,
