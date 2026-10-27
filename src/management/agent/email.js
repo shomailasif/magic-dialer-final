@@ -74,7 +74,7 @@ async function sendEmail(opts) {
 /**
  * Email a qualified lead. Tries SMTP first, falls back to outbox file.
  *
- * opts: { lead, smtp, contactEmail, product }
+ * opts: { lead, smtp, contactEmail, product, outboxDir }
  */
 async function emailQualifiedLead(opts) {
   const { lead, smtp, contactEmail, product } = opts;
@@ -116,11 +116,17 @@ async function emailQualifiedLead(opts) {
 
   // Fallback: write to outbox
   try {
-    const outboxDir = path.join(process.cwd(), "outbox");
+    /* Not the process's working directory. A packaged install can be started
+     * from Program Files, which is not writable, so the old path turned the
+     * last-resort copy of a qualified lead into an EPERM nobody saw. The caller
+     * passes the engine's own data directory, which always exists and is the
+     * one place the operator can be pointed at. */
+    const outboxDir = path.join(opts.outboxDir || process.cwd(), "outbox");
     fs.mkdirSync(outboxDir, { recursive: true });
     const filename = `lead-${Date.now()}.txt`;
-    fs.writeFileSync(path.join(outboxDir, filename), `To: ${to}\nSubject: ${subject}\n\n${body}`);
-    return { ok: true, method: "outbox", file: filename };
+    const full = path.join(outboxDir, filename);
+    fs.writeFileSync(full, `To: ${to}\nSubject: ${subject}\n\n${body}`);
+    return { ok: true, method: "outbox", file: filename, path: full };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -162,12 +168,15 @@ async function deliverQualifiedLead({ config = {}, result = {}, lead = null, log
       smtp: config.smtp,
       contactEmail: to,
       product: config.product,
+      outboxDir: config.outboxDir,
     });
   } catch (e) {
     r = { ok: false, error: String((e && e.message) || e) };
   }
   log(r.ok
-    ? `Qualified lead emailed to ${to} (${r.method === "smtp" ? "smtp" : "outbox file" + (r.file ? " " + r.file : "")}).`
+    ? (r.method === "smtp"
+      ? `Qualified lead emailed to ${to} from this PC.`
+      : `Qualified lead for ${to} saved to ${r.path || r.file} - no mail server is configured on this PC, so nothing was emailed.`)
     : `Qualified lead email to ${to} failed: ${r.error}`);
   return r;
 }

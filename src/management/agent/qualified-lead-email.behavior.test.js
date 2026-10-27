@@ -71,8 +71,19 @@ async function main() {
     assert.ok(body.includes(LEAD.phone), "the outbox copy must contain the lead's number");
     assert.ok(body.includes("LTL freight"), "the outbox copy must contain the product: " + body.split("\n")[1]);
     assert.ok(/To: owner@example\.com/.test(body), "the outbox copy must be addressed to the operator's contact email");
-    assert.ok(logs.some((m) => /Qualified lead emailed to owner@example\.com \(outbox file/.test(m)),
-      "the operator must be told where it actually went, logs: " + JSON.stringify(logs));
+    assert.ok(logs.some((m) => /Qualified lead for owner@example\.com saved to .*outbox.*nothing was emailed/.test(m)),
+      "the operator must be told where it actually went, and that it was not emailed, logs: " + JSON.stringify(logs));
+
+    /* The engine passes its own data directory: a packaged install can start
+     * from Program Files, where writing the last-resort copy used to fail. */
+    const dataDir = path.join(tmp, "engine-data");
+    const r4b = await deliverQualifiedLead({
+      config: cfg({ smtp: undefined, outboxDir: dataDir }),
+      result: { goodLead: true }, lead: LEAD, log,
+    });
+    assert.equal(r4b.method, "outbox");
+    assert.ok(fs.existsSync(r4b.path), "the saved copy must be readable at the reported path: " + r4b.path);
+    assert.ok(r4b.path.startsWith(dataDir), "the copy must land in the directory the engine chose, not the working directory: " + r4b.path);
 
     // 5. The failure message must name the address, so a mis-typed contact is
     //    diagnosable from the log alone.

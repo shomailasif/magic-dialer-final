@@ -197,6 +197,37 @@ function markCachedLeadCalled(phone) {
   try { db().prepare("UPDATE lead_cache SET called_at = ? WHERE phone = ?").run(Date.now(), p); } catch {}
 }
 
+/* What the dashboard shows about the campaign list. `remaining` is the number
+ * the queue would still dial, which is the only count that means anything to
+ * an operator deciding whether to press Start. */
+function cachedLeadStats() {
+  try {
+    const total = db().prepare("SELECT COUNT(*) AS n FROM lead_cache").get().n;
+    const remaining = db().prepare(`SELECT COUNT(*) AS n FROM lead_cache
+      WHERE called_at IS NULL AND phone NOT IN (SELECT phone FROM do_not_call)`).get().n;
+    return { total, remaining };
+  } catch { return { total: 0, remaining: 0 }; }
+}
+
+/* The last few calls, for the dashboard's results list. Stored since the local
+ * database existed but never written to until now, which is why an operator
+ * who was not watching the log had no record of what the agent said. */
+function recentCalls(limit = 20) {
+  try {
+    return db().prepare(`SELECT id, lead_id, product, score, good_lead, summary, strategies, created_at
+      FROM calls ORDER BY created_at DESC LIMIT ?`).all(limit).map((r) => ({
+      id: r.id,
+      phone: r.lead_id || null,
+      product: r.product || null,
+      score: r.score,
+      goodLead: r.good_lead === 1,
+      summary: r.summary || null,
+      strategies: (() => { try { return JSON.parse(r.strategies || "[]"); } catch { return []; } })(),
+      at: r.created_at ? new Date(r.created_at).toISOString() : null,
+    }));
+  } catch { return []; }
+}
+
 /* Remember a refusal on this PC, so an outage cannot turn it into a second call. */
 function addDoNotCall(phone, reason) {
   const p = String(phone || "").trim();
@@ -286,7 +317,8 @@ process.on("exit", close);
 
 module.exports = {
   open, close, saveLead, updateLead, getUnsyncedLeads, markLeadSynced, allLeads,
-  cacheLeads, cachedLeads, markCachedLeadCalled, addDoNotCall, isDoNotCall,
+  cacheLeads, cachedLeads, markCachedLeadCalled, cachedLeadStats, addDoNotCall,
+  isDoNotCall, recentCalls,
   saveCall, getUnsyncedCalls, markCallSynced,
   saveLearning, getLearning,
   queueSync, getUnsyncedSyncLog, markSyncLogSynced,

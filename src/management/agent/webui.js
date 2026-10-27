@@ -149,7 +149,7 @@ const PAGE = `<!doctype html>
       <div class="step"><div class="n">3</div><div class="t">Finish setup</div></div>
     </div>
     <div class="card" style="padding:22px 24px">
-      <div class="warn-box">One-time setup. After you save, this PC starts as your agent and appears ONLINE in your portal within a few seconds.</div>
+      <div class="warn-box">One-time setup. After you save, this PC starts as your agent within a few seconds. No portal or account is needed.</div>
       <form id="setupForm">
         <div class="sec">
           <h2>Your company</h2>
@@ -246,7 +246,7 @@ const PAGE = `<!doctype html>
         </div>
         <div class="sec" style="border-bottom:0;padding-bottom:0">
           <h2>Finish local setup</h2>
-          <div class="desc">Account connection is handled securely from your logged-in Magic Dialer portal. No access key is required here.</div>
+          <div class="desc">That is everything the agent needs. The subscription trial starts by itself; paste a licence key on the dashboard whenever you have one.</div>
           <div class="inl" style="margin-top:18px">
             <button type="submit" id="saveBtn" class="btn primary">Save &amp; start</button>
             <button type="button" id="cancelBtn" class="btn ghost">Cancel</button>
@@ -290,6 +290,50 @@ const PAGE = `<!doctype html>
       </div>
       <div class="err hidden" id="licErr"></div>
     </div>
+    <div class="card" style="padding:16px 24px">
+      <div class="inl" style="justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1;min-width:260px">
+          <div class="lab">AI brain &amp; hearing</div>
+          <div id="pkLine" style="margin-top:6px">Checking&hellip;</div>
+          <div class="sub" style="margin-top:6px">Free key from console.groq.com/keys. The agent then thinks and transcribes on this PC - no portal, no per-call gateway. Stored encrypted and bound to this Windows user.</div>
+        </div>
+        <div class="inl" style="gap:8px;flex-wrap:wrap;align-self:center">
+          <input id="pkKey" type="password" autocomplete="off" placeholder="Paste Groq API key (gsk_&hellip;)" style="width:300px">
+          <button id="pkSave" class="btn teal">Save key</button>
+          <button id="pkClear" class="btn ghost hidden">Remove key</button>
+        </div>
+      </div>
+      <div class="err hidden" id="pkErr"></div>
+    </div>
+    <div class="card" style="padding:20px 24px">
+      <div class="inl" style="justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1;min-width:240px">
+          <h2 style="font-size:14px;font-weight:600;margin-bottom:4px">Campaign</h2>
+          <div class="sub hidden" id="aiLine" style="color:#b45309;margin-bottom:4px"></div>
+          <div class="sub" id="leadCount">Reading the lead list&hellip;</div>
+        </div>
+        <div class="inl" style="gap:8px;align-items:center;flex-wrap:wrap">
+          <input id="qMax" type="number" min="0" placeholder="all" title="How many calls to make (blank = the whole list)" style="width:100px">
+          <button id="qStart" class="btn primary">Start calling</button>
+          <button id="qStop" class="btn ghost hidden">Stop</button>
+        </div>
+      </div>
+      <div class="sub" id="qLine" style="margin-top:10px"></div>
+      <div class="err hidden" id="qErr"></div>
+      <div style="margin-top:16px">
+        <label for="leadText">Add phone numbers &mdash; one per line, or name, phone</label>
+        <textarea id="leadText" rows="3" placeholder="Zaz Dispatch, +1 555 123 4567&#10;+1 555 987 6543" style="width:100%;border:1px solid #d7dde5;border-radius:10px;padding:10px;font:inherit;resize:vertical"></textarea>
+        <div class="inl" style="margin-top:8px">
+          <button id="leadAdd" class="btn teal">Add to this PC</button>
+          <span class="sub" id="leadMsg"></span>
+        </div>
+        <div class="desc">Duplicate numbers are ignored. Numbers this PC has already called are never dialled again.</div>
+      </div>
+    </div>
+    <div class="card" style="padding:20px 24px">
+      <h2 style="font-size:14px;font-weight:600;margin-bottom:8px">Recent calls</h2>
+      <div id="calls" class="sub">No calls yet.</div>
+    </div>
     <div class="card" style="padding:20px 24px">
       <h2 style="font-size:14px;font-weight:600;margin-bottom:8px">Recent activity</h2>
       <ul class="feed" id="feed"><li class="empty">No activity yet.</li></ul>
@@ -300,7 +344,7 @@ const PAGE = `<!doctype html>
     <div class="card"><div class="center">
       <div class="bigcheck"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></div>
       <h2>All set. Your agent is running.</h2>
-      <p>This window can be closed. Magic Dialer is now working on this PC and will appear ONLINE in your portal in a few seconds.</p>
+      <p>This window can be closed. Magic Dialer is now working on this PC - open the dashboard any time to add numbers and start calling.</p>
       <button id="doneBtn" class="btn primary">Close this window</button>
     </div></div>
   </div>
@@ -371,6 +415,15 @@ function renderStatus(p){
    * operator has to be told. Applied after the stale check for that reason. */
   if(p.license&&p.license.ok===false){eff=Object.assign({},eff,{status:p.license.status,line:p.license.line||eff.line});}
   renderLicense(p.license);
+  /* A key is the one thing a fresh PC cannot provide for itself, and without
+   * it the agent dials and stays silent. Said next to the Campaign card, which
+   * is where it is about to be a problem - and only when there is no portal
+   * gateway to fall back to. */
+  if($id("aiLine")){
+    var need=!!(p.aiKey&&p.aiKey.configured===false&&p.portalConfigured===false);
+    $id("aiLine").textContent=need?"No AI key yet - add a free Groq key above, or calls will connect with no voice.":"";
+    $id("aiLine").classList.toggle("hidden",!need);
+  }
   renderPill(eff);
   renderStats(eff.stats);
   renderFeed(eff.logs);
@@ -408,19 +461,74 @@ async function applyLicense(clear){
 $id("licApply").addEventListener("click",function(){applyLicense(false)});
 $id("licClear").addEventListener("click",function(){if(window.confirm("Remove the licence key from this PC?"))applyLicense(true)});
 $id("licKey").addEventListener("keydown",function(e){if(e.key==="Enter")applyLicense(false)});
+
+/* AI brain and hearing.
+ *
+ * This was the last thing a fresh PC could not do without the hosted portal:
+ * the agent could dial from its own lead list, but every turn went to a gateway
+ * that no longer answers, so it rang people and said nothing. The key is the
+ * customer's own free Groq key. It is stored encrypted on this PC and never
+ * leaves it except to the provider, and a key supplied by the environment is
+ * shown as such because it cannot be removed from here. */
+function renderProviderKey(p){
+  var line=$id("pkLine"),clear=$id("pkClear");
+  if(!p){line.textContent="AI key status unavailable.";clear.classList.add("hidden");return}
+  if(p.configured){
+    line.textContent=p.source==="environment"
+      ? "AI key supplied by the environment - the agent can think and hear."
+      : "AI key saved on this PC - the agent can think and hear.";
+  }else{
+    line.textContent="No AI key yet. Without one the agent cannot understand a reply or speak an answer.";
+  }
+  /* An environment key is not this page's to remove. */
+  clear.classList.toggle("hidden",!(p.configured&&p.source!=="environment"));
+}
+async function loadProviderKey(){
+  try{var r=await fetch("/api/provider-key");var d=await r.json();renderProviderKey(d.ok?d:null)}
+  catch(e){renderProviderKey(null)}
+}
+async function saveProviderKey(clear){
+  var err=$id("pkErr");err.classList.add("hidden");err.textContent="";
+  var key=$id("pkKey").value.trim();
+  if(!clear&&!key){err.textContent="Paste a key first.";err.classList.remove("hidden");return}
+  try{
+    var r=await fetch("/api/provider-key",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(clear?{clear:true}:{key:key})});
+    var d=await r.json();
+    if(!d.ok){err.textContent=d.error||"That key could not be saved.";err.classList.remove("hidden");return}
+    $id("pkKey").value="";
+    renderProviderKey(d);
+  }catch(e){err.textContent="Could not reach the engine. Try again in a moment.";err.classList.remove("hidden")}
+}
+$id("pkSave").addEventListener("click",function(){saveProviderKey(false)});
+$id("pkClear").addEventListener("click",function(){if(window.confirm("Remove the AI key from this PC? The agent will stop being able to talk."))saveProviderKey(true)});
+$id("pkKey").addEventListener("keydown",function(e){if(e.key==="Enter")saveProviderKey(false)});
 async function loadState(){
   try{
     var r=await fetch("/api/state");var s=await r.json();
-    state=s;
-    if(s.configured){$id("setupView").classList.add("hidden");$id("doneView").classList.add("hidden");$id("dashView").classList.remove("hidden");document.title="Magic Dialer — Dashboard";tick();setInterval(tick,2000)}
+    state.configured=!!s.configured;
+    if(s.configured)enterDashboard();
     else{$id("dashView").classList.add("hidden");$id("doneView").classList.add("hidden");$id("setupView").classList.remove("hidden");document.title="Magic Dialer — Setup"}
   }catch(e){}
 }
+/* Setup used to end by closing its own window, which left a brand-new customer
+ * with no window at all - and therefore no way to reach the AI key field that
+ * decides whether the agent can speak. Land them on the dashboard instead. */
+function enterDashboard(){
+  $id("setupView").classList.add("hidden");
+  $id("doneView").classList.add("hidden");
+  $id("dashView").classList.remove("hidden");
+  document.title="Magic Dialer — Dashboard";
+  tick();loadLeads();loadCalls();queueTick();loadProviderKey();
+  if(!state.timer)state.timer=setInterval(tick,2000);
+}
+var tickN=0;
 async function tick(){
   try{var r=await fetch("/api/status");var p=await r.json();
     state.mode=p.mode||state.mode||"on";
     if(p.done&&$id("doneView").classList.contains("hidden")&&!state.configured)return;
     renderStatus(p);
+    queueTick();
+    if((++tickN%5)===0){loadCalls();loadLeads()}
   }catch(e){}
 }
 $id("setupForm").addEventListener("submit",async function(ev){
@@ -451,9 +559,8 @@ $id("setupForm").addEventListener("submit",async function(ev){
     var r=await fetch("/api/setup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
     var j=await r.json();
     if(!r.ok||!j.ok){$id("setupErr").textContent=j.error||"Setup failed. Please try again.";btn.disabled=false;btn.textContent="Save & start";return}
-    $id("setupView").classList.add("hidden");
-    $id("doneView").classList.remove("hidden");
-    setTimeout(function(){window.close()},1800);
+    state.configured=true;
+    enterDashboard();
   }catch(e){$id("setupErr").textContent="Could not reach the local agent service.";btn.disabled=false;btn.textContent="Save & start"}
 });
 $id("voipTestBtn").addEventListener("click",async function(){
@@ -472,6 +579,67 @@ $id("cancelBtn").addEventListener("click",function(){window.close()});
 $id("doneBtn").addEventListener("click",function(){window.close()});
 $id("pauseBtn").addEventListener("click",async function(){await fetch("/api/pause",{method:"POST"});state.mode="off";tick()});
 $id("resumeBtn").addEventListener("click",async function(){await fetch("/api/resume",{method:"POST"});state.mode="on";tick()});
+
+/* ── the local campaign ──────────────────────────────────────────────────
+ * The portal used to own the lead upload, the Start button and the results
+ * page. All three are here now, because this PC is where the calls happen
+ * and there may be no portal at all. */
+async function loadLeads(){
+  try{
+    var r=await fetch("/api/leads");var d=await r.json();
+    if(!d.ok){$id("leadCount").textContent="Lead list unavailable.";return}
+    $id("leadCount").textContent=(d.remaining||0)+" waiting"+(d.total?(" of "+(d.total)+" on this PC"):"");
+  }catch(e){}
+}
+async function loadCalls(){
+  try{
+    var r=await fetch("/api/calls");var d=await r.json();
+    if(!d.ok||!d.calls||!d.calls.length){$id("calls").textContent="No calls yet.";return}
+    $id("calls").innerHTML='<table style="width:100%;border-collapse:collapse;font-size:13px">'+d.calls.map(function(c){
+      var t="";try{t=new Date(c.at).toLocaleString()}catch(e){}
+      return '<tr><td style="padding:6px 8px;border-bottom:1px solid #eef2f7">'+escap(c.phone||"")+'</td>'+
+        '<td style="padding:6px 8px;border-bottom:1px solid #eef2f7">'+(c.goodLead?'<b style="color:#15803d">qualified</b>':"no lead")+'</td>'+
+        '<td style="padding:6px 8px;border-bottom:1px solid #eef2f7">'+escap(c.score==null?"":String(c.score))+'</td>'+
+        '<td style="padding:6px 8px;border-bottom:1px solid #eef2f7">'+escap(t)+'</td></tr>';
+    }).join("")+'</table>';
+  }catch(e){}
+}
+async function queueTick(){
+  try{
+    var r=await fetch("/api/queue/status");var d=await r.json();
+    var running=!!d.running;
+    $id("qStart").classList.toggle("hidden",running);
+    $id("qStop").classList.toggle("hidden",!running);
+    if(running)$id("qLine").textContent=d.summary?("Running - "+d.summary.attempted+" called, "+d.summary.qualified+" qualified."):"Running...";
+    else if(d.summary)$id("qLine").textContent="Last run - "+d.summary.attempted+" called, "+d.summary.qualified+" qualified.";
+  }catch(e){}
+}
+$id("qStart").addEventListener("click",async function(){
+  var err=$id("qErr");err.classList.add("hidden");err.textContent="";
+  try{
+    var r=await fetch("/api/queue/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({maxCalls:Number($id("qMax").value)||0})});
+    var d=await r.json();
+    if(!r.ok||!d.ok){err.textContent=d.error||"Could not start the queue.";err.classList.remove("hidden");return}
+    $id("qLine").textContent="Starting the campaign...";
+    queueTick();
+  }catch(e){err.textContent="Could not reach the engine.";err.classList.remove("hidden")}
+});
+$id("qStop").addEventListener("click",async function(){await fetch("/api/queue/stop",{method:"POST"});queueTick()});
+$id("leadAdd").addEventListener("click",async function(){
+  var msg=$id("leadMsg"),btn=$id("leadAdd");
+  var text=$id("leadText").value;
+  if(!text.trim()){msg.textContent="Paste at least one number.";return}
+  btn.disabled=true;msg.textContent="Saving...";
+  try{
+    var r=await fetch("/api/leads",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({numbers:text})});
+    var d=await r.json();
+    if(!r.ok||!d.ok){msg.textContent=d.error||"Could not save those numbers.";btn.disabled=false;return}
+    msg.textContent=d.added+" number(s) saved - "+(d.remaining||0)+" waiting.";
+    $id("leadText").value="";
+    loadLeads();
+  }catch(e){msg.textContent="Could not reach the engine."}
+  btn.disabled=false;
+});
 loadState();
 </script>
 </body>
@@ -585,7 +753,52 @@ async function startWebUi(opts) {
     }
     if (req.method === "GET" && p === "/api/state") {
       const cfg = opts.readConfig();
-      sendJson(res, 200, { configured: !!(cfg && (cfg.deviceToken || cfg.token) && cfg.portalUrl) });
+      /* Setup is complete once the customer has described their business.
+       * Requiring a device token and a portal URL here made a fresh install
+       * loop back to the setup screen after every save, because those fields
+       * only ever came from a portal that no longer exists. */
+      sendJson(res, 200, {
+        configured: !!(cfg && String(cfg.companyName || "").trim() && String(cfg.product || "").trim()),
+      });
+      return;
+    }
+    /* The campaign list and its results, served from this PC.
+     *
+     * These are the portal's upload/leads/results pages rewritten as three
+     * local routes. Without them a customer with no portal had no way to put a
+     * number into the engine, and a qualified lead existed only as an email. */
+    if (req.method === "GET" && p === "/api/leads") {
+      const api = opts.leads;
+      if (!api) { sendJson(res, 503, { ok: false, error: "Lead list unavailable." }); return; }
+      try {
+        const stats = api.stats();
+        /* Only what a person reads. The stored row can carry a scraper's whole
+         * extraData blob, and shipping fifty of those would make this response
+         * megabytes for a table that shows three columns. */
+        const leads = api.list(50).map((l) => ({
+          id: l.id || null, name: l.name || null, phone: l.phone || null, status: l.status || null,
+        }));
+        sendJson(res, 200, { ok: true, ...stats, leads });
+      } catch (e) { sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not read the lead list." }); }
+      return;
+    }
+    if (req.method === "POST" && p === "/api/leads") {
+      const api = opts.leads;
+      if (!api) { sendJson(res, 503, { ok: false, error: "Lead list unavailable." }); return; }
+      const body = await readJson(req);
+      const text = String((body && body.numbers) || "");
+      if (!text.trim()) { sendJson(res, 400, { ok: false, error: "Paste at least one phone number." }); return; }
+      try {
+        const r = api.import(text);
+        sendJson(res, 200, { ok: true, ...r });
+      } catch (e) { sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not save those numbers." }); }
+      return;
+    }
+    if (req.method === "GET" && p === "/api/calls") {
+      const api = opts.leads;
+      if (!api || typeof api.recent !== "function") { sendJson(res, 503, { ok: false, error: "Call history unavailable." }); return; }
+      try { sendJson(res, 200, { ok: true, calls: api.recent(20) }); }
+      catch (e) { sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not read the call history." }); }
       return;
     }
     /* The customer's own AI provider key, and whether one is held.
@@ -633,6 +846,12 @@ async function startWebUi(opts) {
           if (l && l.ok === false) { feed.status = l.status; feed.line = l.line || feed.line; }
         } catch {}
       }
+      /* Whether this PC can think and hear, and whether a portal gateway could
+       * stand in. The dashboard needs both to decide whether to warn about the
+       * missing AI key - a customer with a licence and no key would otherwise
+       * only find out by placing a silent call. */
+      try { feed.aiKey = require("./provider-key").providerKeyStatus(); } catch {}
+      try { feed.portalConfigured = typeof opts.portalConfigured === "function" ? !!opts.portalConfigured() : false; } catch {}
       sendJson(res, 200, feed);
       return;
     }

@@ -54,6 +54,7 @@ const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate, _test: aut
 const { reEnrollSelf: reEnrollSelfImpl } = require("./self-reenroll");
 const { safeLog } = require("./safe-diagnostic");
 const { createLicenseGate } = require("./license-gate");
+const { parseLeadText } = require("./lead-queue");
 
 /**
  * Customer PC agent.
@@ -269,7 +270,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.84";
+const VERSION = "1.4.85";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -409,6 +410,37 @@ function pushActivity(config, msg) {
   return feed;
 }
 
+/* "Configured" means the customer has described their business on this PC.
+ * It used to mean "holds a device token and a portal URL", which made a fresh
+ * install impossible to finish once the hosted portal was gone: setup saved,
+ * the dashboard reloaded, and it asked for setup again while the call button
+ * refused with "not enrolled". The business details are what the agent needs
+ * to talk; a portal is optional. */
+function isConfigured(config) {
+  return Boolean(config && String(config.companyName || "").trim() && String(config.product || "").trim());
+}
+
+function portalConfigured(config) {
+  return Boolean(config && String(config.portalUrl || "").trim());
+}
+
+/* Persist one call where the operator can see it even when no portal exists.
+ * The table was created with the local database but nothing ever wrote to it,
+ * so the only record of a call was a log line and the email. */
+function recordCall(config, result, lead) {
+  try {
+    localDb.saveCall({
+      leadId: (lead && lead.phone) || null,
+      product: (config && config.product) || null,
+      transcript: result && result.transcript,
+      score: result && result.score,
+      goodLead: !!(result && result.goodLead),
+      summary: result && result.summary,
+      strategies: result && result.strategies,
+    });
+  } catch (e) { try { log("Could not store the call result locally: " + safeLog(e)); } catch {} }
+}
+
 function post(url, body) {
   const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
   const timer = ac ? setTimeout(() => ac.abort(), 15000) : null;
@@ -525,7 +557,7 @@ async function runAgent(opts = {}) {
       getStatus: () => "online",
       onCall: async (number) => {
         const liveConfig = loadConfig(cfgPath);
-        if (!liveConfig || !liveConfig.deviceToken || !liveConfig.portalUrl || !liveConfig.portalSyncedAt) throw new Error("This PC is not enrolled and synchronized with the portal");
+        if (!isConfigured(liveConfig)) throw new Error("Set up your company and product on the dashboard first");
         licenseGate.assertAllowsCall();
         log("LOCAL CALL CONTROL: " + number);
         return runLocalCall({
@@ -586,7 +618,7 @@ async function runAgent(opts = {}) {
 
       onCall: async (number) => {
         const liveConfig = loadConfig(cfgPath);
-        if (!liveConfig || !liveConfig.deviceToken || !liveConfig.portalUrl || !liveConfig.portalSyncedAt) throw new Error("This PC is not enrolled and synchronized with the portal");
+        if (!isConfigured(liveConfig)) throw new Error("Set up your company and product on the dashboard first");
         licenseGate.assertAllowsCall();
         log("LOCAL DASHBOARD CALL CONTROL: " + number);
         return runLocalCall({ config: liveConfig, number, onLog: (m) => log(m), onMode: () => {} });
@@ -618,6 +650,17 @@ async function runAgent(opts = {}) {
       queueIsRunning,
       startQueue: async (arg) => {
         if (queueIsRunning()) return { ok: true, alreadyRunning: true };
+        /* A campaign of silent calls is worse than not starting: the line is
+         * answered, the agent has no brain and no hearing, and the lead is
+         * spent. Refused only when there is nothing that could answer - a
+         * portal gateway is an equally valid way to think. */
+        try {
+          const live = loadConfig(cfgPath) || {};
+          const { providerKeyStatus } = require("./provider-key");
+          if (!providerKeyStatus().configured && !portalConfigured(live)) {
+            return { ok: false, error: "Add a free AI key (console.groq.com/keys) first - otherwise the agent dials and says nothing." };
+          }
+        } catch { /* the check is a courtesy; never block on it failing */ }
         /* Same process as this one - the queue uses the enrolled token and the
          * live lease, and a second agent would only take the lease from us. Not
          * awaited: a call takes minutes and the button must return at once. */
@@ -628,6 +671,22 @@ async function runAgent(opts = {}) {
         return { ok: true, started: true };
       },
       serviceName: "Magic Dialer",
+      /* Read live, not once: a portal URL can be added or removed while the
+       * dashboard is open, and the AI-key warning depends on it. */
+      portalConfigured: () => portalConfigured(loadConfig(cfgPath) || {}),
+      /* The local lead list and result history. With no portal these replace
+       * its upload/leads/results pages, because this PC is now the only place
+       * an operator can put numbers in or read what happened. */
+      leads: {
+        stats: () => localDb.cachedLeadStats(),
+        list: (limit) => localDb.cachedLeads(limit),
+        import: (text) => {
+          const parsed = parseLeadText(text);
+          const added = localDb.cacheLeads(parsed);
+          return Object.assign({ added, parsed: parsed.length }, localDb.cachedLeadStats());
+        },
+        recent: (limit) => localDb.recentCalls(limit),
+      },
       /* The dashboard reads this to show whether this PC may call, and to
        * collect the activation code the customer sends us to be granted a key. */
       licenseGate,
@@ -642,57 +701,51 @@ async function runAgent(opts = {}) {
     if (!opened) { opened = true; openBrowser(url); }
   };
 
-  if (!config || (!config.deviceToken && !config.token) || !config.portalUrl) {
+  if (!isConfigured(config)) {
     config = config || {};
     config.machineId = config.machineId || crypto.randomUUID();
     config.lang = config.lang || "en";
     config.voiceStyle = config.voiceStyle || "human";
 
+    /* A portal link is still honoured when one is passed in, but it is never a
+     * precondition: this PC holds the line, the leads and the brain, so the
+     * customer's business details are the whole setup. */
     if (opts.portalUrl && opts.token) {
       config.portalUrl = opts.portalUrl;
       config.token = opts.token;
       saveConfig(config, cfgPath);
     }
 
-    if ((!config.deviceToken && !config.token) || !config.portalUrl) {
-      log("No config yet - setting up.");
-      if (useWebUi) {
-        const srv = await ensureWebUi();
-        log("Opening setup in the browser...");
-        maybeOpen(srv.url);
-        log("Waiting for the onboarding form to be saved...");
-        config = await setupDone;
-        log("Onboarding saved. Starting the agent.");
-      } else {
-        config.portalUrl = opts.portalUrl || (await ask("Magic Dialer portal URL (from your admin):"));
-        config.token = opts.token || (await ask("Your Magic Dialer access token (from your admin):"));
-        saveConfig(config, cfgPath);
-        log("Config saved.");
-      }
-    }
-  }
-
-  // Dev/console onboarding (only when not using the web app).
-  if (opts.setup === true && !useWebUi) {
-    log("");
-    log("MAGIC DIALER - one-time console setup");
-    config.product = await ask("What do you sell / what services do you provide?");
-    config.leadFieldsRaw = await ask("What do you need from a qualified lead (comma-separated)?");
-    config.contactEmail = await ask("Where should qualified leads be emailed?");
-    config.leadFields = config.leadFieldsRaw.split(",").map((s) => s.trim()).filter(Boolean);
-    log("Optional: your phone/VOIP line (press Enter on each to skip and configure later)");
-    config.voip = config.voip || {};
-    config.voip.provider = (await ask("VOIP provider (RingCentral is the supported provider - type 'ringcentral', or Enter to skip):")).trim() || config.voip.provider || "";
-    config.voip.number = (await ask("Your outbound phone number? (Enter = none yet):")).trim() || config.voip.number || "";
-    config.voip.username = (await ask("SIP username/account? (Enter = none yet):")).trim() || config.voip.username || "";
-    config.voip.server = (await ask("SIP domain/server (e.g. sip.example.com)? (Enter = none yet):")).trim() || config.voip.server || "";
-    if (!config.voip.provider && !config.voip.number && !config.voip.username && !config.voip.server) {
-      config.voip.ready = false;
+    log("No setup on this PC yet.");
+    if (useWebUi) {
+      const srv = await ensureWebUi();
+      log("Opening setup in the browser...");
+      maybeOpen(srv.url);
+      log("Waiting for the onboarding form to be saved...");
+      config = await setupDone;
+      log("Onboarding saved. Starting the agent.");
     } else {
-      config.voip.ready = true;
+      log("");
+      log("MAGIC DIALER - one-time console setup");
+      config.companyName = (await ask("Your company name?")) || config.companyName || "";
+      config.product = (await ask("What do you sell / what services do you provide?")) || config.product || "";
+      config.leadFieldsRaw = await ask("What do you need from a qualified lead (comma-separated)?");
+      config.contactEmail = await ask("Where should qualified leads be emailed?");
+      config.leadFields = String(config.leadFieldsRaw || "").split(",").map((s) => s.trim()).filter(Boolean);
+      log("Optional: your phone/VOIP line (press Enter on each to skip and configure later)");
+      config.voip = config.voip || {};
+      config.voip.provider = (await ask("VOIP provider (RingCentral is the supported provider - type 'ringcentral', or Enter to skip):")).trim() || config.voip.provider || "";
+      config.voip.number = (await ask("Your outbound phone number? (Enter = none yet):")).trim() || config.voip.number || "";
+      config.voip.username = (await ask("SIP username/account? (Enter = none yet):")).trim() || config.voip.username || "";
+      config.voip.server = (await ask("SIP domain/server (e.g. sip.example.com)? (Enter = none yet):")).trim() || config.voip.server || "";
+      if (!config.voip.provider && !config.voip.number && !config.voip.username && !config.voip.server) {
+        config.voip.ready = false;
+      } else {
+        config.voip.ready = true;
+      }
+      saveConfig(config, cfgPath);
+      log("Setup complete.");
     }
-    saveConfig(config, cfgPath);
-    log("Setup complete.");
   }
 
   if (useWebUi) {
@@ -745,11 +798,11 @@ async function runAgent(opts = {}) {
   log("");
   log("Magic Dialer v" + VERSION + " - running");
   log("  Customer : " + (config.companyName || config.product || productLabel));
-  log("  Portal   : " + portal);
+  log("  Portal   : " + (portal || "(none - this PC runs the campaign locally)"));
   if (uiServer) log("  Dashboard: " + uiServer.url);
   log("");
 
-  const enrolledToken = config.deviceToken || config.token;
+  const enrolledToken = config.deviceToken || config.token || "";
   let stopHeartbeat = false;
   /* When the portal first stopped answering, in ms since epoch; 0 while healthy.
    * Feeds portalDownState() so the dashboard can tell a blip from an outage. */
@@ -757,6 +810,22 @@ async function runAgent(opts = {}) {
 
   const heartbeatTask = (async () => {
     while (!stopHeartbeat) {
+    /* No portal is a supported way to run, not a failure to connect. The old
+     * loop posted to ""/api/heartbeat, caught a URL error, and painted the
+     * dashboard OFFLINE "Reconnecting to portal..." on a PC that was perfectly
+     * able to call. A local tick reports what is actually true: the saved lead
+     * list, the stored results, ONLINE, no network. */
+    if (!portalConfigured(config)) {
+      try {
+        const stats = localDb.stats();
+        const leads = localDb.cachedLeadStats();
+        const line = `Local mode - ${leads.remaining} lead(s) waiting, ${stats.calls} call(s) stored on this PC.`;
+        log("local tick | " + line);
+        ui({ status: "ONLINE", mode: config.mode || "on", line });
+      } catch (e) { log("local tick failed: " + safeLog(e)); }
+      if (!stopHeartbeat) await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
+      continue;
+    }
     try {
       const syncPayload = sync.buildSyncPayload();
       const heartbeatPortal = String(config.portalUrl || portal).replace(/\/+$/, "");
@@ -894,12 +963,16 @@ async function runAgent(opts = {}) {
       });
       config.learning = result.learning;
       bumpStats(config, result);
+      recordCall(config, result, { phone: destination });
+      if (result.learning) { try { localDb.saveLearning("main", result.learning); } catch {} }
       /* The portal emails the result it accepts. When it cannot take one -
        * which is every day now that the hosting is gone - this PC sends the
        * lead instead, so a qualified prospect is never lost to a dead site. */
-      const mail = await deliverQualifiedLead({ config, result, lead: { phone: destination }, log });
+      const mail = await deliverQualifiedLead({ config: { ...config, outboxDir: configDir }, result, lead: { phone: destination }, log });
       pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? (mail && mail.ok
-        ? (mail.method === "portal" ? ". Emailed by the portal" : ". EMAILED to " + config.contactEmail)
+        ? (mail.method === "portal" ? ". Emailed by the portal"
+          : mail.method === "smtp" ? ". EMAILED to " + config.contactEmail
+          : ". SAVED to " + (mail.path || mail.file) + " - no mail server is configured")
         : ". EMAIL FAILED - see the log") : ""}`);
       saveConfig(config, cfgPath);
       const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;
@@ -968,15 +1041,18 @@ async function runAgent(opts = {}) {
              * stops with a line the dashboard can show. */
             licenseGate.assertAllowsCall();
             /* A PC that has lost its authorisation repairs itself before ringing
-             * anyone, rather than dialling deaf. */
-            try {
-              const probe = await post(String(portal).replace(/\/+$/, "") + "/api/heartbeat", {
-                deviceToken: config.deviceToken || config.token, voipReady: !!(config.voip && config.voip.ready), sync: null,
-              });
-              if (probe.status === 401 || probe.status === 403 || probe.status === 409) {
-                await reEnrollSelf(cfgPath, config, "pre-dial authorisation check");
-              }
-            } catch { /* the pre-dial gate below still refuses to dial */ }
+             * anyone, rather than dialling deaf. There is nothing to repair
+             * without a portal, so the request is skipped entirely. */
+            if (portalConfigured(config) && (config.deviceToken || config.token)) {
+              try {
+                const probe = await post(String(portal).replace(/\/+$/, "") + "/api/heartbeat", {
+                  deviceToken: config.deviceToken || config.token, voipReady: !!(config.voip && config.voip.ready), sync: null,
+                });
+                if (probe.status === 401 || probe.status === 403 || probe.status === 409) {
+                  await reEnrollSelf(cfgPath, config, "pre-dial authorisation check");
+                }
+              } catch { /* the licence gate below still refuses to dial */ }
+            }
             /* The same local call path the dashboard's call button uses, which is
              * the path this account actually dials on - the portal session route
              * is not what makes these calls. voiceCall inside it still posts the
@@ -991,6 +1067,8 @@ async function runAgent(opts = {}) {
             });
             if (result && result.learning) config.learning = result.learning;
             bumpStats(config, result || {});
+            recordCall(config, result || {}, lead);
+            if (result && result.learning) { try { localDb.saveLearning("main", result.learning); } catch {} }
             /* Same handover the single-call path makes: whatever the portal
              * could not take, this PC sends before the next lead is dialled.
              * The outcome rides back on the result so the queue can tell the
@@ -998,8 +1076,15 @@ async function runAgent(opts = {}) {
              * how someone ends up believing a lead was delivered when it was
              * not. */
             const out = result || {};
-            const mail = await deliverQualifiedLead({ config, result: out, lead, log });
-            if (out.goodLead) out.leadEmailed = Boolean(mail && mail.ok);
+            const mail = await deliverQualifiedLead({ config: { ...config, outboxDir: configDir }, result: out, lead, log });
+            /* Three outcomes, not two. A lead saved to a file on this PC was not
+             * emailed, and saying it was is exactly the kind of false claim this
+             * handover exists to stop. */
+            if (out.goodLead) {
+              out.leadEmailed = Boolean(mail && mail.ok && mail.method !== "outbox");
+              out.leadSaved = Boolean(mail && mail.ok && mail.method === "outbox");
+              if (out.leadSaved) out.leadFile = mail.path || mail.file || null;
+            }
             saveConfig(config, cfgPath);
             return out;
           },

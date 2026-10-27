@@ -195,7 +195,7 @@ function createLicenseGate({
     const text = String(raw || "").trim();
     if (!text) return clear();
     const machine = machineId();
-    if (!machine) return { ok: false, error: "This PC is not enrolled yet - it has no activation code to licence." };
+    if (!machine) return { ok: false, error: "This PC has no activation code yet - open the dashboard once so it can create one." };
 
     const v = lic.verify(text, machine);
     if (!v.ok) return { ok: false, error: v.message };

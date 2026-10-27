@@ -78,6 +78,15 @@ The engine is separate from the portal simulation below: its sales research is
 live and free (the customer's own site plus Wikipedia and public search), and it
 places calls through a real RingCentral softphone, not a stub.
 
+**No portal is required to run it.** A customer installs, describes their
+business, and pastes a free Groq key (`console.groq.com/keys`) on the dashboard;
+the agent then dials from the lead list saved on that PC and stores every call
+locally. The dashboard owns the campaign: paste numbers, Start/Stop, and read
+the calls back. Qualified leads are emailed if the customer configured an SMTP
+server, and otherwise saved as files beside the local database, with the path
+shown in the activity feed. A portal URL and device token are optional and only
+add remote sync.
+
 ## Notes on Simulation
 
 Dialer calls and AI lead generation are **simulated** (no live
