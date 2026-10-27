@@ -15,11 +15,13 @@
  *     locally, needs no network, so a customer whose internet drops keeps
  *     working until their term actually ends.
  *
- *  2. Has this licence been revoked early - stopped paying?
- *     Only a remote file can answer that. The engine reads a small public
- *     list of revoked licence ids on a timer. Granting is "sign a licence";
- *     suspending is "add its id to that list and push". Seconds, no URL of
- *     the vendor's, nothing to host.
+ *  2. Has this licence been stopped early - not paid, or cancelled?
+ *     Only remote files can answer that. The engine reads two small public
+ *     lists on a timer: suspended.json for a temporary hold (late payment,
+ *     reversible) and revoked.json for a cancelled account (permanent).
+ *     Granting is "sign a licence"; suspending is "add its id to one list and
+ *     push"; reinstating is "remove it again". Seconds, no URL of the
+ *     vendor's, nothing to host.
  *
  * WHY THIS FILE CONTAINS ONLY VERIFICATION
  *
@@ -74,6 +76,14 @@ let vendorPublicKeyB64 = "MCowBQYDK2VwAyEAZ74uPnE8ARIvDeMLELPQFLjGIiU6k18qC/aXpz
 const DEFAULT_REVOCATION_URL =
   process.env.LICENSE_REVOCATION_URL ||
   "https://raw.githubusercontent.com/shomailasif/magic-dialer-final/main/licenses/revoked.json";
+
+/* A second public list for a temporary hold - the customer has not paid yet,
+ * and the copy is meant to come back the moment they do. Kept apart from the
+ * revocation list so the dashboard can say "suspended, pay to resume" instead
+ * of "cancelled", which is what an account that is gone deserves. */
+const DEFAULT_SUSPENSION_URL =
+  process.env.LICENSE_SUSPENSION_URL ||
+  "https://raw.githubusercontent.com/shomailasif/magic-dialer-final/main/licenses/suspended.json";
 
 /* Licence strings are recognisable and self-describing so a truncated or
  * mangled paste is reported as such rather than as a mysterious failure. */
@@ -192,10 +202,10 @@ function verify(raw, machineId, now = Date.now()) {
   return { ok: true, payload: p };
 }
 
-/* Read the public revocation list. Deliberately a plain GET of a static file:
- * it carries no licence, no machine id and no customer detail, so the host
+/* Read one public id list. Deliberately a plain GET of a static file: it
+ * carries no licence, no machine id and no customer detail, so the host
  * serving it learns nothing about who is asking. */
-async function fetchRevoked(url = DEFAULT_REVOCATION_URL, opts = {}) {
+async function fetchList(url, opts = {}) {
   const fetchImpl = opts.fetchImpl || (typeof fetch === "function" ? fetch : null);
   if (!fetchImpl) return { ok: false, error: "no fetch" };
 
@@ -216,14 +226,34 @@ async function fetchRevoked(url = DEFAULT_REVOCATION_URL, opts = {}) {
     if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
     const body = await res.text();
     const parsed = JSON.parse(body);
-    const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed && parsed.revoked) ? parsed.revoked : null;
+    const list = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed && parsed.revoked)
+        ? parsed.revoked
+        : Array.isArray(parsed && parsed.suspended)
+          ? parsed.suspended
+          : null;
     if (!list) return { ok: false, error: "malformed list" };
-    return { ok: true, revoked: new Set(list.map(String)), updated: (parsed && parsed.updated) || null };
+    return { ok: true, ids: new Set(list.map(String)), updated: (parsed && parsed.updated) || null };
   } catch (e) {
     return { ok: false, error: (e && e.message) || "fetch failed" };
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/* The public lists, in the shape each caller already expects. `revoked.json`
+ * means cancelled; `suspended.json` means held until payment. */
+async function fetchRevoked(url = DEFAULT_REVOCATION_URL, opts = {}) {
+  const r = await fetchList(url, opts);
+  if (!r.ok) return r;
+  return { ok: true, revoked: r.ids, updated: r.updated };
+}
+
+async function fetchSuspended(url = DEFAULT_SUSPENSION_URL, opts = {}) {
+  const r = await fetchList(url, opts);
+  if (!r.ok) return r;
+  return { ok: true, suspended: r.ids, updated: r.updated };
 }
 
 /* Turn every input into one of a handful of states the dashboard can show.
@@ -242,6 +272,7 @@ function evaluate({
   machineId,
   now = Date.now(),
   revocation = null,       // { ok, revoked:Set, error } | null = not checked yet
+  suspension = null,       // { ok, suspended:Set, error } | null = not checked yet
   lastVerifiedAt = 0,      // ms of the last successful revocation read
   grantTime = 0,           // ms when this licence was activated
   firstSeenAt = 0,         // ms when this engine first ran on this PC
@@ -287,27 +318,45 @@ function evaluate({
    * brand new install is not blocked before it has ever been online. */
   const reference = lastVerifiedAt || grantTime || now;
   const age = now - reference;
+  const id = String(v.payload.id);
 
-  if (revocation && revocation.ok) {
-    if (revocation.revoked.has(String(v.payload.id))) {
-      return {
-        state: "suspended",
-        ok: false,
-        message: "This subscription has been suspended. Contact your provider to continue.",
-        payload: v.payload,
-      };
-    }
+  /* Two public answers, checked in this order. Cancelled wins: an account that
+   * is gone must never display as merely overdue, because "suspended" invites
+   * the customer to wait for a reinstatement that is not coming. */
+  if (revocation && revocation.ok && revocation.revoked && revocation.revoked.has(id)) {
+    return {
+      state: "cancelled",
+      ok: false,
+      message: "This subscription has been cancelled. Contact your provider if you believe this is a mistake.",
+      payload: v.payload,
+    };
+  }
+  if (suspension && suspension.ok && suspension.suspended && suspension.suspended.has(id)) {
+    return {
+      state: "suspended",
+      ok: false,
+      message: "This subscription is suspended while a payment is outstanding. Calling resumes as soon as your provider reinstates it.",
+      payload: v.payload,
+    };
+  }
+
+  /* Both lists read successfully: nothing is held against this licence. */
+  const verified = Boolean(revocation && revocation.ok) && (!suspension || suspension.ok === true);
+  if (verified) {
     return { state: "active", ok: true, message: "Subscription active.", payload: v.payload };
   }
 
-  /* The list could not be read. Inside the window we carry on - but say so,
+  /* A list could not be read. Inside the window we carry on - but say so,
    * because silently pretending to be verified is how a stale licence becomes
    * invisible. Past it, stop. */
   if (age <= grace) {
+    const why = (revocation && !revocation.ok && revocation.error) ||
+      (suspension && !suspension.ok && suspension.error) ||
+      "no result";
     return {
       state: "checking",
       ok: true,
-      message: `Subscription could not be re-checked (${(revocation && revocation.error) || "no result"}); working for another ${Math.max(1, Math.ceil((grace - age) / DAY_MS))} day(s).`,
+      message: `Subscription could not be re-checked (${why}); working for another ${Math.max(1, Math.ceil((grace - age) / DAY_MS))} day(s).`,
       payload: v.payload,
       remainingMs: grace - age,
     };
@@ -327,7 +376,8 @@ function display(state) {
     case "trial": return { status: "ONLINE", line: null };
     case "checking": return { status: "OFFLINE", line: null };
     case "unlicensed": return { status: "UNLICENSED", line: "Not activated - paste your licence key to start calling." };
-    case "suspended": return { status: "SUSPENDED", line: "Subscription suspended - contact your provider." };
+    case "suspended": return { status: "SUSPENDED", line: "Subscription suspended - payment is outstanding. It resumes when your provider reinstates it." };
+    case "cancelled": return { status: "CANCELLED", line: "Subscription cancelled - this PC will no longer place calls." };
     case "stale": return { status: "SUSPENDED", line: null };
     case "expired": return { status: "SUSPENDED", line: null };
     case "machine": return { status: "UNLICENSED", line: "This key belongs to a different PC." };
@@ -340,6 +390,7 @@ function display(state) {
 module.exports = {
   getPublicKeyB64: () => vendorPublicKeyB64,
   DEFAULT_REVOCATION_URL,
+  DEFAULT_SUSPENSION_URL,
   DEFAULT_GRACE_HOURS,
   DEFAULT_TRIAL_DAYS,
   PREFIX,
@@ -347,7 +398,9 @@ module.exports = {
   trialDays,
   parse,
   verify,
+  fetchList,
   fetchRevoked,
+  fetchSuspended,
   evaluate,
   display,
   /* Test seam. See the note where vendorPublicKeyB64 is declared: it exists so

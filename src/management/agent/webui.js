@@ -321,6 +321,9 @@ function statusClass(p){
    * has actually stopped; not activated is amber because it stops the moment
    * the trial runs out, and there is something they can do about it. */
   if(p.status==="SUSPENDED")return "err";
+  /* Cancelled is permanent, and it must not look like the temporary hold a
+   * late payer gets back - same red, different word. */
+  if(p.status==="CANCELLED")return "err";
   if(p.status==="UNLICENSED")return "warn";
   return "warn";
 }
@@ -329,6 +332,7 @@ function statusText(p){
   if(p.status==="DISABLED")return "Disabled";
   if(p.status==="OFFLINE")return "Offline";
   if(p.status==="SUSPENDED")return "Suspended";
+  if(p.status==="CANCELLED")return "Cancelled";
   if(p.status==="UNLICENSED")return "Not activated";
   return p.status||"Starting";
 }

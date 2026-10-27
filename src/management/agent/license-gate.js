@@ -35,6 +35,7 @@ function createLicenseGate({
   intervalMs = CHECK_INTERVAL_MS,
   timeoutMs = FETCH_TIMEOUT_MS,
   url = lic.DEFAULT_REVOCATION_URL,
+  suspensionUrl = lic.DEFAULT_SUSPENSION_URL,
 } = {}) {
   if (typeof readConfig !== "function") throw new Error("license gate needs readConfig()");
 
@@ -53,11 +54,12 @@ function createLicenseGate({
   const readStore = typeof readStoreIn === "function" ? readStoreIn : defaultRead;
   const writeStore = typeof writeStoreIn === "function" ? writeStoreIn : defaultWrite;
 
-  /* Last known revocation result. Held in memory rather than on disk: a value
-   * written at 03:00 and read at 09:00 after a reboot would claim six hours of
-   * verification we did not do. Boot always starts unverified, which is the
-   * honest state and still lands inside the grace window. */
-  const mem = { revoked: new Set(), error: null, checkedAt: 0, attemptAt: 0 };
+  /* Last known answers from the two public lists. Held in memory rather than
+   * on disk: a value written at 03:00 and read at 09:00 after a reboot would
+   * claim six hours of verification we did not do. Boot always starts
+   * unverified, which is the honest state and still lands inside the grace
+   * window. */
+  const mem = { cancelled: new Set(), suspended: new Set(), error: null, checkedAt: 0, attemptAt: 0 };
   let timer = null;
 
   const cfg = () => {
@@ -93,27 +95,34 @@ function createLicenseGate({
     const s = store();
     const id = licenceId();
 
-    /* Once we have seen this key in the revocation list, that fact stops
-     * depending on the next request succeeding. It is written to disk for
-     * exactly that reason: without it, the moment the list became unreadable
-     * the engine would fall back into the grace window and start calling
-     * again - so blocking your own revocation file would quietly undo the
-     * revocation. It clears only when a later, successful read says the id is
-     * gone, which is how a reinstatement reaches this PC.
+    /* Once we have seen this key on a stop list, that fact stops depending on
+     * the next request succeeding. It is written to disk for exactly that
+     * reason: without it, the moment the list became unreadable the engine
+     * would fall back into the grace window and start calling again - so
+     * blocking your own revocation file would quietly undo the revocation.
+     * Each list clears only when a later, successful read says the id is gone,
+     * which is how a reinstatement reaches this PC.
      *
-     * `ok` stays false while the list is unreadable and nothing is sticky, so
+     * `ok` stays false while a list is unreadable and nothing is sticky, so
      * the grace window still ends in a stop. */
-    const sticky = Boolean(s.revokedId && id && s.revokedId === id);
-    const attempted = Boolean(mem.checkedAt) || sticky;
-    const known = new Set(mem.revoked);
-    if (sticky) known.add(id);
+    const stickyCancelled = Boolean(s.revokedId && id && s.revokedId === id);
+    const stickySuspended = Boolean(s.suspendedId && id && s.suspendedId === id);
+    const attempted = Boolean(mem.checkedAt) || stickyCancelled || stickySuspended || Boolean(mem.error);
+    const cancelled = new Set(mem.cancelled);
+    const suspended = new Set(mem.suspended);
+    if (stickyCancelled) cancelled.add(id);
+    if (stickySuspended) suspended.add(id);
+    const readOk = !mem.error;
 
     return lic.evaluate({
       raw: s.raw,
       machineId: machineId(),
       now: now(),
       revocation: attempted
-        ? { ok: sticky || !mem.error, revoked: known, error: mem.error }
+        ? { ok: readOk || stickyCancelled, revoked: cancelled, error: mem.error }
+        : null,
+      suspension: attempted
+        ? { ok: readOk || stickySuspended, suspended: suspended, error: mem.error }
         : null,
       lastVerifiedAt: s.lastVerifiedAt || 0,
       grantTime: s.grantTime || 0,
@@ -137,26 +146,46 @@ function createLicenseGate({
 
   async function checkNow() {
     mem.attemptAt = now();
-    const r = await lic.fetchRevoked(url, { fetchImpl, timeoutMs });
-    if (r.ok) {
-      mem.revoked = r.revoked;
-      mem.error = null;
-      mem.checkedAt = now();
-      /* Record, or forget, the stop for this specific key - the only two
-       * moments that may change it. A successful read that no longer carries
-       * the id is what makes a reinstatement take effect. */
-      const id = licenceId();
-      if (id && mem.revoked.has(id)) save({ lastVerifiedAt: mem.checkedAt, revokedId: id });
-      else if (store().revokedId) save({ lastVerifiedAt: mem.checkedAt, revokedId: null });
-      else save({ lastVerifiedAt: mem.checkedAt });
-      return r;
+    /* Both lists, one pass. They answer two halves of the same question and a
+     * successful check must mean both were read; otherwise a customer whose
+     * cancellation list loaded but whose suspension list did not would be
+     * reported fully verified. */
+    const [cancelled, suspended] = await Promise.all([
+      lic.fetchRevoked(url, { fetchImpl, timeoutMs }),
+      lic.fetchSuspended(suspensionUrl, { fetchImpl, timeoutMs }),
+    ]);
+
+    if (!cancelled.ok || !suspended.ok) {
+      /* Keep the previous lists if we have them. An unreadable list is not an
+       * empty list - dropping what we knew would re-open a stop we had already
+       * seen, which is exactly how a block gets undone by a blip. */
+      if (cancelled.ok) mem.cancelled = cancelled.revoked;
+      if (suspended.ok) mem.suspended = suspended.suspended;
+      const why = [
+        !cancelled.ok ? `revoked: ${cancelled.error}` : "",
+        !suspended.ok ? `suspended: ${suspended.error}` : "",
+      ].filter(Boolean).join("; ");
+      mem.error = why || "fetch failed";
+      mem.checkedAt = mem.checkedAt || 0;
+      return { ok: false, error: mem.error };
     }
-    /* Keep the previous list if we have one. An unreadable list is not an
-     * empty list - dropping what we knew would re-open a revocation we had
-     * already seen, which is exactly how a block gets undone by a blip. */
-    mem.error = r.error || "fetch failed";
-    mem.checkedAt = mem.checkedAt || 0;
-    return r;
+
+    mem.cancelled = cancelled.revoked;
+    mem.suspended = suspended.suspended;
+    mem.error = null;
+    mem.checkedAt = now();
+
+    /* Record, or forget, each stop for this specific key - the only two
+     * moments that may change it. A successful read that no longer carries the
+     * id is what makes a reinstatement take effect. */
+    const id = licenceId();
+    const patch = { lastVerifiedAt: mem.checkedAt };
+    if (id) {
+      patch.revokedId = mem.cancelled.has(id) ? id : null;
+      patch.suspendedId = mem.suspended.has(id) ? id : null;
+    }
+    save(patch);
+    return { ok: true, updated: cancelled.updated || suspended.updated || null };
   }
 
   /* Paste a key. Verified against this PC's machine id before it is stored,
@@ -181,6 +210,7 @@ function createLicenseGate({
        * must not follow it. Re-pasting the very same revoked key is caught
        * immediately by the check right below, not by this line. */
       revokedId: null,
+      suspendedId: null,
     });
     mem.checkedAt = 0;
 
@@ -197,7 +227,8 @@ function createLicenseGate({
     /* firstSeenAt deliberately survives. It is what stops "remove the key"
      * from being a way to restart the trial. */
     writeStore({ firstSeenAt: s.firstSeenAt || now() });
-    mem.revoked = new Set();
+    mem.cancelled = new Set();
+    mem.suspended = new Set();
     mem.error = null;
     mem.checkedAt = 0;
     return { ok: true, cleared: true };
@@ -218,6 +249,7 @@ function createLicenseGate({
       grantedAt: s.grantTime || null,
       lastCheckedAt: mem.checkedAt || s.lastVerifiedAt || null,
       revocationError: mem.error,
+      suspensionError: mem.error,
       trialDays: lic.trialDays(),
       graceHours: Math.round(lic.graceMs() / 3600000),
     };

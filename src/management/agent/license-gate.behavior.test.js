@@ -173,21 +173,21 @@ const has = (s, re) => re.test(String(s || ""));
   const licensed = sign();
   assert.equal((await v.gate.activate(licensed.key)).ok, true);
 
-  v.net.ids = [licensed.id];                     // you stop paying, you push the list
+  v.net.ids = [licensed.id];                     // you cancel the account, you push the list
   await v.gate.checkNow();
   let vs = v.gate.status();
-  assert.equal(vs.ok, false, "a revoked licence must stop calling");
-  assert.equal(vs.state, "suspended");
-  assert.match(vs.line, /suspended/i, "the customer must be told it is a subscription stop");
+  assert.equal(vs.ok, false, "a cancelled licence must stop calling");
+  assert.equal(vs.state, "cancelled", "revoked.json is the permanent list: it must read as cancelled, not as a temporary suspension");
+  assert.match(vs.line, /cancelled/i, "the customer must be told the account is cancelled");
   assert.throws(() => v.gate.assertAllowsCall());
-  console.log("  ok   revoked key stops: " + vs.line);
+  console.log("  ok   cancelled key stops: " + vs.line);
 
   v.net.mode = "fail";                           // your list, or GitHub, goes away
   await v.gate.checkNow();
   vs = v.gate.status();
-  assert.equal(vs.ok, false, "a network blip must not undo a revocation we already saw");
-  assert.equal(vs.state, "suspended", "and it must still read as suspended");
-  console.log("  ok   outage after revocation does not re-open it");
+  assert.equal(vs.ok, false, "a network blip must not undo a cancellation we already saw");
+  assert.equal(vs.state, "cancelled", "and it must still read as cancelled");
+  console.log("  ok   outage after cancellation does not re-open it");
 
   /* Re-granting puts them back to work: you reinstated them, so the list no
    * longer carries their id. */

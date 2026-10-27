@@ -44,6 +44,8 @@ $tests = @(
   "agent\offline-lead-cache.behavior.test.js",
   "agent\portal-down-messaging.behavior.test.js",
   "agent\license-gate.behavior.test.js",
+"agent\license-suspension.behavior.test.js",
+"agent\local-research.behavior.test.js",
   "agent\refusal-i18n.behavior.test.js",
   "agent\voip-line-and-provider.behavior.test.js",
   "agent\qualified-lead-email.behavior.test.js",

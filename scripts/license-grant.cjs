@@ -63,13 +63,6 @@ function hr() {
   console.log("-".repeat(78));
 }
 
-function statusOf(grant, revokedSet, now = Date.now()) {
-  if (grant.revokedAt) return "REVOKED";
-  if (revokedSet.has(grant.id)) return "REVOKED";
-  if (grant.until && now > Date.parse(grant.until)) return "EXPIRED";
-  return "ACTIVE";
-}
-
 const argv = args(process.argv.slice(2));
 const cmd = argv._[0] || "help";
 
@@ -92,60 +85,33 @@ if (cmd === "keygen") {
 if (cmd === "grant") {
   const machine = String(argv.machine || argv.code || "").trim();
   if (!machine) die("Missing --machine. Use the activation code shown on the customer's dashboard.");
-
-  let until = null;
-  if (argv.until) {
-    const d = Date.parse(String(argv.until));
-    if (!Number.isFinite(d)) die("--until must be a date such as 2026-12-31");
-    until = new Date(d).toISOString();
-  } else if (argv.days) {
-    until = lib.addDays(argv.days);
-    if (!until) die("--days must be a number greater than zero");
-  }
-
-  let signed;
-  try { signed = lib.signLicense({ machineId: machine, until }); }
-  catch (e) { die(e.message); }
-
   const name = String(argv.name || "").trim();
-  const ledger = lib.readLedger();
 
-  /* Re-granting a machine you revoked before: take it back off the public
-   * list, otherwise you would hand over a key that is still refused. */
-  const revoked = lib.readRevoked();
-  const before = revoked.revoked.length;
-  revoked.revoked = revoked.revoked.filter((id) => id !== signed.payload.id);
-  const removedFromList = revoked.revoked.length !== before;
-  if (removedFromList) lib.writeRevoked(revoked);
-
-  ledger.grants.push({
-    id: signed.payload.id,
-    machineId: signed.payload.machineId,
-    name: name || "(unnamed)",
-    grantedAt: new Date().toISOString(),
-    until: until,
-    status: "active",
-    revokedAt: null,
-  });
-  lib.writeLedger(ledger);
-
-  if (removedFromList && wantsPush(argv)) {
-    const p = lib.publish(`licence: reinstate ${name || signed.payload.id}`);
-    if (!p.pushed) console.error("NOTE: could not publish the reinstatement: " + p.reason);
+  let created;
+  try {
+    created = lib.createGrant({
+      machineId: machine,
+      name,
+      plan: argv.plan,
+      days: argv.days,
+      until: argv.until,
+    });
+  } catch (e) {
+    die(e.message);
   }
 
   hr();
   console.log("LICENCE ISSUED" + (name ? `  for ${name}` : ""));
   hr();
   console.log("  activation code : " + machine);
-  console.log("  licence id      : " + signed.payload.id);
-  console.log("  valid until     : " + (until ? new Date(until).toISOString().slice(0, 10) : "no expiry"));
+  console.log("  licence id      : " + created.payload.id);
+  console.log("  valid until     : " + (created.payload.until ? new Date(created.payload.until).toISOString().slice(0, 10) : "no expiry"));
   console.log("  ledger          : " + lib.LEDGER_PATH);
   hr();
   console.log("");
   console.log("Send this key to the customer. They paste it into their dashboard:");
   console.log("");
-  console.log(signed.key);
+  console.log(created.key);
   console.log("");
   hr();
   process.exit(0);
@@ -153,64 +119,131 @@ if (cmd === "grant") {
 
 /* ── revoke ─────────────────────────────────────────────────────────────── */
 if (cmd === "revoke") {
-  const ledger = lib.readLedger();
-  const revoked = lib.readRevoked();
-
-  const byMachine = String(argv.machine || argv.code || "").trim();
-  const byId = String(argv.id || "").trim();
-  const byName = String(argv.name || "").trim();
-
-  let matches = [];
-  if (byId) matches = ledger.grants.filter((g) => g.id === byId);
-  else if (byMachine) matches = ledger.grants.filter((g) => g.machineId === byMachine);
-  else if (byName) matches = ledger.grants.filter((g) => (g.name || "").toLowerCase() === byName.toLowerCase());
-  else die("Say who to revoke with --machine <CODE>, --id <licence id> or --name \"Customer\".");
-
-  if (!matches.length) {
-    console.log("No matching grant in your ledger. Known entries:");
-    ledger.grants.forEach((g) => console.log(`  ${g.name}  ${g.machineId}  ${g.id}`));
-    process.exit(1);
-  }
-
-  let added = 0;
-  for (const g of matches) {
-    if (!revoked.revoked.includes(g.id)) { revoked.revoked.push(g.id); added++; }
-    g.status = "revoked";
-    g.revokedAt = new Date().toISOString();
-  }
-  lib.writeLedger(ledger);
-  lib.writeRevoked(revoked);
-
-  const push = wantsPush(argv);
-  const p = lib.publish(`licence: revoke ${matches.map((g) => g.name || g.id).join(", ")}`, { push });
-
+  /* Kept as the old spelling of "cancel". It must not keep its own copy of the
+   * logic: a revocation that leaves a suspension behind, or a ledger saying
+   * "revoked" while the public list says otherwise, is how two sources of
+   * truth start disagreeing. */
+  const q = whoFrom(argv);
+  needWho(q);
+  let r;
+  try { r = lib.cancelGrant(Object.assign({}, q, { reason: argv.reason || "subscription cancelled", push: wantsPush(argv) })); }
+  catch (e) { die(e.message); }
   hr();
-  console.log(`REVOKED ${matches.length} licence(s):`);
-  matches.forEach((g) => console.log(`  ${g.name}  (${g.machineId})`));
-  console.log(`  added to public list: ${added} new`);
-  if (p.pushed) {
-    console.log("  published: pushed to main - engines stop on their next check.");
-    console.log("  (raw file caching can lag a few minutes)");
-  } else {
-    console.log("  NOT PUBLISHED: " + p.reason);
-    console.log("  Push licenses/revoked.json now or engines will not see the revocation.");
-  }
+  console.log("CANCELLED  " + r.grant.name + "  (" + r.grant.machineId + ")");
+  showPublication(r.publication);
   hr();
-  process.exit(p.pushed || !push ? 0 : 2);
+  process.exit(0);
 }
 
 /* ── list ───────────────────────────────────────────────────────────────── */
+/* ── suspend / reinstate / cancel / renew ────────────────────────────────
+ * The same four actions the admin console offers, for when the browser is
+ * not the tool at hand. They share license-lib.cjs with the console, so the
+ * two can never disagree about what a suspension means. */
+function whoFrom(argv) {
+  return {
+    id: String(argv.id || "").trim(),
+    machineId: String(argv.machine || argv.code || "").trim(),
+    name: String(argv.name || "").trim(),
+  };
+}
+function needWho(q) {
+  if (!q.id && !q.machineId && !q.name) {
+    die("Say who with --id <licence id>, --machine <CODE> or --name \"Customer\".");
+  }
+}
+function showPublication(p, verb) {
+  if (p && p.pushed) {
+    console.log("  published to main - engines pick it up on their next check (a few minutes for the raw cache).");
+  } else if (p && p.reason && p.reason !== "no change to publish" && p.reason !== "nothing public changed" && p.reason !== "push disabled") {
+    console.log("  NOT PUBLISHED: " + p.reason);
+    console.log("  Run: git add licenses/revoked.json licenses/suspended.json && git commit -m ... && git push final HEAD:main");
+  } else if (verb) {
+    console.log("  " + verb);
+  }
+}
+
+if (cmd === "suspend") {
+  const q = whoFrom(argv);
+  needWho(q);
+  let r;
+  try { r = lib.suspendGrant(Object.assign({}, q, { reason: argv.reason || "payment not received", push: wantsPush(argv) })); }
+  catch (e) { die(e.message); }
+  hr();
+  console.log("SUSPENDED  " + r.grant.name + "  (" + r.grant.machineId + ")");
+  console.log("  reversible: `reinstate --id " + r.grant.id + "` puts them back.");
+  showPublication(r.publication);
+  hr();
+  process.exit(0);
+}
+
+if (cmd === "reinstate") {
+  const q = whoFrom(argv);
+  needWho(q);
+  let r;
+  try { r = lib.reinstateGrant(Object.assign({}, q, { push: wantsPush(argv) })); }
+  catch (e) { die(e.message); }
+  hr();
+  console.log("REINSTATED  " + r.grant.name + "  (" + r.grant.machineId + ")");
+  showPublication(r.publication, "was not suspended - nothing to publish.");
+  hr();
+  process.exit(0);
+}
+
+if (cmd === "cancel") {
+  const q = whoFrom(argv);
+  needWho(q);
+  let r;
+  try { r = lib.cancelGrant(Object.assign({}, q, { reason: argv.reason || "subscription cancelled", push: wantsPush(argv) })); }
+  catch (e) { die(e.message); }
+  hr();
+  console.log("CANCELLED  " + r.grant.name + "  (" + r.grant.machineId + ")");
+  console.log("  permanent: the console has no un-cancel. Use `suspend` for late payment.");
+  showPublication(r.publication);
+  hr();
+  process.exit(0);
+}
+
+if (cmd === "renew") {
+  const id = String(argv.id || "").trim();
+  if (!id) die("Renew needs --id <licence id> (see `list`), plus --days N or --until DATE.");
+  let expires = null;
+  if (argv.until) {
+    const d = Date.parse(String(argv.until));
+    if (!Number.isFinite(d)) die("--until must be a date such as 2026-12-31");
+    expires = new Date(d).toISOString();
+  } else if (argv.days) {
+    expires = lib.addDays(argv.days);
+    if (!expires) die("--days must be a number greater than zero");
+  } else die("Renew needs --days N or --until DATE.");
+  let r;
+  try { r = lib.renewGrant({ id, days: argv.days, until: expires, push: wantsPush(argv) }); }
+  catch (e) { die(e.message); }
+  hr();
+  console.log("RENEWED  " + r.grant.name + "  until " + new Date(r.payload.until).toISOString().slice(0, 10));
+  if (r.grant.status === "suspended") console.log("  note: still suspended for payment - `reinstate` when it is settled.");
+  hr();
+  console.log("Send the new key to the customer:");
+  console.log("");
+  console.log(r.key);
+  console.log("");
+  hr();
+  process.exit(0);
+}
+
 if (cmd === "list") {
   const ledger = lib.readLedger();
   const revoked = new Set(lib.readRevoked().revoked);
+  const suspended = new Set(lib.readSuspended().suspended);
   if (!ledger.grants.length) { console.log("No licences granted yet."); process.exit(0); }
   hr();
   console.log("YOUR LICENCES  (private ledger - " + lib.LEDGER_PATH + ")");
   hr();
   console.log("STATUS".padEnd(10) + "UNTIL".padEnd(13) + "NAME".padEnd(24) + "ACTIVATION CODE");
   for (const g of ledger.grants) {
+    const state = lib.grantState(g, revoked, suspended).toUpperCase();
     console.log(
-      statusOf(g, revoked).padEnd(10) +
+      state.padEnd(10) +
       (g.until ? new Date(g.until).toISOString().slice(0, 10) : "never").padEnd(13) +
       String(g.name || "").slice(0, 23).padEnd(24) +
       g.machineId
@@ -242,16 +275,20 @@ if (cmd === "check") {
 
 /* ── help ───────────────────────────────────────────────────────────────── */
 console.log(`
-Licence tool - grant and revoke subscriptions with no server and no URL.
+Licence tool - grant, suspend, reinstate and cancel with no server and no URL.
 
   keygen  [--embed]                                create/rotate your signing key
   grant   --machine CODE [--days N | --until DATE] [--name "Customer"]
                                                   issue a key, print it
-  revoke  --machine CODE | --id ID | --name NAME  stop a key  (pushes)
+  suspend --id ID | --machine CODE | --name NAME  stop for non-payment (reversible, pushes)
+  reinstate --id ID | --machine CODE | --name NAME put a suspended PC back on (pushes)
+  cancel  --id ID | --machine CODE | --name NAME  permanent stop (pushes)
+  renew   --id ID [--days N | --until DATE]       re-sign the same id, print the new key
   list                                            your ledger
   check   "MDL1..." [--machine CODE]              verify a key like the engine will
 
 The activation CODE is the machineId shown on the customer's own dashboard.
-Your private key and ledger are gitignored; only revoked.json is published.
+Your private key and ledger are gitignored; only revoked.json and
+suspended.json are published.
 `);
 process.exit(0);

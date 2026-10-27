@@ -72,6 +72,7 @@ src/management/build/fixtures/*.wav
 
 # Licence signing material. The key that signs licences and your private
 # ledger of which customer holds which licence must never leave this PC.
-# Only licenses/revoked.json is published - the engines have to read it.
+# Only licenses/revoked.json and licenses/suspended.json are published - the
+# engines have to read both.
 /licenses/license.private.key
 /licenses/grants.local.json

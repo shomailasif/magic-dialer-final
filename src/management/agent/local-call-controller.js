@@ -244,7 +244,7 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
   try {
     const { refresh: refreshResearch } = require("./sales-research");
     await Promise.race([
-      refreshResearch({ portal: config.portalUrl, deviceToken: config.deviceToken, product: config.product, vertical: config.companyName }),
+      refreshResearch({ portal: config.portalUrl, deviceToken: config.deviceToken, product: config.product, vertical: config.companyName, website: config.website || config.websiteUrl }),
       new Promise((r) => setTimeout(r, 2500)),
     ]);
   } catch { /* the deterministic tactic floor covers this */ }

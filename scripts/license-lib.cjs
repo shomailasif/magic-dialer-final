@@ -14,7 +14,10 @@
  *                                               public list maps back to a
  *                                               customer for you alone.
  *   licenses/revoked.json          PUBLIC     - committed. Opaque licence ids
- *                                               the engine reads. Nothing else.
+ *                                               that were CANCELLED.
+ *   licenses/suspended.json        PUBLIC     - committed. Opaque licence ids
+ *                                               held for non-payment; removing
+ *                                               one id reinstates that PC.
  *
  * Rotation: `node scripts/license-grant.cjs keygen --embed` makes a new keypair,
  * writes the private key locally and substitutes the public key into
@@ -27,11 +30,17 @@ const fs = require("node:fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
 
-const ROOT = path.join(__dirname, "..");
+/* Where the private material lives. The default is the repo this file is in.
+ * MDL_LICENSE_ROOT exists so the test suite can run the real signing and list
+ * code against a throwaway directory instead of your ledger and key. */
+const ROOT = process.env.MDL_LICENSE_ROOT
+  ? path.resolve(process.env.MDL_LICENSE_ROOT)
+  : path.join(__dirname, "..");
 const LICENSES_DIR = path.join(ROOT, "licenses");
 const PRIVATE_KEY_PATH = path.join(LICENSES_DIR, "license.private.key");
 const LEDGER_PATH = path.join(LICENSES_DIR, "grants.local.json");
 const REVOKED_PATH = path.join(LICENSES_DIR, "revoked.json");
+const SUSPENDED_PATH = path.join(LICENSES_DIR, "suspended.json");
 const ENGINE_FILE = path.join(ROOT, "src", "management", "agent", "license.js");
 
 const PREFIX = "MDL1";
@@ -146,18 +155,47 @@ function writeRevoked(data) {
   return out;
 }
 
+/* Temporary hold, for a customer who is late paying but whose copy you intend
+ * to switch back on. Kept separate from revoked.json so "not paid this week"
+ * never looks identical to "gone for good": reinstating is deleting one id
+ * from this file, while cancelling is a different file and a different state
+ * on the customer's screen. */
+function readSuspended() {
+  if (!fs.existsSync(SUSPENDED_PATH)) return { v: 1, updated: null, suspended: [] };
+  try {
+    const data = JSON.parse(fs.readFileSync(SUSPENDED_PATH, "utf8"));
+    return { v: data.v || 1, updated: data.updated || null, suspended: Array.isArray(data.suspended) ? data.suspended : [] };
+  } catch {
+    return { v: 1, updated: null, suspended: [] };
+  }
+}
+
+function writeSuspended(data) {
+  ensureDir();
+  const out = { v: 1, updated: new Date().toISOString(), suspended: data.suspended };
+  fs.writeFileSync(SUSPENDED_PATH, JSON.stringify(out, null, 2) + "\n", "utf8");
+  return out;
+}
+
 /* Publish. Revocation only matters once the engines can read it, so the
  * default is to commit and push immediately - an unsent revocation is not a
- * revocation. Uses the repo's standing convention (push `final HEAD:main`),
- * never origin, never force. */
+ * revocation. Both public lists go together: a suspension and a cancellation
+ * are two answers to the same question and must never disagree after a push.
+ * Uses the repo's standing convention (push `final HEAD:main`), never origin,
+ * never force. */
 function publish(message, { push = true } = {}) {
   if (!push) return { pushed: false, reason: "push disabled" };
   const run = (args) => execFileSync("git", args, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const paths = ["licenses/revoked.json", "licenses/suspended.json"];
   try {
-    run(["add", "licenses/revoked.json"]);
-    const staged = run(["status", "--porcelain", "--", "licenses/revoked.json"]).trim();
+    if (!fs.existsSync(SUSPENDED_PATH)) writeSuspended(readSuspended());
+    run(["add", ...paths]);
+    const staged = run(["status", "--porcelain", "--", ...paths]).trim();
     if (!staged) return { pushed: false, reason: "no change to publish" };
-    run(["commit", "-m", message]);
+    /* Commit ONLY these two files. Without the pathspec a `git commit` takes
+     * every staged file with it, so an unrelated change sitting in the index
+     * would be published under the message "licence: suspend ...". */
+    run(["commit", "-m", message, "--", ...paths]);
     run(["push", "final", "HEAD:main"]);
     return { pushed: true };
   } catch (e) {
@@ -172,12 +210,164 @@ function addDays(days) {
   return new Date(Date.now() + n * 24 * 60 * 60 * 1000).toISOString();
 }
 
+/* ── the four things an admin console is allowed to do ──────────────────────
+ *
+ * These are here, not in the HTTP layer, so they can be tested without a
+ * browser and so every caller - CLI, console, a future script - goes through
+ * the same signing and the same two public lists. All of them are no-ops for a
+ * customer's PC: they only write to this machine's private files and, when
+ * asked, push the two public id lists.
+ */
+
+function resolveUntil({ days, until } = {}) {
+  if (until) {
+    const d = Date.parse(String(until));
+    if (!Number.isFinite(d)) throw new Error("expiry must be a date such as 2026-12-31");
+    return new Date(d).toISOString();
+  }
+  if (days === undefined || days === null || days === "") return null;
+  const out = addDays(days);
+  if (!out) throw new Error("days must be a number greater than zero");
+  return out;
+}
+
+function findGrants(ledger, { id, machineId, name } = {}) {
+  const key = String(id || "").trim();
+  const machine = String(machineId || "").trim();
+  const who = String(name || "").trim().toLowerCase();
+  if (key) return ledger.grants.filter((g) => g.id === key);
+  if (machine) return ledger.grants.filter((g) => g.machineId === machine);
+  if (who) return ledger.grants.filter((g) => String(g.name || "").toLowerCase() === who);
+  return [];
+}
+
+/* One word per customer for the list the admin reads. Kept deliberately
+ * different for "paused until they pay" and "gone": conflating them is how a
+ * late payer gets treated like a lost account. */
+function grantState(grant, revoked, suspended, now = Date.now()) {
+  const id = String(grant.id);
+  if (grant.cancelledAt || revoked.has(id)) return "cancelled";
+  if (grant.suspendedAt || suspended.has(id)) return "suspended";
+  if (grant.until && now > Date.parse(grant.until)) return "expired";
+  return "active";
+}
+
+function listGrants({ now = Date.now() } = {}) {
+  const ledger = readLedger();
+  const revoked = new Set(readRevoked().revoked);
+  const suspended = new Set(readSuspended().suspended);
+  return ledger.grants.map((g) => Object.assign({}, g, { state: grantState(g, revoked, suspended, now) }));
+}
+
+function createGrant({ name, machineId, plan = "standard", days, until } = {}) {
+  const machine = String(machineId || "").trim();
+  if (!machine) throw new Error("an activation code (machine id) is required");
+  const expires = resolveUntil({ days, until });
+  const signed = signLicense({ machineId: machine, until: expires });
+  const ledger = readLedger();
+  const grant = {
+    id: signed.payload.id,
+    machineId: machine,
+    name: String(name || "").trim() || "(unnamed)",
+    plan: String(plan || "standard").trim() || "standard",
+    grantedAt: new Date().toISOString(),
+    renewedAt: null,
+    until: expires,
+    status: "active",
+    suspendedAt: null,
+    cancelledAt: null,
+    revokeReason: null,
+  };
+  ledger.grants.push(grant);
+  writeLedger(ledger);
+  return { key: signed.key, payload: signed.payload, grant };
+}
+
+function requireGrant(ledger, query) {
+  const matches = findGrants(ledger, query);
+  if (!matches.length) throw new Error("no matching account in the ledger");
+  if (matches.length > 1) throw new Error("that matches more than one account - use its licence id");
+  return matches[0];
+}
+
+function suspendGrant({ id, machineId, name, reason = "payment not received", push = true } = {}) {
+  const ledger = readLedger();
+  const revoked = readRevoked();
+  const suspended = readSuspended();
+  const grant = requireGrant(ledger, { id, machineId, name });
+  if (revoked.revoked.includes(grant.id)) throw new Error("that account is cancelled; suspension would be a downgrade");
+  if (!suspended.suspended.includes(grant.id)) suspended.suspended.push(grant.id);
+  grant.status = "suspended";
+  grant.suspendedAt = new Date().toISOString();
+  grant.suspendReason = String(reason || "payment not received");
+  writeLedger(ledger);
+  writeSuspended(suspended);
+  return { grant, publication: publish(`licence: suspend ${grant.name}`, { push }) };
+}
+
+function reinstateGrant({ id, machineId, name, push = true } = {}) {
+  const ledger = readLedger();
+  const suspended = readSuspended();
+  const grant = requireGrant(ledger, { id, machineId, name });
+  if (grant.cancelledAt) throw new Error("that account is cancelled; reinstatement is not available");
+  const before = suspended.suspended.length;
+  suspended.suspended = suspended.suspended.filter((x) => x !== grant.id);
+  grant.status = "active";
+  grant.suspendedAt = null;
+  grant.suspendReason = null;
+  writeLedger(ledger);
+  const changed = suspended.suspended.length !== before;
+  if (changed) writeSuspended(suspended);
+  return { grant, changed, publication: changed ? publish(`licence: reinstate ${grant.name}`, { push }) : { pushed: false, reason: "not suspended" } };
+}
+
+function cancelGrant({ id, machineId, name, reason = "subscription cancelled", push = true } = {}) {
+  const ledger = readLedger();
+  const revoked = readRevoked();
+  const suspended = readSuspended();
+  const grant = requireGrant(ledger, { id, machineId, name });
+  if (!revoked.revoked.includes(grant.id)) revoked.revoked.push(grant.id);
+  const wasSuspended = suspended.suspended.includes(grant.id);
+  suspended.suspended = suspended.suspended.filter((x) => x !== grant.id);
+  grant.status = "cancelled";
+  grant.cancelledAt = grant.cancelledAt || new Date().toISOString();
+  grant.revokeReason = String(reason || "subscription cancelled");
+  writeLedger(ledger);
+  writeRevoked(revoked);
+  if (wasSuspended) writeSuspended(suspended);
+  return { grant, publication: publish(`licence: cancel ${grant.name}`, { push }) };
+}
+
+/* Renew keeps the SAME licence id on purpose. A suspension is recorded against
+ * that id, so renewing a suspended account must not quietly lift the hold: the
+ * customer pays, then payment is recorded, then the hold is cleared by an
+ * explicit reinstate. A new id would make the old stop point at a key nobody
+ * uses and hand out a working key before the money arrived. */
+function renewGrant({ id, days, until, push = true } = {}) {
+  const ledger = readLedger();
+  const revoked = readRevoked();
+  const suspended = readSuspended();
+  const grant = requireGrant(ledger, { id });
+  if (revoked.revoked.includes(grant.id) || grant.cancelledAt) {
+    throw new Error("that account is cancelled; it cannot be renewed");
+  }
+  const expires = resolveUntil({ days, until });
+  if (!expires) throw new Error("a renewal needs a number of days or an expiry date");
+  const signed = signLicense({ machineId: grant.machineId, until: expires, id: grant.id });
+  grant.until = expires;
+  grant.renewedAt = new Date().toISOString();
+  grant.status = suspended.suspended.includes(grant.id) ? "suspended" : "active";
+  writeLedger(ledger);
+  return { key: signed.key, payload: signed.payload, grant, publication: { pushed: false, reason: "nothing public changed" } };
+}
+
 module.exports = {
   ROOT,
   LICENSES_DIR,
   PRIVATE_KEY_PATH,
   LEDGER_PATH,
   REVOKED_PATH,
+  SUSPENDED_PATH,
   ENGINE_FILE,
   PREFIX,
   loadPrivateKey,
@@ -187,6 +377,17 @@ module.exports = {
   writeLedger,
   readRevoked,
   writeRevoked,
+  readSuspended,
+  writeSuspended,
   publish,
   addDays,
+  resolveUntil,
+  findGrants,
+  grantState,
+  listGrants,
+  createGrant,
+  suspendGrant,
+  reinstateGrant,
+  cancelGrant,
+  renewGrant,
 };
