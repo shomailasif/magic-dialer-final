@@ -122,7 +122,10 @@ function isAuthFailure(err) {
 }
 
 async function preflightLocalSip(config, deps = {}) {  const v = config && config.voip || {};
-  if (!v.ready || !v.username || !v.sipPassword || !v.number) throw new Error("VOIP configuration incomplete");
+  /* Derive readiness from the credentials rather than trusting `v.ready`:
+   * that flag is written on save, so a config created before the flag (or by
+   * hand) holds a perfectly working line that this check used to refuse. */
+  if (!v.username || !v.sipPassword || !v.number) throw new Error("VOIP configuration incomplete");
   const reg = deps.registerSession || registerSession;
   const result = await reg(sipOptions(v));
   if (!result || !result.ok) throw new Error("RingCentral SIP registration failed: " + ((result && result.last) || "unknown error"));

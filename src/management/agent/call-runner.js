@@ -83,7 +83,74 @@ function configText(value, keys, fallback = "") {
   if (!s || s === "[object Object]") return fallback;
   return s;
 }
-const STOP_RE = /\b(stop calling|do not call|don't call|remove me|take me off|unsubscribe|not call me again)\b/i;
+/* "Do not call me again", in every language the agent can speak.
+ *
+ * This used to be English-only, which meant a prospect who said "مجھے کال نہ
+ * کریں" or "no me llame" was not recognised as an opt-out at all: the agent
+ * kept qualifying, and the number stayed in the queue. The `\b` assertions are
+ * kept on the English branch only - a word boundary never matches next to a
+ * Devanagari or Han character, so wrapping the whole union in \b silently
+ * disabled every non-Latin alternative.
+ *
+ * Roman-script transliterations are included because the speech-to-text layer
+ * frequently returns Urdu/Hindi/Punjabi in Latin letters even when the speech
+ * was native script.
+ */
+const STOP_RE = new RegExp([
+  "\\b(?:stop calling|do not call|don'?t call|remove me|take me off|unsubscribe|not call me again)\\b",
+  /* Roman Urdu / Hindi / Punjabi */
+  "call (?:na|mat) kar(?:o|ein|en|na)",
+  "(?:mujhe|muje|humein|hamein) (?:call|phone) (?:na|mat)",
+  "(?:dobara|dubara) (?:call|phone) (?:na|mat)",
+  "(?:number|naam) (?:hata|delete|remove)",
+  "list se (?:hata|nikal)",
+  /* Urdu */
+  "کال (?:نہ|مت) کریں",
+  "فون (?:نہ|مت) کریں",
+  "(?:دوبارہ|دوبارا) (?:کال|فون) نہ",
+  "مجھے (?:کال|فون) (?:نہ|مت)",
+  "(?:نمبر|نام) ہٹا",
+  "فہرست سے ہٹا",
+  /* Hindi */
+  "कॉल (?:न|मत) करें",
+  "फोन (?:न|मत) करें",
+  "दोबारा (?:कॉल|फोन) न",
+  "मुझे (?:कॉल|फोन) (?:न|मत)",
+  "(?:नंबर|नाम) हटा",
+  "सूची से हटा",
+  /* Punjabi */
+  "ਕਾਲ (?:ਨਾ|ਨ) ਕਰੋ",
+  "ਫੋਨ (?:ਨਾ|ਨ) ਕਰੋ",
+  "ਦੁਬਾਰਾ (?:ਕਾਲ|ਫੋਨ) ਨਾ",
+  /* Spanish */
+  "no me (?:llame|llames|llamen)",
+  "no (?:volver|vuelvan) a llamar",
+  "elimine? mi (?:numero|número)",
+  "(?:qu[ií]tenme|s[áa]quenme) de la lista",
+  /* Mandarin. Kept narrow on purpose: "不要打" alone also matches "不要打折"
+   * (do not discount), which would end a live negotiation. */
+  "不要(?:再)?打电话",
+  "不要(?:再)?打给我",
+  "不要(?:再)?联系我",
+  "别(?:再)?打了",
+  "删除我的号码",
+  /* Arabic */
+  "لا (?:تتصل|تتصلي|تتصلوا)",
+  "احذف (?:رقمي|رقم)",
+  "لا تكرر (?:الاتصال|المكالمة)",
+  /* French */
+  "ne m'?appelez (?:plus|pas)",
+  "ne me rappelez (?:plus|pas)",
+  "retirez[- ]moi de (?:la|votre) liste",
+  /* German */
+  "rufen sie mich nicht (?:mehr )?an",
+  "nicht mehr anrufen",
+  "nehmen sie mich von der liste",
+  /* Portuguese */
+  "n[ãa]o me ligue(?:m)?",
+  "me (?:remova|retire) da lista",
+  "n[ãa]o ligue mais",
+].join("|"), "i");
   const HUMAN_RE = /\b(human|real person|representative|manager|supervisor|agent)\b/i;
 
   /* BUCKLED_UP: the prospect is telling us to slow down or stop, and we were not.
@@ -711,6 +778,50 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
     "(?:i )?will call (?:you )?(?:if|when)",
     "no need to (?:call|contact|follow up)",
     "(?:not|no) (?:thanks|thank you),? (?:i (?:don'?t|dont) )?(?:need|want)",
+    /* The same refusal in the languages the agent speaks.
+     *
+     * A missed "no" here is a consent problem, not just a lost sale: this is
+     * the class that decides whether a callback is offered and whether the
+     * number is suppressed. English-only was therefore the riskiest of the
+     * three refusal lists to leave untranslated. Roman transliterations are
+     * included for the same reason as STOP_RE - STT often returns them that
+     * way. */
+    /* Roman Urdu / Hindi / Punjabi */
+    "(?:mujhe|muje) (?:aage|dobara) (?:koi )?(?:call|contact|phone) (?:nahi|nahin|na)",
+    "(?:aage|dobara) (?:koi )?(?:call|contact) (?:nahi|nahin|na) chahiye",
+    "(?:follow ?up|contact) (?:nahi|nahin) chahiye",
+    "mujhe (?:follow ?up|contact) ki zaroorat nahi",
+    "(?:mera|meri) (?:number|naam) (?:hata|delete|remove)",
+    /* Urdu */
+    "(?:مزید|آگے) (?:رابطہ|کال|فون) نہیں",
+    "فالو اپ نہیں چاہیے",
+    "مجھے (?:مزید|آگے) (?:رابطہ|کال) نہیں چاہیے",
+    /* Hindi */
+    "(?:और|आगे) (?:संपर्क|कॉल|फोन) नहीं",
+    "मुझे (?:और|आगे) (?:संपर्क|कॉल) नहीं चाहिए",
+    "फॉलो अप नहीं चाहिए",
+    /* Punjabi */
+    "(?:ਹੋਰ|ਅੱਗੇ) (?:ਸੰਪਰਕ|ਕਾਲ|ਫੋਨ) ਨਹੀਂ",
+    /* Spanish */
+    "no me contacte(?:n)? (?:m[aá]s|nuevamente|de nuevo)",
+    "no quiero que me contacte(?:n)?",
+    "no (?:me )?(?:interesa|interesan)",
+    /* Mandarin */
+    "不要再?联系我",
+    "我不需要(?:跟进|回访)",
+    "不用(?:再)?联系我",
+    /* Arabic */
+    "لا تتواصل معي",
+    "لا (?:أريد|اريد) (?:متابعة|تواصل)",
+    /* French */
+    "ne me contactez plus",
+    "je ne veux pas (?:être )?(?:recontacté|contacté)",
+    /* German */
+    "kontaktieren sie mich nicht(?: mehr)?",
+    "kein interesse",
+    /* Portuguese */
+    "n[ãa]o me contacte(?:m)? (?:mais|novamente)",
+    "n[ãa]o tenho interesse",
   ].join("|"), "i");
 
   function isMetaLine(text) {

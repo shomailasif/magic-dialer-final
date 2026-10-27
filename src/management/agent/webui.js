@@ -187,20 +187,20 @@ const PAGE = `<!doctype html>
         </div>
         <div class="sec">
           <h2>Phone line (VOIP)</h2>
-          <div class="desc">Your SIP credentials for outbound calls. Get these from your VOIP provider (RingCentral, Twilio, Vonage, etc). Leave blank to use PC speakers + mic only.</div>
+          <div class="desc">RingCentral is the supported VOIP provider: the SIP username, password and number of your own RingCentral user. The other providers are listed only so nobody wonders where they went - they are not implemented yet and their lines will fail to register. Leave this section blank to use PC speakers + mic only.</div>
           <div class="row">
             <div>
               <label for="fVoipProvider">Provider</label>
               <select id="fVoipProvider">
                 <option value="">None (local mic only)</option>
                 <option value="ringcentral">RingCentral</option>
-                <option value="twilio">Twilio</option>
-                <option value="vonage">Vonage</option>
-                <option value="plivo">Plivo</option>
-                <option value="thinq">ThinQ</option>
-                <option value="flowroute">Flowroute</option>
-                <option value="asterisk">Asterisk / FreePBX</option>
-                <option value="generic">Generic SIP</option>
+                <option value="twilio" disabled>Twilio (not supported)</option>
+                <option value="vonage" disabled>Vonage (not supported)</option>
+                <option value="plivo" disabled>Plivo (not supported)</option>
+                <option value="thinq" disabled>ThinQ (not supported)</option>
+                <option value="flowroute" disabled>Flowroute (not supported)</option>
+                <option value="asterisk" disabled>Asterisk / FreePBX (not supported)</option>
+                <option value="generic" disabled>Generic SIP (not supported)</option>
               </select>
             </div>
             <div>
@@ -215,19 +215,34 @@ const PAGE = `<!doctype html>
             </div>
             <div>
               <label for="fVoipPass">SIP password</label>
-              <input id="fVoipPass" type="password" placeholder="your SIP password">
+              <input id="fVoipPass" type="password" placeholder="leave blank to keep the saved password">
             </div>
           </div>
           <div class="row">
             <div>
               <label for="fVoipServer">SIP server (optional)</label>
-              <input id="fVoipServer" placeholder="sip.ringcentral.com">
+              <input id="fVoipServer" placeholder="sip40.ringcentral.com">
             </div>
             <div>
               <label for="fVoipExt">Extension (optional)</label>
               <input id="fVoipExt" placeholder="101">
             </div>
           </div>
+          <div class="row">
+            <div>
+              <label for="fVoipDomain">SIP domain (optional)</label>
+              <input id="fVoipDomain" placeholder="sip.ringcentral.com">
+            </div>
+            <div>
+              <label for="fVoipPort">SIP port (optional)</label>
+              <input id="fVoipPort" placeholder="5096" inputmode="numeric">
+            </div>
+          </div>
+          <div class="inl" style="margin-top:14px">
+            <button type="button" id="voipTestBtn" class="btn ghost">Test saved line</button>
+            <span id="voipTestMsg" class="sub" style="align-self:center"></span>
+          </div>
+          <div class="desc">The test only registers with the line saved above - it places no call, so it costs nothing. Save your settings first.</div>
         </div>
         <div class="sec" style="border-bottom:0;padding-bottom:0">
           <h2>Finish local setup</h2>
@@ -419,7 +434,9 @@ $id("setupForm").addEventListener("submit",async function(ev){
     voipUser:$id("fVoipUser").value.trim(),
     voipPass:$id("fVoipPass").value.trim(),
     voipServer:$id("fVoipServer").value.trim(),
-    voipExt:$id("fVoipExt").value.trim()};
+    voipExt:$id("fVoipExt").value.trim(),
+    voipDomain:$id("fVoipDomain").value.trim(),
+    voipPort:$id("fVoipPort").value.trim()};
   $id("setupErr").textContent="";
   var missing=[];
   if(!body.companyName)missing.push("company name");
@@ -434,6 +451,18 @@ $id("setupForm").addEventListener("submit",async function(ev){
     $id("doneView").classList.remove("hidden");
     setTimeout(function(){window.close()},1800);
   }catch(e){$id("setupErr").textContent="Could not reach the local agent service.";btn.disabled=false;btn.textContent="Save & start"}
+});
+$id("voipTestBtn").addEventListener("click",async function(){
+  var msg=$id("voipTestMsg"),btn=$id("voipTestBtn");
+  msg.style.color="";msg.textContent="Registering with the saved line…";
+  btn.disabled=true;
+  try{
+    var r=await fetch("/api/voip/test",{method:"POST"});
+    var j=await r.json();
+    if(r.ok&&j.ok){msg.style.color="#15803d";msg.textContent="Line OK"+(j.host?" - registered via "+j.host:"")+"."}
+    else{msg.style.color="#b91c1c";msg.textContent=j.error||"The line did not register."}
+  }catch(e){msg.style.color="#b91c1c";msg.textContent="Could not reach the local agent service."}
+  btn.disabled=false;
 });
 $id("cancelBtn").addEventListener("click",function(){window.close()});
 $id("doneBtn").addEventListener("click",function(){window.close()});
@@ -659,6 +688,8 @@ async function startWebUi(opts) {
       const voipPass = String(body.voipPass || "").trim();
       const voipServer = String(body.voipServer || "").trim();
       const voipExt = String(body.voipExt || "").trim();
+      const voipDomain = String(body.voipDomain || "").trim();
+      const voipPortRaw = String(body.voipPort || "").trim();
       const cfg = opts.readConfig() || {};
       cfg.companyName = companyName;
       cfg.product = product;
@@ -667,21 +698,56 @@ async function startWebUi(opts) {
       cfg.contactEmail = contactEmail;
       cfg.callbackNumber = callbackNumber;
       cfg.callbackIn = callbackIn;
-      if (voipProvider || voipNumber || voipUser) {
-        const HOSTED = { ringcentral: "sip.ringcentral.com", twilio: "sip-1042-sip.twilio.com", vonage: "sip.nexmo.com", plivo: "sip.plivo.com", thinq: "sip.thinq.com", flowroute: "sip.flowroute.com" };
+      if (voipProvider || voipNumber || voipUser || voipServer || voipDomain || voipPortRaw) {
+        /* Only RingCentral is implemented (the engine registers through
+         * RingCentral's own Softphone SDK). The host below is the SBC the SDK
+         * is validated against, not the domain - saving the domain as the proxy
+         * put a name in the outbound-proxy field that the SDK does not expect. */
+        const HOSTED = { ringcentral: "sip40.ringcentral.com" };
+        /* Merge over what is already stored. Re-saving the sales form used to
+         * replace the whole object, which silently wiped authId, transport,
+         * port, domain and - worst - the SIP password, because the password
+         * field is deliberately never pre-filled. That turned "edit what I
+         * sell" into "my line stopped registering". */
+        const prior = cfg.voip && typeof cfg.voip === "object" ? cfg.voip : {};
+        const portNum = Number(voipPortRaw);
+        const username = voipUser || prior.username || "";
+        const sipPassword = voipPass || prior.sipPassword || "";
         cfg.voip = {
-          provider: voipProvider,
-          number: voipNumber,
-          username: voipUser,
-          sipPassword: voipPass,
-          server: voipServer || HOSTED[voipProvider] || "",
-          extension: voipExt,
-          ready: !!(voipUser && voipPass),
+          ...prior,
+          provider: voipProvider || prior.provider || "",
+          number: voipNumber || prior.number || "",
+          username,
+          sipPassword,
+          server: voipServer || prior.server || HOSTED[voipProvider] || "",
+          extension: voipExt || prior.extension || "",
+          domain: voipDomain || prior.domain || "",
+          port: Number.isFinite(portNum) && portNum > 0 ? Math.floor(portNum) : prior.port,
+          ready: !!(username && sipPassword),
         };
+        if (!cfg.voip.port) delete cfg.voip.port;
       }
       opts.writeConfig(cfg);
       try { opts.onSetup && opts.onSetup(cfg); } catch {}
       sendJson(res, 200, { ok: true, configured: true });
+      return;
+    }
+    /* Register with the customer's own line without placing a call.
+     *
+     * A new customer's only "does my VOIP work?" signal used to be the first
+     * real prospect being dialled. This route closes that gap on the same
+     * verified path the dialer uses (sipOptions + REGISTER), and it is free:
+     * no INVITE, no audio, no telephony charge. It reports the failure reason
+     * instead of a bare "failed", because "wrong password" and "wrong port"
+     * need different fixes. */
+    if (req.method === "POST" && p === "/api/voip/test") {
+      if (typeof opts.testVoip !== "function") { sendJson(res, 503, { ok: false, error: "Line test unavailable." }); return; }
+      try {
+        const r = await opts.testVoip();
+        sendJson(res, 200, { ok: true, host: (r && r.host) || null });
+      } catch (e) {
+        sendJson(res, 502, { ok: false, error: (e && e.message) || "The line did not register." });
+      }
       return;
     }
     if (req.method === "POST" && p === "/api/call") {

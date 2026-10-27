@@ -48,7 +48,7 @@ const sync = require("./sync");
  * the result), and emailQualifiedLead stays named here because the production
  * marker gate asserts it: removing an "unused" import would fail the build. */
 const { emailQualifiedLead, deliverQualifiedLead } = require("./email");
-const { runLocalCall } = require("./local-call-controller");
+const { runLocalCall, preflightLocalSip } = require("./local-call-controller");
 const { startEngineHealthServer } = require("./engine-health");
 const { checkForUpdate, validatePendingUpdate, rollbackPendingUpdate, _test: autoUpdateState } = require("./auto-update");
 const { reEnrollSelf: reEnrollSelfImpl } = require("./self-reenroll");
@@ -269,7 +269,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.82";
+const VERSION = "1.4.83";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -553,6 +553,10 @@ async function runAgent(opts = {}) {
 
   const ensureWebUi = async () => {
     if (uiServer) return uiServer;
+    /* One registration at a time: a double-click must not open two SIP
+     * registrations on the same account, which RingCentral reads as a device
+     * conflict and rejects. The second click shares the first answer. */
+    let voipTestInFlight = null;
     uiServer = await startWebUi({
       readConfig: () => loadConfig(cfgPath),
       writeConfig: (c) => saveConfig(c, cfgPath),
@@ -586,6 +590,28 @@ async function runAgent(opts = {}) {
         licenseGate.assertAllowsCall();
         log("LOCAL DASHBOARD CALL CONTROL: " + number);
         return runLocalCall({ config: liveConfig, number, onLog: (m) => log(m), onMode: () => {} });
+      },
+      /* "Test saved line": a REGISTER only, never an INVITE.
+       *
+       * Reads the config fresh so a line saved moments ago is what gets
+       * tested, and derives readiness from the credentials instead of
+       * trusting the stored flag - a config written before that flag existed
+       * still holds a working line. The error message is passed through
+       * unchanged because a wrong password and a wrong port need different
+       * fixes. */
+      testVoip: async () => {
+        if (voipTestInFlight) return voipTestInFlight;
+        const run = (async () => {
+          const liveConfig = loadConfig(cfgPath) || {};
+          const v = liveConfig.voip && typeof liveConfig.voip === "object" ? liveConfig.voip : {};
+          const ready = !!(v.username && v.sipPassword && v.number);
+          log("VOIP LINE TEST: registering " + (v.number || "the saved line"));
+          const r = await preflightLocalSip({ ...liveConfig, voip: { ...v, ready } });
+          log("VOIP LINE TEST: registered" + (r && r.host ? " via " + r.host : "") + " - no call placed");
+          return r;
+        })();
+        voipTestInFlight = run.finally(() => { voipTestInFlight = null; });
+        return voipTestInFlight;
       },
       readQueueStatus,
       stopQueue,
@@ -656,7 +682,7 @@ async function runAgent(opts = {}) {
     config.leadFields = config.leadFieldsRaw.split(",").map((s) => s.trim()).filter(Boolean);
     log("Optional: your phone/VOIP line (press Enter on each to skip and configure later)");
     config.voip = config.voip || {};
-    config.voip.provider = (await ask("VOIP/SIP provider (e.g. Twilio, Asterisk)? (Enter = none yet):")).trim() || config.voip.provider || "";
+    config.voip.provider = (await ask("VOIP provider (RingCentral is the supported provider - type 'ringcentral', or Enter to skip):")).trim() || config.voip.provider || "";
     config.voip.number = (await ask("Your outbound phone number? (Enter = none yet):")).trim() || config.voip.number || "";
     config.voip.username = (await ask("SIP username/account? (Enter = none yet):")).trim() || config.voip.username || "";
     config.voip.server = (await ask("SIP domain/server (e.g. sip.example.com)? (Enter = none yet):")).trim() || config.voip.server || "";
