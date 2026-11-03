@@ -32,6 +32,12 @@ assert.equal((workflow.match(/^\s*ENGINE_VERSION:\s*"/gm) || []).length, 0, "the
 assert.ok(workflow.includes('const VERSION = "(\\d+\\.\\d+\\.\\d+)";'), "the workflow must read the version from agent.js");
 assert.ok(workflow.includes("agent/agent.js"), "the version must come from agent/agent.js");
 assert.ok(workflow.includes("GITHUB_ENV"), "the derived version must be exported to later steps");
+assert.ok(workflow.includes("Add-Content -Path $env:GITHUB_ENV"), "the version must be exported without a BOM");
+/* PowerShell does not treat a backslash as an escape character. A \" inside a
+ * double-quoted string ends the string and the step dies with a ParserError
+ * before it runs - which is exactly how the first version of this derivation
+ * failed CI. There is no valid use for it here, so forbid it outright. */
+assert.equal((workflow.match(/\\"/g) || []).length, 0, 'the workflow must not use PowerShell \\" escaping');
 assert.ok(workflow.includes("$version = $env:ENGINE_VERSION"), "the release tag must be derived from the read version");
 assert.ok(workflow.includes('$tag = "engine-v$version"'), "the immutable tag must still be derived from the release version");
 assert.equal((workflow.match(/gh release create \$tag/g) || []).length, 1, "immutable versioned release must be created exactly once");

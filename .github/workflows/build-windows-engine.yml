@@ -40,10 +40,12 @@ jobs:
         # what the smoke test expects and what the release is tagged with.
         run: |
           $match = Select-String -Path agent/agent.js -Pattern '^const VERSION = "(\d+\.\d+\.\d+)";$'
-          if (-not $match) { throw "agent/agent.js must declare const VERSION = \"x.y.z\";" }
+          if (-not $match) { throw 'agent/agent.js must declare const VERSION = "x.y.z";' }
           $version = $match.Matches[0].Groups[1].Value
-          if (-not $version) { throw "Could not read the engine version from agent/agent.js" }
-          "ENGINE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if (-not $version) { throw 'Could not read the engine version from agent/agent.js' }
+          # Add-Content writes neither a BOM nor a trailing encoding marker, so
+          # the runner reads ENGINE_VERSION as the first name in the file.
+          Add-Content -Path $env:GITHUB_ENV -Value "ENGINE_VERSION=$version"
           Write-Host "Engine version for this run: $version"
       - uses: actions/setup-node@v4
         with:
