@@ -147,7 +147,13 @@ begin
   if CurStep = ssPostInstall then begin
     CacheDir := ExpandConstant('{localappdata}\\Magic Dialer\\updates');
     ForceDirectories(CacheDir);
-    CacheFile := CacheDir + '\\known-good-1.4.85.exe';
+    { The rollback seed is named after the engine version, and the engine's
+      updater looks for exactly known-good-<its own version>.exe. Typing the
+      version here meant the seed stayed at the previous release while the
+      engine moved on, so the updater could not find a rollback. Take it from
+      the Setup section's AppVersion, which the version gate keeps equal to
+      agent.js. }
+    CacheFile := CacheDir + '\\known-good-{#SetupSetting("AppVersion")}.exe';
     if not FileExists(CacheFile) then
       FileCopy(ExpandConstant('{srcexe}'), CacheFile, False);
   end;

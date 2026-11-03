@@ -40,6 +40,21 @@ assert.ok(workflow.includes("Add-Content -Path $env:GITHUB_ENV"), "the version m
 assert.equal((workflow.match(/\\"/g) || []).length, 0, 'the workflow must not use PowerShell \\" escaping');
 assert.ok(workflow.includes("$version = $env:ENGINE_VERSION"), "the release tag must be derived from the read version");
 assert.ok(workflow.includes('$tag = "engine-v$version"'), "the immutable tag must still be derived from the release version");
+
+/* The installer seeds updates\known-good-<version>.exe, and the engine's
+ * updater looks for exactly known-good-<its own version>.exe. A typed version
+ * there stayed at the previous release, so a 1.4.86 install seeded a 1.4.85
+ * rollback and the smoke test could not find the seed. It must come from the
+ * Setup section's AppVersion, which the checks above already tie to agent.js. */
+assert.ok(installer.includes('known-good-{#SetupSetting("AppVersion")}.exe'), "the rollback seed must be named from AppVersion");
+assert.equal((installer.match(/known-good-\d+\.\d+\.\d+/g) || []).length, 0, "the rollback seed must not carry a typed version");
+/* Inno treats any line starting with [ as a section tag, even inside a { }
+ * comment, and aborts with "Invalid section tag". Keep section lines clean so
+ * a comment can never break the installer build. */
+for (const line of installer.split(/\r?\n/)) {
+  if (!line.trimStart().startsWith("[")) continue;
+  assert.match(line.trim(), /^\[[A-Za-z]+\]$/, "section line must be a bare [Section] tag, got: " + line.trim());
+}
 assert.equal((workflow.match(/gh release create \$tag/g) || []).length, 1, "immutable versioned release must be created exactly once");
 assert.ok(workflow.includes("Immutable release $tag already exists and engine sources are unchanged; preserving release and skipping republish."), "unchanged engine must preserve existing immutable release");
 assert.ok(workflow.includes("Engine sources changed after immutable $tag; bump engine version before publishing."), "changed engine must require a version bump");

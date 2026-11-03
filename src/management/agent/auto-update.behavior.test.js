@@ -32,3 +32,28 @@ assert.ok(launcherSrc.includes('psi.EnvironmentVariables.Remove("PKG_EXECPATH")'
 const auSrc=fs.readFileSync(path.join(__dirname,"auto-update.js"),"utf8");
 assert.equal((auSrc.match(/env:pkgSafeEnv\(\)/g)||[]).length,2,"installer and recovery spawns must both pass a neutralized env");
 console.log("pkg execpath poison guards ok");
+/* --- rollback must go back to the running version, not a stale release ---
+ * This machine's state.json names a 1.4.57 installer while 1.4.86 is running:
+ * every install before 1.4.86 seeded the previous version's file name. A
+ * failed update would have reinstalled 1.4.57 and dropped every fix since. */
+{
+  const original=process.env.LOCALAPPDATA;
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),"md-seed-pick-"));
+  process.env.LOCALAPPDATA=dir;
+  const stateDir=u._test.stateDir();
+  fs.mkdirSync(stateDir,{recursive:true});
+  const seed=path.join(stateDir,"known-good-1.4.86.exe");
+  fs.writeFileSync(seed,"seed");
+  const stale={lastGoodVersion:"1.4.57",lastGoodInstaller:path.join(stateDir,"candidate-1.4.57.exe")};
+  const picked=u._test.preferredSeed(stale,"1.4.86");
+  assert.equal(picked.lastGoodVersion,"1.4.86","a stale last-good must not survive a seed for the running version");
+  assert.equal(picked.lastGoodInstaller,seed);
+  const current={lastGoodVersion:"1.4.86",lastGoodInstaller:"C:\\elsewhere\\known-good-1.4.86.exe"};
+  assert.equal(u._test.preferredSeed(current,"1.4.86").lastGoodInstaller,"C:\\elsewhere\\known-good-1.4.86.exe","an already-current state must be left alone");
+  const empty={lastGoodVersion:"1.4.85"};
+  assert.equal(u._test.preferredSeed(empty,"1.4.86").lastGoodInstaller,seed,"an empty state must adopt the seed");
+  assert.equal(u._test.preferredSeed(stale,"2.0.0"),stale,"no seed for the running version means no change");
+  process.env.LOCALAPPDATA=original;
+  fs.rmSync(dir,{recursive:true,force:true});
+}
+console.log("rollback seed selection: PASS");

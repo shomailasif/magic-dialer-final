@@ -23,6 +23,18 @@ const INSTALL_LAUNCH_GRACE_MS = 10 * 60 * 1000;
 function readState(){const target=path.join(stateDir(),"state.json");try{return JSON.parse(fs.readFileSync(target,"utf8"))}catch{try{const bak=target+".bak";return JSON.parse(fs.readFileSync(bak,"utf8"))}catch{return{}}}}
 function writeState(s){fs.mkdirSync(stateDir(),{recursive:true});const target=path.join(stateDir(),"state.json"),tmp=target+".tmp-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(s,null,2));if(fs.existsSync(target))fs.copyFileSync(target,target+".bak");fs.renameSync(tmp,target)}
 function seededInstaller(version){const p=path.join(stateDir(),"known-good-"+version+".exe");return fs.existsSync(p)?p:null}
+/* A seeded installer for the version running right now is the only rollback
+ * that returns this PC to something known to work. The state file can still
+ * name an older release - installs before 1.4.86 seeded the previous version's
+ * name - and rolling a failed update back to that would downgrade the customer
+ * past the fixes already installed. Prefer the running version's seed whenever
+ * it exists and the state does not already name it. */
+function preferredSeed(state,currentVersion){
+ const seed=seededInstaller(currentVersion);
+ if(!seed)return state;
+ if(!state.lastGoodInstaller||state.lastGoodVersion!==currentVersion)return{...state,lastGoodVersion:currentVersion,lastGoodInstaller:seed};
+ return state;
+}
 async function healthy(expectedVersion,timeoutMs=45000){const end=Date.now()+timeoutMs;while(Date.now()<end){try{const r=await fetch(HEALTH_URL,{cache:"no-store"});const j=await r.json();if(r.ok&&j.ok&&(!expectedVersion||j.version===expectedVersion))return true}catch{}await new Promise(r=>setTimeout(r,1000))}return false}
 // The installer this agent spawns is a child of this agent, and the agent then
 // leaves. If the installer dies for any reason after that - it was killed by
@@ -57,7 +69,7 @@ async function checkForUpdate(currentVersion){
  if(!newer(m.version,currentVersion))return{updated:false,reason:"current"};
  let s=readState();if(s.blockedVersion===m.version)return{updated:false,reason:"blocked-after-failure"};
  if(s.pendingVersion===m.version&&s.installLaunchedAt&&Date.now()-s.installLaunchedAt<INSTALL_LAUNCH_GRACE_MS)return{updated:false,reason:"install-already-launched"};
- const seed=!s.lastGoodInstaller&&seededInstaller(currentVersion);if(seed)s={...s,lastGoodVersion:currentVersion,lastGoodInstaller:seed};
+ s=preferredSeed(s,currentVersion);
  const dir=stateDir();fs.mkdirSync(dir,{recursive:true});const installer=path.join(dir,"candidate-"+m.version+".exe");
  // Inno's own /LOG gives us the record of what [Run] and [Code] did, which is
  // the only evidence available if an unattended update ever needs a post-mortem.
@@ -91,4 +103,4 @@ async function rollbackPendingUpdate(currentVersion){
  if(prior&&fs.existsSync(prior)){launchInstaller(prior,path.join(stateDir(),"setup-rollback.log"));return{pending:true,healthy:false,rollback:true}}
  return{pending:true,healthy:false,rollback:false};
 }
-module.exports={DISCOVERY_URL,RELEASE_BASE,HEALTH_URL,CUSTOMER_HEALTH_URL,newer,validRelease,validManifest,sha256,healthy,customerHealthy,checkForUpdate,validatePendingUpdate,rollbackPendingUpdate,_test:{readState,writeState,stateDir,seededInstaller,pkgSafeEnv}};
+module.exports={DISCOVERY_URL,RELEASE_BASE,HEALTH_URL,CUSTOMER_HEALTH_URL,newer,validRelease,validManifest,sha256,healthy,customerHealthy,checkForUpdate,validatePendingUpdate,rollbackPendingUpdate,_test:{readState,writeState,stateDir,seededInstaller,preferredSeed,pkgSafeEnv}};
