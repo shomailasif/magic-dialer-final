@@ -202,6 +202,40 @@ function takeWatchdogLock() {
   } catch (e) { supervisorNote(`lock handling error: ${safeLog(e)} - proceeding`); return true; } // never block supervision over a lock file
 }
 
+/* The supervisor appends every child line to one file and, before this, never
+ * closed or rotated it: a machine that had been up for weeks held a 63 MB
+ * watchdog-child.log that was almost entirely the same heartbeat sentence every
+ * three seconds. Rotate before opening, keeping exactly one previous file, so
+ * the folder is bounded at two. (The steady drip is stopped at the source by
+ * logChanged(); this bounds the restarts.) */
+const MAX_CHILD_LOG_BYTES = 20 * 1024 * 1024;
+function openChildLog(file, maxBytes = MAX_CHILD_LOG_BYTES) {
+  try {
+    if (fs.statSync(file).size >= maxBytes) {
+      try { fs.rmSync(file + ".1", { force: true }); } catch {}
+      fs.renameSync(file, file + ".1");
+    }
+  } catch { /* no file yet is the normal first run */ }
+  try { return fs.openSync(file, "a"); } catch { return null; }
+}
+
+/* A message that repeats must be written once. The heartbeat loop runs every
+ * few seconds for the life of the install; the dashboard is updated on every
+ * beat regardless, so nothing is lost except thousands of identical log lines.
+ * The returned function also reports whether it wrote, which keeps the call
+ * sites honest. */
+function logChanged(write) {
+  let last = null;
+  const once = (msg) => {
+    if (msg === last) return false;
+    last = msg;
+    write(msg);
+    return true;
+  };
+  once.reset = () => { last = null; };
+  return once;
+}
+
 async function runWatchdog(args) {
   // Before anything else: a supervisor that never reaches the lock write is
   // indistinguishable from one that never started. Record the boot first.
@@ -222,8 +256,7 @@ async function runWatchdog(args) {
    try {
     log(`watchdog starting agent (pid engine: ${childCmd.cmd})...`);
     const watchdogLog = path.join(path.dirname(WATCHDOG_LOCK), "watchdog-child.log");
-    let logFd = null;
-    try { logFd = fs.openSync(watchdogLog, "a"); } catch {}
+    const logFd = openChildLog(watchdogLog);
     const child = spawn(childCmd.cmd, childCmd.args, { stdio: ["ignore", logFd == null ? "inherit" : logFd, logFd == null ? "inherit" : logFd] });
     const exited = await new Promise((resolve) => {
       let settled = false;
@@ -280,7 +313,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.86";
+const VERSION = "1.4.87";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -877,6 +910,8 @@ async function runAgent(opts = {}) {
   /* When the portal first stopped answering, in ms since epoch; 0 while healthy.
    * Feeds portalDownState() so the dashboard can tell a blip from an outage. */
   let portalDownSince = 0;
+  /* One line per change, not one per beat: see logChanged(). */
+  const beatLog = logChanged(log);
 
   const heartbeatTask = (async () => {
     while (!stopHeartbeat) {
@@ -890,7 +925,7 @@ async function runAgent(opts = {}) {
         const stats = localDb.stats();
         const leads = localDb.cachedLeadStats();
         const line = `Local mode - ${leads.remaining} lead(s) waiting, ${stats.calls} call(s) stored on this PC.`;
-        log("local tick | " + line);
+        beatLog("local tick | " + line);
         ui({ status: "ONLINE", mode: config.mode || "on", line });
       } catch (e) { log("local tick failed: " + safeLog(e)); }
       if (!stopHeartbeat) await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
@@ -939,7 +974,7 @@ async function runAgent(opts = {}) {
         if (res.body.sync) sync.processSyncResponse(res.body.sync);
         const stats = localDb.stats();
         const hl = `heartbeat OK | ${stats.leads} leads, ${stats.calls} calls, ${stats.leadsUnsynced} unsynced`;
-        log(hl);
+        beatLog(hl);
         portalDownSince = 0;
         ui({ status: "ONLINE", mode: config.mode || "on", line: hl });
       } else if (res.status === 401 || res.status === 403 || res.status === 409) {
@@ -976,11 +1011,11 @@ async function runAgent(opts = {}) {
          * stays true: calls keep going from the local list. */
         if (!portalDownSince) portalDownSince = Date.now();
         const downMs = Date.now() - portalDownSince;
-        const brief = downMs < PORTAL_DOWN_HONEST_MS;
         const st = portalDownState(downMs, !!config.portalSyncedAt, true, res.status);
-        log(brief
-          ? `heartbeat unavailable (status ${res.status}) - keeping last known state.`
-          : `heartbeat unavailable (status ${res.status}) for ${Math.round(downMs / 60000)} min - keeping last known state.`);
+        /* The dashboard carries the live duration; the log carries the event.
+         * Writing the minute count would add a line every minute of an outage,
+         * which is the noise this change exists to remove. */
+        beatLog(`heartbeat unavailable (status ${res.status}) - portal did not answer; keeping last known state.`);
         ui({ status: st.status, mode: config.mode || "on", line: st.line });
       }
     } catch (err) {
@@ -990,7 +1025,7 @@ async function runAgent(opts = {}) {
        * hours with no way to tell the difference. */
       if (!portalDownSince) portalDownSince = Date.now();
       const st = portalDownState(Date.now() - portalDownSince, !!config.portalSyncedAt, false);
-      log(`heartbeat failed (${safeLog(err,[enrolledToken])}) - retrying. Agent continues offline.`);
+      beatLog(`heartbeat failed (${safeLog(err,[enrolledToken])}) - retrying. Agent continues offline.`);
       ui({ status: st.status, mode: config.mode || "on", line: st.line });
     }
       if (!stopHeartbeat) await new Promise((r) => setTimeout(r, HEARTBEAT_INTERVAL_MS));
@@ -1277,7 +1312,7 @@ function portalDownState(downMs, portalSyncedAt, reachedPortal, httpStatus) {
   };
 }
 
-module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, mergedStats, localDayKey, startOfLocalDay, pushActivity, _watchdog: { takeWatchdogLock, pidIsOurSupervisor, pidAlive, WATCHDOG_LOCK, WATCHDOG_LOG, supervisorNote }, _portal: { portalDownState, PORTAL_DOWN_HONEST_MS } };
+module.exports = { runAgent, loadConfig, saveConfig, defaultConfigPath, applyPortalConfig, bumpStats, mergedStats, localDayKey, startOfLocalDay, pushActivity, _watchdog: { takeWatchdogLock, pidIsOurSupervisor, pidAlive, WATCHDOG_LOCK, WATCHDOG_LOG, supervisorNote, openChildLog, logChanged, MAX_CHILD_LOG_BYTES }, _portal: { portalDownState, PORTAL_DOWN_HONEST_MS } };
 
 // Allow running directly: agent.exe [token] [portalUrl] [--setup] [--open] [--watchdog] [--no-browser] [--call]
 if (require.main === module) {

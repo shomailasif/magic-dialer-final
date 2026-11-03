@@ -41,6 +41,7 @@ $tests = @(
   "agent\local-ringcentral-engine.pacing.test.js",
   "agent\engine-health.behavior.test.js",
   "agent\auto-update.behavior.test.js",
+  "agent\log-growth.behavior.test.js",
   "agent\watchdog-lock.behavior.test.js",
   "agent\offline-lead-cache.behavior.test.js",
   "agent\portal-down-messaging.behavior.test.js",
