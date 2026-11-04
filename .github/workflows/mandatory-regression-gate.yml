@@ -111,7 +111,9 @@ jobs:
           if ($sip -match 'call you back within 30 minutes|Are you still there\?') { $bad += 'SIP runtime contains prohibited scripted call behavior' }
           if ($testCall -match 'window\.location\.assign') { $bad += 'customer Test Call navigates away from the portal' }
           if ($testCall -notmatch '127\.0\.0\.1:48771') { $bad += 'customer Test Call is not handed to the fixed local engine popup' }
-          if ($testCall -notmatch 'magic-dialer-call-complete' -or $testCall -notmatch 'magic-dialer-call-failed') { $bad += 'customer Test Call does not consume local popup result messages' }
+          if ($testCall -notmatch 'magic-dialer-enrolled') { $bad += 'customer Test Call never verifies the PC before dialing' }
+          if ($testCall -notmatch 'api/call') { $bad += 'customer Test Call does not ask the local engine to dial' }
+          if ($testCall -notmatch 'Call failed:') { $bad += 'customer Test Call hides a failed call' }
           if ($testCall -match 'targetAddressSpace') { $bad += 'customer Test Call still depends on browser Local Network Access fetch permission' }
           if ($connectPc -notmatch 'window\.open') { $bad += 'Connect this PC no longer preserves the portal with a popup' }
           if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }

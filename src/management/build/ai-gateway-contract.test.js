@@ -19,6 +19,15 @@ assert.match(card,/event\.origin !== "http:\/\/127\.0\.0\.1:48771"/);
 assert.match(card,/event\.source !== popup/);
 assert.match(card,/magic-dialer-enrolled/);
 assert.match(card,/magic-dialer-enrollment-failed/);
+/* Dialing is a POST to the local engine's origin-checked endpoint. The old
+ * GET that opened the main page with ?call= could be started by any website,
+ * so it is gone; the card must not quietly reintroduce a navigated call, and
+ * a failed call must still be shown instead of looking successful. */
+assert.match(card,/api\/call/);
+assert.doesNotMatch(card,/window\.location\.assign/);
+assert.doesNotMatch(card,/\?call=/);
+assert.match(card,/Call failed:/);
+assert.doesNotMatch(card,/targetAddressSpace/);
 assert.match(card,/fetch\(localBase \+ "api\/call"/);
 assert.match(card,/method: "POST"/);
 assert.match(card,/body: JSON\.stringify\(\{ number: number\.trim\(\) \}\)/);

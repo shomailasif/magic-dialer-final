@@ -1,73 +1,179 @@
 /**
- * Agent local email sender — sends qualified leads directly from the PC.
+ * Agent local email sender - sends qualified leads directly from the PC.
  *
- * Uses SMTP (nodemailer-style, but dependency-free via raw SMTP over TLS).
- * Falls back to writing an outbox file if SMTP is not configured.
+ * Uses SMTP (nodemailer-style, but dependency-free). Two transports are
+ * supported: implicit TLS (port 465, `secure: true`) and a plaintext connection
+ * upgraded with STARTTLS (port 587). Credentials are never sent on a plaintext
+ * connection; a server that does not offer STARTTLS is refused.
  *
- * Config is stored in the agent's local config file (set during setup).
+ * Falls back to writing an outbox file if SMTP is not configured or fails.
  */
 const crypto = require("node:crypto");
+const net = require("node:net");
 const tls = require("node:tls");
 const fs = require("node:fs");
 const path = require("node:path");
+const { once } = require("node:events");
+
+/* One complete SMTP reply. A reply is one or more lines: continuation lines
+ * are "250-text", the final line is "250 text". Reading stops at the first
+ * final line, which is why the old single-counter state machine (one step per
+ * line) sent AUTH before the greeting had even been consumed. */
+function readResponse(socket, timeoutMs = 10000) {
+  return new Promise((resolve, reject) => {
+    let buf = "";
+    const timer = setTimeout(() => { cleanup(); reject(new Error("SMTP response timeout")); }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("error", onError);
+      socket.off("close", onClose);
+    };
+    const onData = (chunk) => {
+      buf += chunk.toString("utf8");
+      const lines = buf.split(/\r?\n/);
+      /* The last element is a partial line (or empty); only complete lines can
+       * end a reply. */
+      for (let i = 0; i < lines.length - 1; i++) {
+        const line = lines[i];
+        if (/^\d{3} /.test(line) || /^\d{3}$/.test(line)) {
+          cleanup();
+          resolve({ code: Number(line.slice(0, 3)), lines: lines.slice(0, i + 1) });
+          return;
+        }
+      }
+    };
+    const onError = (e) => { cleanup(); reject(e); };
+    const onClose = () => { cleanup(); reject(new Error("SMTP connection closed")); };
+    socket.on("data", onData);
+    socket.on("error", onError);
+    socket.on("close", onClose);
+  });
+}
+
+async function command(socket, line) {
+  socket.write(line + "\r\n");
+  const r = await readResponse(socket);
+  if (r.code >= 400) throw new Error(`${line.split(/\s+/)[0]} rejected (${r.code}): ${r.lines.join(" | ")}`);
+  return r;
+}
+
+function oneLine(value) {
+  return String(value == null ? "" : value).replace(/[\r\n]+/g, " ").trim();
+}
+
+/* "Magic Dialer <owner@example.com>" is a valid header value but not a valid
+ * envelope path; MAIL FROM must be the bare address. */
+function addressOf(value) {
+  const s = oneLine(value);
+  const bracketed = s.match(/<([^<>]+)>/);
+  const addr = String(bracketed ? bracketed[1] : s).trim();
+  if (/[\s<>]/.test(addr) || !/^[^\s@]+@[^\s@]+$/.test(addr)) return "";
+  return addr;
+}
+
+function tlsOptions({ host, port, ca, rejectUnauthorized }) {
+  const o = { host, port };
+  if (!net.isIP(String(host || ""))) o.servername = String(host);
+  if (ca) o.ca = ca;
+  if (rejectUnauthorized === false) o.rejectUnauthorized = false;
+  return o;
+}
 
 /**
  * Send an email via SMTP. Returns { ok, error? }.
  *
- * opts: { host, port, secure, user, pass, from, to, subject, text, html? }
+ * opts: { host, port, secure, user, pass, from, to, subject, text, html?, ca?, rejectUnauthorized? }
+ * `ca` / `rejectUnauthorized` exist for the test suite only; emailQualifiedLead
+ * never sets them, so production always verifies the server certificate.
  */
 async function sendEmail(opts) {
-  const { host, port = 587, secure = false, user, pass, from, to, subject, text, html } = opts;
+  const { host, port = 587, secure = false, user, pass, from, to, subject, text } = opts;
   if (!host || !to) return { ok: false, error: "Missing SMTP host or recipient" };
+  const envelopeTo = addressOf(to);
+  const envelopeFrom = addressOf(from) || addressOf(user);
+  if (!envelopeTo) return { ok: false, error: "Invalid recipient address" };
+  if (!envelopeFrom) return { ok: false, error: "Invalid sender address" };
 
   return new Promise((resolve) => {
-    const timer = setTimeout(() => resolve({ ok: false, error: "SMTP timeout" }), 15000);
-    const socket = tls.connect({ host, port }, () => {
-      let buf = "";
-      const send = (line) => socket.write(line + "\r\n");
+    let socket = null;
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(overall);
+      try { if (socket) socket.destroy(); } catch {}
+      resolve(result);
+    };
+    const overall = setTimeout(() => finish({ ok: false, error: "SMTP timeout" }), 20000);
 
-      send(`EHLO ${crypto.randomBytes(8).toString("hex")}.local`);
-      // Simple SMTP flow — AUTH LOGIN
-      let step = 0;
-      const steps = [
-        () => { send(`AUTH LOGIN`); },
-        () => { send(Buffer.from(user || "").toString("base64")); },
-        () => { send(Buffer.from(pass || "").toString("base64")); },
-        () => { send(`MAIL FROM:<${from || user}>`); },
-        () => { send(`RCPT TO:<${to}>`); },
-        () => { send(`DATA`); },
-        () => {
-          const safeSubject = String(subject || "").replace(/[\r\n]/g, " ");
-          const safeFrom = String(from || user || "").replace(/[\r\n]/g, " ");
-          const safeTo = String(to || "").replace(/[\r\n]/g, " ");
-          send(`From: ${safeFrom}`);
-          send(`To: ${safeTo}`);
-          send(`Subject: ${safeSubject}`);
-          send(`Content-Type: text/plain; charset=utf-8`);
-          send(``);
-          const body = (text || "").replace(/^\./gm, "..");
-          send(body);
-          send(`.`);
-        },
-        () => { send(`QUIT`); clearTimeout(timer); socket.destroy(); resolve({ ok: true }); },
-      ];
+    (async () => {
+      const implicitTls = secure === true || Number(port) === 465;
+      if (implicitTls) {
+        socket = tls.connect(tlsOptions({ host, port, ca: opts.ca, rejectUnauthorized: opts.rejectUnauthorized }));
+        await once(socket, "secureConnect");
+      } else {
+        socket = net.connect({ host, port });
+        await once(socket, "connect");
+      }
+      socket.setTimeout(15000, () => finish({ ok: false, error: "socket timeout" }));
 
-      socket.on("data", (d) => {
-        buf += d.toString("ascii");
-        // Process one complete line at a time (SMTP responses can be multi-line)
-        const lines = buf.split(/\r\n/);
-        buf = lines.pop(); // keep incomplete line in buffer
-        for (const line of lines) {
-          if (!line) continue;
-          if (/^5/.test(line)) { clearTimeout(timer); socket.destroy(); resolve({ ok: false, error: line.trim() }); return; }
-          // Only advance on the last line of a response (no dash = complete)
-          if (step < steps.length && !/^-/.test(line)) steps[step++]();
+      let reply = await readResponse(socket);
+      if (reply.code !== 220) throw new Error(`SMTP greeting rejected (${reply.code}): ${reply.lines.join(" | ")}`);
+
+      const clientName = crypto.randomBytes(8).toString("hex") + ".local";
+      let ehlo = await command(socket, `EHLO ${clientName}`);
+      let caps = ehlo.lines.join("\n").toLowerCase();
+
+      if (!implicitTls) {
+        if (!/\bstarttls\b/.test(caps)) {
+          throw new Error("SMTP server does not offer STARTTLS; refusing to send credentials over plaintext");
         }
-      });
-    });
-    socket.on("error", (e) => { clearTimeout(timer); resolve({ ok: false, error: e.message }); });
-    socket.setTimeout(10000);
-    socket.on("timeout", () => { clearTimeout(timer); socket.destroy(); resolve({ ok: false, error: "socket timeout" }); });
+        await command(socket, "STARTTLS");
+        const upgraded = tls.connect({ ...tlsOptions({ host, port, ca: opts.ca, rejectUnauthorized: opts.rejectUnauthorized }), socket });
+        await once(upgraded, "secureConnect");
+        socket = upgraded;
+        socket.setTimeout(15000, () => finish({ ok: false, error: "socket timeout" }));
+        ehlo = await command(socket, `EHLO ${clientName}`);
+        caps = ehlo.lines.join("\n").toLowerCase();
+      }
+
+      if (user || pass) {
+        if (/\bauth\b[^\n]*\blogin\b/.test(caps)) {
+          await command(socket, "AUTH LOGIN");
+          await command(socket, Buffer.from(String(user || "")).toString("base64"));
+          await command(socket, Buffer.from(String(pass || "")).toString("base64"));
+        } else if (/\bauth\b[^\n]*\bplain\b/.test(caps)) {
+          const token = Buffer.from("\0" + String(user || "") + "\0" + String(pass || "")).toString("base64");
+          await command(socket, `AUTH PLAIN ${token}`);
+        } else {
+          throw new Error("SMTP server offers neither AUTH LOGIN nor AUTH PLAIN");
+        }
+      }
+
+      await command(socket, `MAIL FROM:<${envelopeFrom}>`);
+      await command(socket, `RCPT TO:<${envelopeTo}>`);
+      await command(socket, "DATA");
+
+      const headerFrom = oneLine(from) || envelopeFrom;
+      const headerTo = oneLine(to);
+      const headers = [
+        `From: ${headerFrom}`,
+        `To: ${headerTo}`,
+        `Subject: ${oneLine(subject)}`,
+        `MIME-Version: 1.0`,
+        `Content-Type: text/plain; charset=utf-8`,
+        `Content-Transfer-Encoding: 8bit`,
+        ``,
+      ].join("\r\n");
+      const body = String(text || "").replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");
+      socket.write(headers + "\r\n" + body + "\r\n.\r\n");
+      const stored = await readResponse(socket);
+      if (stored.code >= 400) throw new Error(`message rejected (${stored.code}): ${stored.lines.join(" | ")}`);
+
+      try { await command(socket, "QUIT"); } catch { /* the message is already accepted */ }
+      finish({ ok: true });
+    })().catch((e) => finish({ ok: false, error: (e && e.message) || String(e) }));
   });
 }
 
