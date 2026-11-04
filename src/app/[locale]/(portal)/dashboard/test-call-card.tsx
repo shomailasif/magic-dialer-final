@@ -11,21 +11,38 @@ export function TestCallCard() {
   async function dialTest() {
     if (!number.trim()) return;
     setLoading(true);
-    setStatus("Verifying this PC against the current portal...");
-    let popup: Window | null = window.open("about:blank", "magicDialerTestCall", "popup=yes,width=520,height=300");
+    setStatus("Confirm this PC in the popup window to continue.");
+    const popup = window.open("about:blank", "magicDialerTestCall", "popup=yes,width=520,height=340");
     if (!popup) {
       setLoading(false);
       setStatus("Call failed: Allow the Magic Dialer test-call popup, then try again.");
       return;
     }
+    const win = popup;
 
     const localBase = "http://127.0.0.1:48771/";
+    let settled = false;
+    let poll: number | undefined;
+    const stopWatching = () => {
+      window.removeEventListener("message", onMessage);
+      if (poll !== undefined) window.clearInterval(poll);
+    };
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      stopWatching();
+      setLoading(false);
+      setStatus(message);
+    };
+
     const onMessage = async (event: MessageEvent) => {
-      if (event.origin !== "http://127.0.0.1:48771" || event.source !== popup) return;
+      if (event.origin !== "http://127.0.0.1:48771" || event.source !== win) return;
       if (event.data?.type === "magic-dialer-enrolled") {
+        if (settled) return;
+        settled = true;
+        if (poll !== undefined) window.clearInterval(poll);
         setStatus("PC verified. Starting test call...");
-        try { if (popup && !popup.closed) popup.close(); } catch {}
-        window.removeEventListener("message", onMessage);
+        try { if (!win.closed) win.close(); } catch {}
         /* Call control is a POST to the same endpoint the dashboard uses.
          * The open-main-page GET that used to trigger a call could be started
          * by any website, so the engine no longer offers it; this request is
@@ -40,17 +57,32 @@ export function TestCallCard() {
           if (!r.ok || !d.ok) throw new Error(d.error || "Local call failed");
           setStatus("Test call completed through this PC.");
         } catch (err) {
+          /* The PC is verified at this point, so this is the call itself
+           * failing; `fail` is already settled and would swallow it. */
           setStatus("Call failed: " + (err instanceof Error ? err.message : "Local call failed"));
         } finally {
+          window.removeEventListener("message", onMessage);
           setLoading(false);
         }
       } else if (event.data?.type === "magic-dialer-enrollment-failed") {
-        setStatus("Call failed: " + (event.data?.error || "PC verification failed"));
-        setLoading(false);
-        window.removeEventListener("message", onMessage);
+        fail("Call failed: " + (event.data?.error || "PC verification failed"));
       }
     };
     window.addEventListener("message", onMessage);
+
+    /* The PC asks for a click before it joins a portal, so the user may take a
+     * while - or close the window. Nothing used to notice either, and the card
+     * sat on "Verifying..." forever with the button spinning. */
+    const deadline = Date.now() + 90000;
+    poll = window.setInterval(() => {
+      if (settled) return;
+      if (win.closed) {
+        fail("Call failed: the verification window was closed before this PC was connected.");
+      } else if (Date.now() > deadline) {
+        try { win.close(); } catch {}
+        fail("Call failed: this PC did not confirm the connection in time.");
+      }
+    }, 800);
 
     try {
       const r = await fetch("/api/engine/enrollment-ticket", { method: "POST" });
@@ -59,12 +91,10 @@ export function TestCallCard() {
       const local = new URL(localBase);
       local.searchParams.set("enroll", e.ticket);
       local.searchParams.set("portal", window.location.origin);
-      popup.location.href = local.toString();
+      win.location.href = local.toString();
     } catch (err) {
-      window.removeEventListener("message", onMessage);
-      try { popup.close(); } catch {}
-      setLoading(false);
-      setStatus("Call failed: " + (err instanceof Error ? err.message : "PC verification failed"));
+      try { win.close(); } catch {}
+      fail("Call failed: " + (err instanceof Error ? err.message : "PC verification failed"));
     }
   }
 

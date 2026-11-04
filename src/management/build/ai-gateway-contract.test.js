@@ -16,7 +16,7 @@ assert.match(card,/fetch\("\/api\/engine\/enrollment-ticket", \{ method: "POST" 
 assert.match(card,/local\.searchParams\.set\("enroll", e\.ticket\)/);
 assert.match(card,/local\.searchParams\.set\("portal", window\.location\.origin\)/);
 assert.match(card,/event\.origin !== "http:\/\/127\.0\.0\.1:48771"/);
-assert.match(card,/event\.source !== popup/);
+assert.match(card,/event\.source !== win/);
 assert.match(card,/magic-dialer-enrolled/);
 assert.match(card,/magic-dialer-enrollment-failed/);
 /* Dialing is a POST to the local engine's origin-checked endpoint. The old
@@ -28,14 +28,19 @@ assert.doesNotMatch(card,/window\.location\.assign/);
 assert.doesNotMatch(card,/\?call=/);
 assert.match(card,/Call failed:/);
 assert.doesNotMatch(card,/targetAddressSpace/);
+/* The PC now asks for a click before joining a portal. The card must say so,
+ * and must notice a popup the user closed instead of spinning forever. */
+assert.match(card,/Confirm this PC in the popup window/);
+assert.match(card,/win\.closed/);
+assert.match(card,/did not confirm the connection in time/);
 assert.match(card,/fetch\(localBase \+ "api\/call"/);
 assert.match(card,/method: "POST"/);
 assert.match(card,/body: JSON\.stringify\(\{ number: number\.trim\(\) \}\)/);
 assert.doesNotMatch(card,/searchParams\.set\("call"/,"call control must not be a GET navigation any website can start");
-assert.match(card,/popup\.location\.href = local\.toString\(\)/);
+assert.match(card,/win\.location\.href = local\.toString\(\)/);
 assert.match(card,/if \(!popup\)/);
-assert.match(card,/popup\.close\(\)/);
+assert.match(card,/win\.close\(\)/);
 assert.ok(card.indexOf('window.open("about:blank"') < card.indexOf('await fetch("/api/engine/enrollment-ticket"'),"popup must be opened during direct user activation before async fetch");
-assert.ok(card.indexOf('local.searchParams.set("portal", window.location.origin)') < card.lastIndexOf("popup.location.href = local.toString()"),"current portal origin must be bound before enrollment navigation");
+assert.ok(card.indexOf('local.searchParams.set("portal", window.location.origin)') < card.lastIndexOf("win.location.href = local.toString()"),"current portal origin must be bound before enrollment navigation");
 assert.doesNotMatch(card,/GROQ_API_KEY|sipPassword|clientSecret/);
 console.log("AI gateway + current-portal test-call contract: PASS");
