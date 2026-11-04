@@ -1,4 +1,5 @@
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
@@ -669,6 +670,31 @@ function readJson(req) {
   });
 }
 
+/* Loopback names this server answers to. Anything else is a request that
+ * reached 127.0.0.1 under another name - the signature of DNS rebinding - and
+ * is refused even when the Host and Origin agree with each other. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function hostnameOf(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    return new URL(/^[a-z]+:\/\//i.test(raw) ? raw : "http://" + raw).hostname.toLowerCase();
+  } catch { return ""; }
+}
+
+/* A browser always sends Origin on a POST. A page on the open internet can
+ * send one to 127.0.0.1 as a "simple request" (text/plain needs no preflight),
+ * so with no check any website could start the dialer, import leads, rewrite
+ * the setup form or clear the licence key. Same-origin pages (the dashboard)
+ * and non-browser callers (which send no Origin at all) are allowed; the
+ * configured portal origin is allowed only for call control, which it reaches
+ * through the CORS handshake below. */
+function isLocalOrigin(origin) {
+  if (!origin) return true;
+  return LOOPBACK_HOSTS.has(hostnameOf(origin));
+}
+
 /**
  * opts:
  *   readConfig : () -> config object|null
@@ -685,64 +711,135 @@ function listenOnFixedPort(server, port, cb) {
   server.listen(port, "127.0.0.1", () => cb(server.address().port, null));
 }
 
+/* The page shown when a portal asks to connect this PC. It names the origin
+ * and requires a click; the button posts the nonce the page was rendered with. */
+function enrollmentPage(portal, nonce) {
+  const portalJs = JSON.stringify(String(portal)).replace(/<\/script>/gi, "<\\/script>");
+  const nonceJs = JSON.stringify(String(nonce)).replace(/<\/script>/gi, "<\\/script>");
+  return `<!doctype html><title>Magic Dialer</title>
+<body style='font-family:system-ui;padding:32px;max-width:640px'>
+<h2>Magic Dialer</h2>
+<h3>Connect this PC?</h3>
+<p><b>${escapHtml(portal)}</b> wants to connect this PC so it can show results and place calls from this line.</p>
+<p>Only continue if you started this from that portal.</p>
+<button id="go" style="font:inherit;padding:8px 16px">Connect this PC</button>
+<p id="st" style="color:#b91c1c"></p>
+<script>
+(function(){
+  var portal=${portalJs}, nonce=${nonceJs}, btn=document.getElementById("go"), st=document.getElementById("st");
+  btn.addEventListener("click", async function(){
+    btn.disabled=true; st.textContent="Connecting...";
+    try{
+      var r=await fetch("/enroll/confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nonce:nonce})});
+      var d=await r.json();
+      if(!r.ok||!d.ok) throw new Error((d&&d.error)||"PC connection failed");
+      st.style.color="#15803d"; st.textContent="This PC is connected. Returning to the portal...";
+      try{ if(window.opener) window.opener.postMessage({type:"magic-dialer-enrolled"}, portal); }catch(e){}
+      setTimeout(function(){ window.close(); }, 250);
+    }catch(e){
+      st.textContent=(e&&e.message)||"PC connection failed";
+      try{ if(window.opener) window.opener.postMessage({type:"magic-dialer-enrollment-failed",error:(e&&e.message)||"PC connection failed"}, portal); }catch(_){}
+      btn.disabled=false;
+    }
+  });
+})();
+</script>
+</body>`;
+}
+
 async function startWebUi(opts) {
   const serviceName = opts.serviceName || "Magic Dialer";
+  const pendingEnroll = new Map();
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://127.0.0.1");
     const p = u.pathname;
+    /* The engine binds 127.0.0.1, so a Host that is not a loopback name means
+     * the request arrived through a name that resolves here (DNS rebinding).
+     * Refuse it before reading a config, a key or a lead list. */
+    if (!LOOPBACK_HOSTS.has(hostnameOf(req.headers.host))) {
+      sendJson(res, 403, { ok: false, error: "Local access only." });
+      return;
+    }
     // The cloud customer portal is the only cross-origin caller allowed to invoke
     // local call control. Enrollment persists that exact portal origin in config.
     const origin = String(req.headers.origin || "");
     const cfgForOrigin = opts.readConfig ? (opts.readConfig() || {}) : {};
-    const allowedOrigin = String(cfgForOrigin.portalUrl || "").replace(/\/+$/, "");
+    const allowedOrigin = (() => {
+      try { return cfgForOrigin.portalUrl ? new URL(cfgForOrigin.portalUrl).origin : ""; }
+      catch { return ""; }
+    })();
     const crossOriginAllowed = !!origin && !!allowedOrigin && origin === allowedOrigin;
     const isCallRoute = p === "/api/call";
+    if (req.method === "POST" && !isLocalOrigin(origin) && !(isCallRoute && crossOriginAllowed)) {
+      sendJson(res, 403, { ok: false, error: "Origin not allowed." });
+      return;
+    }
     if (isCallRoute && origin && !crossOriginAllowed) { sendJson(res, 403, { ok: false, error: "Origin not allowed." }); return; }
     if (isCallRoute && crossOriginAllowed) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
       res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      /* Chrome treats a request from a public portal to 127.0.0.1 as a
+       * private-network request; without these the preflight succeeds but the
+       * POST is blocked, and the portal's test call silently never arrives. */
+      res.setHeader("Access-Control-Allow-Private-Network", "true");
+      res.setHeader("Private-Network-Access-Name", "magic-dialer-engine");
+      res.setHeader("Private-Network-Access-ID", "4d:44:4c:52:01:01");
     }
     if (isCallRoute && req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
     if (req.method === "GET" && p === "/" && u.searchParams.get("enroll")) {
       const ticket = String(u.searchParams.get("enroll") || "");
       const portal = String(u.searchParams.get("portal") || "").replace(/\/+$/, "");
-      const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
       if (!ticket || !/^https?:\/\//.test(portal)) { res.writeHead(400, { "Content-Type": "text/plain" }); res.end("Invalid enrollment request."); return; }
-      try {
-        if (typeof opts.onEnroll !== "function") throw new Error("Enrollment unavailable");
-        await opts.onEnroll({ ticket, portal });
-        const safePortal = JSON.stringify(portal).replace(/<\/script>/gi, "<\\/script>");
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#15803d'>This PC is connected.</h3><p>Returning to the portal...</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrolled'}, "+safePortal+");setTimeout(function(){window.close()},250)}}catch(e){}</script></body>");
-      } catch (e) {
-        res.writeHead(409, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-        const msg = e && e.message ? e.message : "Enrollment rejected";
-        const safePortal2 = JSON.stringify(portal).replace(/<\/script>/gi, "<\\/script>");
-        res.end("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><h3 style='color:#b91c1c'>PC connection failed.</h3><p>"+escapHtml(msg)+"</p><script>try{if(window.opener){window.opener.postMessage({type:'magic-dialer-enrollment-failed',error:"+JSON.stringify(String(msg))+"}, "+safePortal2+")}}catch(e){}</script></body>");
+      /* Enrollment is no longer a GET side effect.
+       *
+       * Any website can navigate a window at a 127.0.0.1 URL. Enrolling on the
+       * GET therefore let a page the operator never opened join this PC to a
+       * portal of the attacker's choosing, and that portal then held the CORS
+       * right to place calls. The URL now only shows a page naming the portal;
+       * the click posts a one-time nonce that a cross-origin page cannot read.
+       * The portal popup flow is unchanged from the operator's side. */
+      const nonce = crypto.randomBytes(18).toString("hex");
+      pendingEnroll.set(nonce, { ticket, portal, at: Date.now() });
+      for (const [key, value] of pendingEnroll) {
+        if (Date.now() - value.at > 2 * 60 * 1000) pendingEnroll.delete(key);
       }
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "frame-ancestors 'none'",
+      });
+      res.end(enrollmentPage(portal, nonce));
       return;
     }
-    if (req.method === "GET" && p === "/" && u.searchParams.get("call")) {
-      const number = String(u.searchParams.get("call") || "").replace(/[^0-9+]/g, "");
-      if (!/^\+?[0-9]{7,15}$/.test(number)) { res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Invalid phone number."); return; }
-      if (typeof opts.onCall !== "function") { res.writeHead(503, { "Content-Type": "text/plain; charset=utf-8" }); res.end("Local call control unavailable."); return; }
-      const portalOrigin = allowedOrigin && /^https?:\/\//.test(allowedOrigin) ? allowedOrigin : "";
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-      res.write("<!doctype html><title>Magic Dialer</title><body style='font-family:system-ui;padding:32px'><h2>Magic Dialer</h2><p>Starting local-engine test call...</p>");
+    if (req.method === "POST" && p === "/enroll/confirm") {
+      const body = await readJson(req);
+      const nonce = String((body && body.nonce) || "");
+      const pending = pendingEnroll.get(nonce);
+      pendingEnroll.delete(nonce);
+      if (!pending || Date.now() - pending.at > 2 * 60 * 1000) {
+        sendJson(res, 409, { ok: false, error: "This connection request expired. Ask the portal to try again." });
+        return;
+      }
       try {
-        await opts.onCall(number);
-        res.end("<p style='color:#15803d'>Test call completed. Returning to the portal...</p><script>try{if(window.opener&&"+JSON.stringify(!!portalOrigin)+"){window.opener.postMessage({type:'magic-dialer-call-complete'}, "+JSON.stringify(portalOrigin)+");setTimeout(function(){window.close()},350)}}catch(e){}</script></body>");
+        if (typeof opts.onEnroll !== "function") throw new Error("Enrollment unavailable");
+        await opts.onEnroll({ ticket: pending.ticket, portal: pending.portal });
+        sendJson(res, 200, { ok: true, portal: pending.portal });
       } catch (e) {
-        const msg = e && e.message ? e.message : "Local call failed";
-        res.end("<p style='color:#b91c1c'>Call failed: "+escapHtml(msg)+"</p><script>try{if(window.opener&&"+JSON.stringify(!!portalOrigin)+"){window.opener.postMessage({type:'magic-dialer-call-failed',error:"+JSON.stringify(String(msg))+"}, "+JSON.stringify(portalOrigin)+")}}catch(e){}</script></body>");
+        sendJson(res, 409, { ok: false, error: (e && e.message) || "Enrollment rejected" });
       }
       return;
     }
     if (req.method === "GET" && p === "/") {
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "frame-ancestors 'none'",
+      });
       res.end(PAGE);
       return;
     }

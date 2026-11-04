@@ -20,28 +20,32 @@ export function TestCallCard() {
     }
 
     const localBase = "http://127.0.0.1:48771/";
-    const onMessage = (event: MessageEvent) => {
+    const onMessage = async (event: MessageEvent) => {
       if (event.origin !== "http://127.0.0.1:48771" || event.source !== popup) return;
       if (event.data?.type === "magic-dialer-enrolled") {
         setStatus("PC verified. Starting test call...");
-        const local = new URL(localBase);
-        local.searchParams.set("call", number.trim());
-        try { if (popup && !popup.closed) popup.location.href = local.toString(); }
-        catch {
+        try { if (popup && !popup.closed) popup.close(); } catch {}
+        window.removeEventListener("message", onMessage);
+        /* Call control is a POST to the same endpoint the dashboard uses.
+         * The open-main-page GET that used to trigger a call could be started
+         * by any website, so the engine no longer offers it; this request is
+         * accepted because the PC has just enrolled to this exact origin. */
+        try {
+          const r = await fetch(localBase + "api/call", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ number: number.trim() }),
+          });
+          const d = await r.json();
+          if (!r.ok || !d.ok) throw new Error(d.error || "Local call failed");
+          setStatus("Test call completed through this PC.");
+        } catch (err) {
+          setStatus("Call failed: " + (err instanceof Error ? err.message : "Local call failed"));
+        } finally {
           setLoading(false);
-          setStatus("Call failed: Could not continue in the local-engine popup.");
-          window.removeEventListener("message", onMessage);
         }
       } else if (event.data?.type === "magic-dialer-enrollment-failed") {
         setStatus("Call failed: " + (event.data?.error || "PC verification failed"));
-        setLoading(false);
-        window.removeEventListener("message", onMessage);
-      } else if (event.data?.type === "magic-dialer-call-complete") {
-        setStatus("Test call completed through this PC.");
-        setLoading(false);
-        window.removeEventListener("message", onMessage);
-      } else if (event.data?.type === "magic-dialer-call-failed") {
-        setStatus("Call failed: " + (event.data?.error || "Local call failed"));
         setLoading(false);
         window.removeEventListener("message", onMessage);
       }

@@ -313,7 +313,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.87";
+const VERSION = "1.4.88";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -648,7 +648,12 @@ async function runAgent(opts = {}) {
 
   let engineHealthServer = null;
   try {
-    const portalOrigin = config && config.portalUrl ? new URL(config.portalUrl).origin : "*";
+    const portalOrigin = () => {
+      try {
+        const live = loadConfig(cfgPath);
+        return live && live.portalUrl ? new URL(live.portalUrl).origin : "*";
+      } catch { return "*"; }
+    };
     engineHealthServer = await startEngineHealthServer({
       version: VERSION,
       allowedOrigin: portalOrigin,

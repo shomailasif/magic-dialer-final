@@ -49,6 +49,7 @@ $tests = @(
 "agent\license-suspension.behavior.test.js",
 "agent\local-research.behavior.test.js",
   "agent\standalone-mode.behavior.test.js",
+  "agent\local-api-origin.behavior.test.js",
   "agent\dashboard-stats.behavior.test.js",
   "agent\config-secrets.behavior.test.js",
   "agent\refusal-i18n.behavior.test.js",
