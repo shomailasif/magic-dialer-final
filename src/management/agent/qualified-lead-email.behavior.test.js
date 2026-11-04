@@ -73,6 +73,12 @@ async function main() {
     assert.ok(/To: owner@example\.com/.test(body), "the outbox copy must be addressed to the operator's contact email");
     assert.ok(logs.some((m) => /Qualified lead for owner@example\.com saved to .*outbox.*nothing was emailed/.test(m)),
       "the operator must be told where it actually went, and that it was not emailed, logs: " + JSON.stringify(logs));
+    /* A configured server that would not take the message is not the same as
+     * no server at all; the log must not claim the PC was never configured. */
+    assert.ok(logs.some((m) => /did not accept it/.test(m)),
+      "the operator must be told the configured server refused the message, logs: " + JSON.stringify(logs));
+    assert.ok(!logs.some((m) => /no mail server is configured/.test(m)),
+      "a failed configured server must not be reported as no server, logs: " + JSON.stringify(logs));
 
     /* The engine passes its own data directory: a packaged install can start
      * from Program Files, where writing the last-resort copy used to fail. */
@@ -84,6 +90,8 @@ async function main() {
     assert.equal(r4b.method, "outbox");
     assert.ok(fs.existsSync(r4b.path), "the saved copy must be readable at the reported path: " + r4b.path);
     assert.ok(r4b.path.startsWith(dataDir), "the copy must land in the directory the engine chose, not the working directory: " + r4b.path);
+    assert.ok(/no mail server is configured/.test(logs[logs.length - 1]),
+      "with no SMTP configured the log must say so, got: " + logs[logs.length - 1]);
 
     // 5. The failure message must name the address, so a mis-typed contact is
     //    diagnosable from the log alone.

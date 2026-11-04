@@ -62,6 +62,25 @@ function oneLine(value) {
   return String(value == null ? "" : value).replace(/[\r\n]+/g, " ").trim();
 }
 
+/* A header may only carry ASCII. A product or prospect name with an accent
+ * would otherwise be sent raw and arrive mangled, so non-ASCII values travel
+ * as a single RFC 2047 encoded word. */
+function encodeHeader(value) {
+  const s = oneLine(value);
+  if (!/[^\x20-\x7E]/.test(s)) return s;
+  return `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`;
+}
+
+/* Base64 is safe on every server. Sending UTF-8 bytes with 8bit without
+ * checking that the server advertised 8BITMIME is not: a server that does not
+ * support it may mangle or reject the message. */
+function encodeBody(text) {
+  const base64 = Buffer.from(String(text || "").replace(/\r?\n/g, "\r\n"), "utf8").toString("base64");
+  /* 76 characters per line, and no stray blank line at the end when the
+   * encoded length happens to be an exact multiple. */
+  return (base64.match(/.{1,76}/g) || []).join("\r\n");
+}
+
 /* "Magic Dialer <owner@example.com>" is a valid header value but not a valid
  * envelope path; MAIL FROM must be the bare address. */
 function addressOf(value) {
@@ -156,18 +175,22 @@ async function sendEmail(opts) {
       await command(socket, "DATA");
 
       const headerFrom = oneLine(from) || envelopeFrom;
+      /* The address itself must stay literal in the header; only the subject
+       * is a free-text field here. */
       const headerTo = oneLine(to);
+      const domain = envelopeFrom.split("@")[1] || "localhost";
       const headers = [
+        `Date: ${new Date().toUTCString()}`,
+        `Message-ID: <${crypto.randomBytes(16).toString("hex")}@${domain}>`,
         `From: ${headerFrom}`,
         `To: ${headerTo}`,
-        `Subject: ${oneLine(subject)}`,
+        `Subject: ${encodeHeader(subject)}`,
         `MIME-Version: 1.0`,
         `Content-Type: text/plain; charset=utf-8`,
-        `Content-Transfer-Encoding: 8bit`,
+        `Content-Transfer-Encoding: base64`,
         ``,
       ].join("\r\n");
-      const body = String(text || "").replace(/\r?\n/g, "\r\n").replace(/^\./gm, "..");
-      socket.write(headers + "\r\n" + body + "\r\n.\r\n");
+      socket.write(headers + "\r\n" + encodeBody(text) + "\r\n.\r\n");
       const stored = await readResponse(socket);
       if (stored.code >= 400) throw new Error(`message rejected (${stored.code}): ${stored.lines.join(" | ")}`);
 
@@ -205,6 +228,7 @@ async function emailQualifiedLead(opts) {
   ].join("\n");
 
   // Try SMTP
+  let smtpError = null;
   if (smtp && smtp.host) {
     const r = await sendEmail({
       host: smtp.host,
@@ -218,6 +242,9 @@ async function emailQualifiedLead(opts) {
       text: body,
     });
     if (r.ok) return { ok: true, method: "smtp" };
+    /* Keep the reason: "no mail server is configured" is the wrong story when
+     * a server was configured and refused the message. */
+    smtpError = r.error || "the mail server rejected the message";
   }
 
   // Fallback: write to outbox
@@ -232,7 +259,7 @@ async function emailQualifiedLead(opts) {
     const filename = `lead-${Date.now()}.txt`;
     const full = path.join(outboxDir, filename);
     fs.writeFileSync(full, `To: ${to}\nSubject: ${subject}\n\n${body}`);
-    return { ok: true, method: "outbox", file: filename, path: full };
+    return { ok: true, method: "outbox", file: filename, path: full, smtpError };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -279,10 +306,13 @@ async function deliverQualifiedLead({ config = {}, result = {}, lead = null, log
   } catch (e) {
     r = { ok: false, error: String((e && e.message) || e) };
   }
+  const where = r.path || r.file;
   log(r.ok
     ? (r.method === "smtp"
       ? `Qualified lead emailed to ${to} from this PC.`
-      : `Qualified lead for ${to} saved to ${r.path || r.file} - no mail server is configured on this PC, so nothing was emailed.`)
+      : `Qualified lead for ${to} saved to ${where} - ${r.smtpError
+        ? `the mail server did not accept it (${r.smtpError})`
+        : "no mail server is configured on this PC"}, so nothing was emailed.`)
     : `Qualified lead email to ${to} failed: ${r.error}`);
   return r;
 }

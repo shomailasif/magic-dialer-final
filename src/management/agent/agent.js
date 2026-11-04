@@ -313,7 +313,7 @@ async function runWatchdog(args) {
 }
 
 /** Agent version surfaced in dashboard + status. */
-const VERSION = "1.4.89";
+const VERSION = "1.4.90";
 
 // Leaving is only correct while the installer we handed the update to is still
 // running: it is what stops the old engine and starts the new one. If it is
@@ -1082,7 +1082,7 @@ async function runAgent(opts = {}) {
       pushActivity(config, `Call done - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}. Strategy: ${(result.strategies || []).slice(0, 3).join(", ") || "intro"}${result.goodLead ? (mail && mail.ok
         ? (mail.method === "portal" ? ". Emailed by the portal"
           : mail.method === "smtp" ? ". EMAILED to " + config.contactEmail
-          : ". SAVED to " + (mail.path || mail.file) + " - no mail server is configured")
+          : ". SAVED to " + (mail.path || mail.file) + (mail.smtpError ? " - the mail server did not accept it" : " - no mail server is configured"))
         : ". EMAIL FAILED - see the log") : ""}`);
       saveConfig(config, cfgPath);
       const finalLine = `Call result - score ${result.score}, ${result.goodLead ? "QUALIFIED LEAD" : "no lead"}.`;

@@ -209,7 +209,12 @@ async function startServer(options = {}) {
     seen,
     close: () => new Promise((resolve) => {
       for (const socket of sockets) { try { socket.destroy(); } catch {} }
-      server.close(() => resolve());
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; resolve(); } };
+      try { server.close(done); } catch { done(); }
+      /* A socket the peer has not finished tearing down must not wedge the
+       * suite; the assertions have already run by this point. */
+      setTimeout(done, 1000).unref();
     }),
   };
 }
@@ -223,17 +228,42 @@ const base = {
   text: "First line\n.dot line",
 };
 
+/* The body travels base64 so a server without 8BITMIME cannot mangle accented
+ * text; these helpers put the message back together for inspection. */
+function splitMessage(raw) {
+  const cut = raw.indexOf("\n\n");
+  assert.ok(cut > 0, "message has no header/body separator");
+  return {
+    headers: raw.slice(0, cut),
+    body: Buffer.from(raw.slice(cut + 2).replace(/\s+/g, ""), "base64").toString("utf8"),
+  };
+}
+
 async function testImplicitTls() {
   const server = await startServer({ implicitTls: true, greetingDelayMs: 150 });
   try {
-    const r = await sendEmail({ ...base, host: "localhost", port: server.port, secure: true, ca: server.ca });
+    const r = await sendEmail({
+      ...base,
+      subject: "New lead: Café",
+      host: "localhost",
+      port: server.port,
+      secure: true,
+      ca: server.ca,
+    });
     assert.equal(r.ok, true, r.error);
     const s = server.seen;
     assert.equal(s.mailFrom, "MAIL FROM:<owner@example.com>", "envelope sender must be the bare address");
     assert.deepEqual(s.rcptTo, ["RCPT TO:<ops@example.com>"], "envelope recipient must be the bare address");
     assert.deepEqual(s.auth, ["u@example.com", "s3cret"]);
-    assert.match(s.data, /^From: Magic Dialer <owner@example\.com>$/m);
-    assert.match(s.data, /^\.\.dot line$/m, "a leading dot must be stuffed");
+    const message = splitMessage(s.data);
+    assert.match(message.headers, /^From: Magic Dialer <owner@example\.com>$/m);
+    assert.match(message.headers, /^Date: .+$/m);
+    assert.match(message.headers, /^Message-ID: <[0-9a-f]+@example\.com>$/m);
+    assert.match(message.headers, /^Content-Transfer-Encoding: base64$/m);
+    const subject = message.headers.match(/^Subject: =\?UTF-8\?B\?([^?]+)\?=$/m);
+    assert.ok(subject, "a non-ASCII subject must be an RFC 2047 encoded word");
+    assert.equal(Buffer.from(subject[1], "base64").toString("utf8"), "New lead: Café");
+    assert.equal(message.body, "First line\r\n.dot line", "the body must keep its text and its leading dot");
     /* The greeting is written first; the client may not send anything until
      * it has read it. */
     assert.ok(s.greetedAt > 0);
