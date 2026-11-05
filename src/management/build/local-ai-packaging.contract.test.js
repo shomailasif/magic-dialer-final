@@ -35,6 +35,7 @@ const checks = [
     /Source:\s*"dist\\local-ai\\\*";\s*DestDir:\s*"\{app\}\\local-ai"/,
     "the installer must carry the offline brain runtime",
   ),
+  () => assert.doesNotMatch(installer, /\/\*/, "Inno comments must use ';': a '/*' line aborts the installer build"),
 
   // 2. The model is a download, not installer payload.
   () => assert.doesNotMatch(installer, /\.gguf/i, "the 1.1 GB model must never be bundled into the installer"),
