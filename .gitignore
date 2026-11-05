@@ -76,3 +76,4 @@ src/management/build/fixtures/*.wav
 # engines have to read both.
 /licenses/license.private.key
 /licenses/grants.local.json
+**/build/cache/

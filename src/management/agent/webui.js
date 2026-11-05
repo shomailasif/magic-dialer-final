@@ -305,6 +305,23 @@ const PAGE = `<!doctype html>
         </div>
       </div>
       <div class="err hidden" id="pkErr"></div>
+      <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px">
+        <div class="lab">Offline brain</div>
+        <div id="aiLocalLine" class="sub" style="margin-top:6px">Checking&hellip;</div>
+        <div class="inl" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+          <select id="aiMode" style="padding:8px 10px;border-radius:8px;border:1px solid #cbd5e1;background:#fff">
+            <option value="auto">Fast first - free quota, then offline</option>
+            <option value="local">Offline first - never uses the quota</option>
+            <option value="hosted">Hosted only</option>
+          </select>
+          <button id="aiLocalGet" class="btn teal">Download offline brain (1.1 GB)</button>
+        </div>
+        <div class="inl" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+          <button id="aiSttGet" class="btn ghost">Download offline hearing (74 MB)</button>
+        </div>
+        <div id="aiSttLine" class="sub" style="margin-top:6px">Checking&hellip;</div>
+        <div class="err hidden" id="aiLocalErr"></div>
+      </div>
     </div>
     <div class="card" style="padding:20px 24px">
       <div class="inl" style="justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start">
@@ -503,6 +520,87 @@ async function saveProviderKey(clear){
 $id("pkSave").addEventListener("click",function(){saveProviderKey(false)});
 $id("pkClear").addEventListener("click",function(){if(window.confirm("Remove the AI key from this PC? The agent will stop being able to talk."))saveProviderKey(true)});
 $id("pkKey").addEventListener("keydown",function(e){if(e.key==="Enter")saveProviderKey(false)});
+/* The offline brain is what keeps a call working after the free quota is gone:
+ * a 1.1 GB model, downloaded once from this page and then never metered again.
+ * Hearing has its own small model (74 MB) so a PC can keep understanding the
+ * prospect even when the hosted transcriber is out of quota. */
+var aiLocalPoll=null;
+function renderAiLocal(d){
+  var line=$id("aiLocalLine"),get=$id("aiLocalGet"),sel=$id("aiMode"),err=$id("aiLocalErr");
+  var sline=$id("aiSttLine"),sget=$id("aiSttGet");
+  if(!d||!d.ok){
+    line.textContent="Offline brain status unavailable.";get.classList.add("hidden");
+    sline.textContent="Offline hearing status unavailable.";sget.classList.add("hidden");
+    return;
+  }
+  sel.value=d.mode||"auto";
+  var s=d.local||{},dl=d.download||null,mb=function(n){return Math.round((n||0)/1048576)};
+  err.classList.add("hidden");
+  if(s.installed){
+    line.textContent="Brain installed on this PC ("+mb(s.modelBytes)+" MB). Calls keep working with no internet and no quota.";
+    get.classList.add("hidden");
+  }else if(dl&&dl.error){
+    line.textContent="The brain download failed: "+dl.error;
+    get.classList.remove("hidden");get.textContent="Retry brain download (1.1 GB)";
+  }else if(dl&&!dl.done){
+    line.textContent="Downloading the offline brain: "+mb(dl.written)+" of "+mb(dl.total)+" MB. This happens once; you can keep using the dialer.";
+    get.classList.add("hidden");
+  }else{
+    line.textContent="Not installed. Download once (1.1 GB) and this PC keeps thinking with no quota and no internet.";
+    get.classList.remove("hidden");get.textContent="Download offline brain (1.1 GB)";
+  }
+  var st=d.stt||{},sdl=d.sttDownload||null;
+  if(st.installed){
+    sline.textContent="Hearing installed on this PC ("+mb(st.modelBytes)+" MB). It can keep understanding the prospect with no quota.";
+    sget.classList.add("hidden");
+  }else if(sdl&&sdl.error){
+    sline.textContent="The hearing download failed: "+sdl.error;
+    sget.classList.remove("hidden");sget.textContent="Retry hearing download (74 MB)";
+  }else if(sdl&&!sdl.done){
+    sline.textContent="Downloading offline hearing: "+mb(sdl.written)+" of "+mb(sdl.total)+" MB.";
+    sget.classList.add("hidden");
+  }else{
+    sline.textContent="Not installed. The 74 MB model lets this PC keep hearing with no quota.";
+    sget.classList.remove("hidden");sget.textContent="Download offline hearing (74 MB)";
+  }
+}
+async function loadAiLocal(){
+  try{var r=await fetch("/api/ai-local");var d=await r.json();renderAiLocal(d);return d}
+  catch(e){renderAiLocal(null);return null}
+}
+function aiLocalBusy(d){
+  if(!d)return false;
+  var a=d.download,b=d.sttDownload;
+  return !!((a&&!a.done&&!a.error)||(b&&!b.done&&!b.error));
+}
+function pollAiLocal(){
+  if(aiLocalPoll)return;
+  aiLocalPoll=setInterval(async function(){
+    var d=await loadAiLocal();
+    if(!aiLocalBusy(d)){clearInterval(aiLocalPoll);aiLocalPoll=null}
+  },2000);
+}
+$id("aiMode").addEventListener("change",async function(){
+  var err=$id("aiLocalErr");err.classList.add("hidden");
+  try{
+    var r=await fetch("/api/ai-local",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({mode:$id("aiMode").value})});
+    var d=await r.json();
+    if(!d.ok){err.textContent=d.error||"That setting could not be saved.";err.classList.remove("hidden");return}
+    await loadAiLocal();
+  }catch(e){err.textContent="Could not reach the engine. Try again in a moment.";err.classList.remove("hidden")}
+});
+async function startAiDownload(which){
+  var err=$id("aiLocalErr");err.classList.add("hidden");
+  try{
+    var r=await fetch("/api/ai-local",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({download:which})});
+    var d=await r.json();
+    if(!d.ok){err.textContent=d.error||"The download could not start.";err.classList.remove("hidden");return}
+    await loadAiLocal();pollAiLocal();
+  }catch(e){err.textContent="Could not reach the engine. Try again in a moment.";err.classList.remove("hidden")}
+}
+$id("aiLocalGet").addEventListener("click",function(){startAiDownload("brain")});
+$id("aiSttGet").addEventListener("click",function(){startAiDownload("stt")});
+loadAiLocal();
 async function loadState(){
   try{
     var r=await fetch("/api/state");var s=await r.json();
@@ -922,6 +1020,57 @@ async function startWebUi(opts) {
         sendJson(res, 200, { ok: true, ...pk.providerKeyStatus() });
       } catch (e) {
         sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not store the provider key." });
+      }
+      return;
+    }
+    /* The offline brain: whether it is installed, which brain is preferred, and
+     * the one-time model download. A customer who runs out of the free hosted
+     * quota keeps a working dialer because of this, so the dashboard has to be
+     * able to fetch it without a terminal. */
+    if (req.method === "GET" && p === "/api/ai-local") {
+      try {
+        const localAi = require("./local-ai");
+        const localStt = require("./local-stt");
+        const cfg = opts.readConfig ? (opts.readConfig() || {}) : {};
+        sendJson(res, 200, {
+          ok: true,
+          mode: String((cfg.ai && cfg.ai.mode) || "auto"),
+          local: localAi.status(),
+          download: localAi.downloadProgress(),
+          stt: localStt.status(),
+          sttDownload: localStt.downloadProgress(),
+        });
+      } catch (e) {
+        sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not read the offline brain status." });
+      }
+      return;
+    }
+    if (req.method === "POST" && p === "/api/ai-local") {
+      const body = await readJson(req);
+      if (!body || typeof body !== "object") { sendJson(res, 400, { ok: false, error: "Bad request." }); return; }
+      try {
+        if (body.download === true || body.download === "brain") {
+          const state = require("./local-ai").startDownload({ log: (m) => { try { console.log("[agent] " + m); } catch {} } });
+          sendJson(res, 200, { ok: true, download: state });
+          return;
+        }
+        if (body.download === "stt") {
+          const state = require("./local-stt").startDownload({ log: (m) => { try { console.log("[agent] " + m); } catch {} } });
+          sendJson(res, 200, { ok: true, download: state });
+          return;
+        }
+        const mode = String(body.mode || "").toLowerCase();
+        if (!["auto", "local", "hosted"].includes(mode)) {
+          sendJson(res, 400, { ok: false, error: "Pick auto, local or hosted." });
+          return;
+        }
+        if (!opts.readConfig || !opts.writeConfig) { sendJson(res, 503, { ok: false, error: "Configuration unavailable." }); return; }
+        const cfg = opts.readConfig() || {};
+        cfg.ai = Object.assign({}, cfg.ai && typeof cfg.ai === "object" ? cfg.ai : {}, { mode });
+        opts.writeConfig(cfg);
+        sendJson(res, 200, { ok: true, mode });
+      } catch (e) {
+        sendJson(res, 500, { ok: false, error: (e && e.message) || "Could not save the offline brain setting." });
       }
       return;
     }

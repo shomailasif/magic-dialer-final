@@ -3,6 +3,7 @@ const health = require("./gateway-health");
 const { withPortalSlot, withPortalPrioritySlot } = require("./portal-queue");
 const { languageName } = require("./language");
 const { providerKey } = require("./provider-key");
+const localAi = require("./local-ai");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 /* 120b is the default for the DIRECT path and 20b is the fallback.
  *
@@ -34,6 +35,12 @@ function clean(text) {
  * 1200, and anything still unfinished is trimmed to complete sentences. */
 const DEFAULT_ANSWER_TOKENS = 900;
 const MAX_ANSWER_TOKENS = 1200;
+
+/* The offline model gets a much smaller budget on purpose. It runs on the same
+ * two cores as the audio pipeline, so a 900-token answer would be minutes of
+ * silence; 40 tokens is one spoken sentence and roughly two seconds of decode. */
+const LOCAL_MAX_TOKENS = 40;
+const LOCAL_TURN_TIMEOUT_MS = 6500;
 
 /** Keep only complete sentences from a truncated reply.
  *
@@ -421,10 +428,140 @@ function retryDelayMs(retryAfter, stopAt) {
   return Math.min(Math.max(0, ms), Math.max(0, budget - 300));
 }
 
+/* ---- the offline brain -------------------------------------------------- */
+
+/* Which brain the customer asked for.
+ *
+ *   "auto"  (default) - hosted first, offline only when hosted cannot answer.
+ *   "local"           - offline first, hosted if the offline model fails.
+ *   "hosted"          - never use the offline model.
+ *
+ * "auto" is the default because the hosted free tier is faster and better on a
+ * laptop CPU; the offline model is what makes the dialer keep working after the
+ * free tier runs out, not a replacement for it on every turn. */
+function localPreferred(config) {
+  return String((config && config.ai && config.ai.mode) || "auto").toLowerCase() === "local";
+}
+
+function localAllowed(config) {
+  const mode = String((config && config.ai && config.ai.mode) || "auto").toLowerCase();
+  return mode !== "hosted" && mode !== "cloud" && mode !== "off";
+}
+
+/* What the offline model is told, and why it is this short.
+ *
+ * The hosted prompt is ~1,200 tokens of rules. At the measured 23-40 tokens/s
+ * prefill on this class of machine that is 30s before the first word, so the
+ * offline prompt keeps only the identity, the job, and the four rules that must
+ * never be broken. A local model that answers plainly beats one that has read
+ * 1,200 tokens it cannot follow. */
+function localSystemPrompt(config) {
+  const c = config || {};
+  const agentName = asText(c.persona, ["name", "agentName", "firstName", "displayName"], "Alex");
+  const company = asText(c.companyName, ["name", "companyName", "company"], "our company");
+  const product = asText(c.product, ["name", "title", "product", "description"], "our service");
+  const fields = (Array.isArray(c.leadFields) ? c.leadFields : [])
+    .map((f) => (typeof f === "string" ? f : (f && (f.label || f.key)) || ""))
+    .filter(Boolean)
+    .slice(0, 4);
+  const locale = String(c.locale || "en").trim() || "en";
+  return [
+    "You write the next spoken line for CALLER in a phone call.",
+    `CALLER is ${agentName} from ${company}, calling about: ${product}.`,
+    fields.length ? `What CALLER needs to ask about: ${fields.join(", ")}.` : "",
+    `Write in ${languageName(locale)} only.`,
+    `If nobody has spoken yet, introduce yourself as ${agentName} from ${company} in one sentence and stop.`,
+    "Otherwise write only CALLER's next words: one short sentence, at most 20 words, at most one question.",
+    "Never write CUSTOMER lines, and never describe CUSTOMER's business as your own.",
+    "Never invent a price, a load, a lane or availability. If asked for a price, say a dispatcher will confirm on a callback.",
+    "If asked whether you are an AI, say you are an AI assistant. Never claim to be human.",
+  ].filter(Boolean).join("\n");
+}
+
+/* The opening/preflight calls are instructions, not things a prospect said;
+ * labelling them CUSTOMER: made the model answer its own setup text. */
+const LOCAL_META = /^(start this outbound|reply with exactly)/i;
+
+function localTranscript(history) {
+  const rows = (Array.isArray(history) ? history : [])
+    .filter((m) => m && m.content && !(m.role === "user" && LOCAL_META.test(String(m.content).trim())))
+    .slice(-8)
+    .map((m) => `${m.role === "assistant" ? "CALLER" : "CUSTOMER"}: ${String(m.content).replace(/\s+/g, " ").trim()}`);
+  return rows.length
+    ? rows.join("\n") + "\nCALLER:"
+    : "CUSTOMER: (the call has just connected and nobody has spoken yet)\nCALLER:";
+}
+
+/* One offline turn. Throws instead of returning half an answer, so the caller
+ * can fall through to the hosted brain without a second decision. */
+async function completeLocal({ history, config, maxTokens, timeoutMs }) {
+  const startedAt = Date.now();
+  const budget = Math.max(1500, Math.min(Number(timeoutMs) || LOCAL_TURN_TIMEOUT_MS, LOCAL_TURN_TIMEOUT_MS));
+  const r = await localAi.chat({
+    messages: [
+      { role: "system", content: localSystemPrompt(config) },
+      { role: "user", content: localTranscript(history) },
+    ],
+    maxTokens: Math.min(Number(maxTokens) || LOCAL_MAX_TOKENS, LOCAL_MAX_TOKENS),
+    temperature: 0.5,
+    timeoutMs: budget,
+  });
+  return {
+    ok: true,
+    text: clean(r.text),
+    model: "local",
+    path: "local",
+    elapsedMs: Date.now() - startedAt,
+    usage: r.usage || null,
+  };
+}
+
+/* Load the model and cache the prompt prefix while the phone is still ringing.
+ * Never throws: a PC that cannot run it must not fail a call over a warm-up. */
+async function warmLocal(config) {
+  if (!localAi.installed()) return false;
+  try {
+    return await localAi.warm({ system: localSystemPrompt(config) });
+  } catch {
+    return false;
+  }
+}
+
 async function complete({ history, config, maxTokens = DEFAULT_ANSWER_TOKENS, timeoutMs = REQUEST_TIMEOUT_MS }) {
   const portal=String(config&&config.portal||"").replace(/\/+$/,""),deviceToken=String(config&&config.deviceToken||""),callId=String(config&&config.callId||requestId());
   const key = providerKey();
   const canUseGateway = !!(portal && deviceToken);
+
+  /* A PC told to prefer the offline brain gets it first. Everything that can go
+   * wrong there - model missing, server dead, a reply slower than the turn
+   * budget - falls through to the hosted path inside this same turn. */
+  let localError = "";
+  let localTried = false;
+  if (localPreferred(config) && localAi.installed()) {
+    localTried = true;
+    try {
+      const local = await completeLocal({ history, config, maxTokens, timeoutMs });
+      if (local.text) return local;
+    } catch (e) {
+      localError = (e && e.message) || "offline model failed";
+    }
+  }
+
+  /* The other direction: hosted is preferred, or this PC has no hosted brain at
+   * all. Once the hosted path has failed, the offline model is the only thing
+   * that keeps the call alive, so it gets one attempt here. */
+  const rescueLocal = async (cause) => {
+    if (localTried || !localAllowed(config) || !localAi.installed()) return null;
+    localTried = true;
+    try {
+      const local = await completeLocal({ history, config, maxTokens, timeoutMs });
+      if (local.text) return { ...local, path: "local-fallback", after: cause };
+    } catch (e) {
+      localError = (e && e.message) || "offline model failed";
+    }
+    return null;
+  };
+  const withLocalError = (failure) => (localError ? { ...failure, localError } : failure);
 
   /* Direct first, when this PC holds a provider key.
    *
@@ -449,7 +586,10 @@ async function complete({ history, config, maxTokens = DEFAULT_ANSWER_TOKENS, ti
      * has. With a gateway to fall back to, a dead provider would cost both legs
      * every turn, so the breaker is worth having. */
     if (canUseGateway && health.isOpen("brain-direct")) {
-      return await completeViaGateway({ history, config, maxTokens, timeoutMs, portal, deviceToken, callId });
+      const via = await completeViaGateway({ history, config, maxTokens, timeoutMs, portal, deviceToken, callId });
+      if (via.text) return via;
+      const local = await rescueLocal("brain-direct");
+      return local || withLocalError(via);
     }
     const direct = await completeDirect({ history, config, maxTokens, timeoutMs, key, callId, deadline: Date.now() + timeoutMs });
     if (direct.text) { if (canUseGateway) health.recordSuccess("brain-direct"); return direct; }
@@ -458,24 +598,31 @@ async function complete({ history, config, maxTokens = DEFAULT_ANSWER_TOKENS, ti
     if (canUseGateway) {
       health.recordFailure("brain-direct");
       const viaGateway = await completeViaGateway({ history, config, maxTokens, timeoutMs, portal, deviceToken, callId });
-      return { ...viaGateway, path: "gateway-fallback", directError: direct.error };
+      if (viaGateway.text) return { ...viaGateway, path: "gateway-fallback", directError: direct.error };
+      const local = await rescueLocal("gateway");
+      return local || withLocalError({ ...viaGateway, path: "gateway-fallback", directError: direct.error });
     }
-    return { ...direct, path: "direct" };
+    const local = await rescueLocal("direct");
+    return local || withLocalError({ ...direct, path: "direct" });
   }
 
   if (!canUseGateway && !key) {
-    return {
+    const local = await rescueLocal("no hosted brain");
+    return local || withLocalError({
       text: "",
       error: "Secure AI gateway unavailable (no portal gateway configured and no direct provider key)",
-    };
+    });
   }
   if (canUseGateway) {
     const viaGateway = await completeViaGateway({ history, config, maxTokens, timeoutMs, portal, deviceToken, callId });
     if (viaGateway.text) return viaGateway;
-    if (key) return { ...viaGateway, path: "gateway-fallback" };
-    return viaGateway;
+    const local = await rescueLocal("gateway");
+    if (local) return local;
+    if (key) return withLocalError({ ...viaGateway, path: "gateway-fallback" });
+    return withLocalError(viaGateway);
   }
-  return { text: "", error: `AI provider ${health.reason("brain-direct")}` };
+  const local = await rescueLocal("provider");
+  return local || withLocalError({ text: "", error: `AI provider ${health.reason("brain-direct")}` });
 }
 
 /* The gateway path, unchanged in behaviour from before the direct path existed.
@@ -600,6 +747,13 @@ async function opening(config) {
 
   async function preflightBrain(config) {
     const startedAt = Date.now();
+    /* The offline brain is verified by proving it loads and answers, not by
+     * matching the word READY: a 1.5B model will not follow that instruction
+     * reliably, and failing the preflight over wording would refuse to dial on
+     * a PC whose brain is working. */
+    if (localPreferred(config) && localAi.installed()) {
+      if (await warmLocal(config)) return true;
+    }
     const r = await complete({
       history: [{ role: "user", content: "Reply with exactly READY." }],
       config,
@@ -614,4 +768,4 @@ async function opening(config) {
   return true;
 }
 
-module.exports = { nextTurn, opening, preflightBrain, systemPrompt, clean, guardReply, trimToCompleteSentence, DEFAULT_ANSWER_TOKENS, MAX_ANSWER_TOKENS };
+module.exports = { complete, nextTurn, opening, preflightBrain, warmLocal, localSystemPrompt, systemPrompt, clean, guardReply, trimToCompleteSentence, DEFAULT_ANSWER_TOKENS, MAX_ANSWER_TOKENS };

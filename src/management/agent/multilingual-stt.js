@@ -4,6 +4,7 @@ const { withPortalSlot, withPortalPrioritySlot } = require("./portal-queue");
 const { requestId, safeError } = require("./safe-diagnostic");
 const { providerKey } = require("./provider-key");
 const health = require("./gateway-health");
+const localStt = require("./local-stt");
 
 const GROQ_TRANSCRIBE_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 /* Reverted to whisper-large-v3-turbo.
@@ -75,6 +76,23 @@ async function transcribeViaGateway(audioBuffer,{hint="auto",portal="",deviceTok
   finally{clearTimeout(t);}
 }
 
+/* Which hearing the customer asked for.
+ *
+ *   "auto"  (default) - hosted first, offline when the hosted leg cannot answer.
+ *   "local"           - offline first, hosted if the offline model fails.
+ *   "hosted"          - never use the offline model.
+ *
+ * This is the same `ai.mode` the brain uses: one switch for "does this PC think
+ * and hear on its own", because a customer who ran out of quota needs both. */
+function sttMode(config) {
+  return String((config && config.ai && config.ai.mode) || "auto").toLowerCase();
+}
+function localPreferred(config) { return sttMode(config) === "local"; }
+function localAllowed(config) {
+  const mode = sttMode(config);
+  return mode !== "hosted" && mode !== "cloud" && mode !== "off";
+}
+
 /* Direct first, gateway second.
  *
  * The gateway turn measures 705ms against 195ms direct, so when this PC holds a
@@ -87,13 +105,40 @@ async function transcribeViaGateway(audioBuffer,{hint="auto",portal="",deviceTok
  * A provider that is down must not deafen the call, so a direct failure falls
  * through to the gateway in the same turn rather than costing the caller a second
  * listen window. That costs the prospect the sum of both budgets in the worst
- * case, which is the same worst case the gateway-only path already had. */
+ * case, which is the same worst case the gateway-only path already had.
+ *
+ * The offline transcriber sits outside both legs. It is tried first only when
+ * the customer chose "local"; otherwise it is the last thing attempted before
+ * the turn is declared unheard. Measured on the target machine: ~2s for 8s of
+ * telephone audio, so it fits inside the controller's 9s turn budget with room
+ * for one hosted attempt. */
 async function transcribeAuto(audioBuffer,opts={}) {
   if (!audioBuffer || audioBuffer.length < 100) return {text:null,language:null,error:"empty audio"};
   const hint=opts.hint==null?"auto":opts.hint;
   const key=providerKey();
   const gatewayOpts={hint,portal:opts.portal,deviceToken:opts.deviceToken,callId:opts.callId};
   const canUseGateway=!!(opts.portal&&opts.deviceToken);
+
+  let localTried=false;
+  let localError="";
+  const rescueLocal=async(cause)=>{
+    if(localTried||!localAllowed(opts)||!localStt.installed())return null;
+    localTried=true;
+    try{
+      const local=await localStt.transcribe(audioBuffer,{hint});
+      if(local&&local.text)return{...local,path:cause?"local-fallback":"local",after:cause||undefined};
+      if(local&&local.error)localError=local.error;
+    }catch(e){
+      localError=(e&&e.message)||"offline transcriber failed";
+    }
+    return null;
+  };
+  const withLocalError=(failure)=>localError?{...failure,localError}:failure;
+
+  if(localPreferred(opts)){
+    const local=await rescueLocal("");
+    if(local&&local.text)return local;
+  }
   /* The breaker stops paying to discover a dead provider, and it only earns its
    * keep when there is a cheaper leg to send the turn down instead. Without a
    * gateway the direct call is the only hearing this PC has, so failing fast
@@ -105,15 +150,24 @@ async function transcribeAuto(audioBuffer,opts={}) {
     /* An empty transcript with no error is a real result - silence is not a
      * reason to spend a second provider call - so only a real error falls back. */
     if(!direct.error){if(canUseGateway)health.recordSuccess("stt-direct");return {...direct,path:"direct"};}
-    if(!canUseGateway)return {...direct,path:"direct"};
+    if(!canUseGateway){
+      const local=await rescueLocal("direct");
+      return local||withLocalError({...direct,path:"direct"});
+    }
     health.recordFailure("stt-direct");
     const viaGateway=await transcribeViaGateway(audioBuffer,gatewayOpts);
-    return {...viaGateway,path:"gateway-fallback",directError:direct.error};
+    if(viaGateway.text)return{...viaGateway,path:"gateway-fallback",directError:direct.error};
+    const local=await rescueLocal("gateway");
+    return local||withLocalError({...viaGateway,path:"gateway-fallback",directError:direct.error});
   }
   if(!canUseGateway){
-    return {text:null,language:null,error:"Secure STT gateway unavailable"};
+    const local=await rescueLocal("no hosted transcriber");
+    return local||withLocalError({text:null,language:null,error:"Secure STT gateway unavailable"});
   }
-  return {...await transcribeViaGateway(audioBuffer,gatewayOpts),path:"gateway"};
+  const viaGateway=await transcribeViaGateway(audioBuffer,gatewayOpts);
+  if(viaGateway.text)return{...viaGateway,path:"gateway"};
+  const local=await rescueLocal("gateway");
+  return local||withLocalError({...viaGateway,path:"gateway"});
 }
 
 module.exports={transcribeAuto,transcribeDirect,transcribeViaGateway,pcmuToWav};

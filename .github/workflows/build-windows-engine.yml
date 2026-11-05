@@ -59,6 +59,9 @@ jobs:
       - name: Package engine
         shell: powershell
         run: npx pkg build/dist/agent-bundle.js --targets node22-win-x64 --output build/dist/agent.exe
+      - name: Stage offline brain runtime
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File build/prepare-local-ai.ps1
       - name: Build private TTS runtime
         shell: powershell
         run: |
@@ -214,6 +217,17 @@ jobs:
           foreach ($file in @("agent.exe","MagicDialer.exe","logo.ico")) {
             if (-not (Test-Path (Join-Path $app $file))) { throw "Missing installed $file" }
           }
+          # The offline brain is what keeps a dialer working after the free
+          # hosted quota is gone, so the installer must actually carry it.
+          $offlineServer = Join-Path $app "local-ai\\llama-server.exe"
+          if (-not (Test-Path -LiteralPath $offlineServer)) { throw "Installer missing offline brain runtime" }
+          & $offlineServer --version 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Installed offline brain runtime does not start" }
+          $offlineHearing = Join-Path $app "local-ai\\whisper\\whisper-cli.exe"
+          if (-not (Test-Path -LiteralPath $offlineHearing)) { throw "Installer missing offline hearing runtime" }
+          & $offlineHearing --version 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "Installed offline hearing runtime does not start" }
+          Write-Host "OFFLINE BRAIN AND HEARING RUNTIMES PRESENT"
           $runKey = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "Magic Dialer" -ErrorAction SilentlyContinue
           if (-not $runKey -or -not ($runKey."Magic Dialer" -like "*MagicDialer.exe*")) { throw "Missing HKCU Run auto-start entry" }
           $launcher = Join-Path $app "MagicDialer.exe"

@@ -569,7 +569,7 @@ function stripRepeatedAsks(text, askedFor, askedTokens) {
   return { text: kept.join(" ").trim(), forbidden: false };
 }
 
-async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", voiceScript = null, preparedOpeningText = null, portal = null, deviceToken = null, callId = null, waitForFirstSpeech = null }) {
+async function runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak, listen, contactEmail, learning, locale = "en", voiceScript = null, preparedOpeningText = null, portal = null, deviceToken = null, callId = null, waitForFirstSpeech = null, ai = null }) {
   const transcript = [];
   const timeline = [];
   let heardSomething = false;
@@ -695,7 +695,7 @@ async function runCall({ product, leadFields, persona, companyName, callbackNumb
   let busyRefused = false;
   let activeLocale = locale === "auto" ? "en" : normalizeLanguage(locale);
 
-  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId, learning: learning || {}, voiceScript };
+  const baseConfig = { product, leadFields, persona, companyName, callbackNumber, callbackIn, portal, deviceToken, callId, learning: learning || {}, voiceScript, ai };
   // The learned playbook has to reach the live brain, or learning only records
   // scores and never changes a call. The highest-scoring strategies, and the
   // objection-handling ones this vertical actually hits, are named in the prompt.

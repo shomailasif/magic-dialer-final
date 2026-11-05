@@ -218,6 +218,9 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     locale: activeLocale,
     portal: config.portalUrl,
     deviceToken: config.deviceToken,
+    /* Which brain to use ("auto" | "local" | "hosted"). Without this the
+     * offline model could never be reached from a real call. */
+    ai: config.ai,
   };
   /* ASK THE VOICE, ONCE, BEFORE THE PHONE RINGS.
    *
@@ -313,8 +316,12 @@ async function runLocalCallBody({ config, number, lead, onLog = () => {}, onMode
     throw new Error("Opening TTS preflight failed; refusing to place call");
   }
   /* Same rule for hearing: an agent that cannot transcribe cannot hold a
-   * conversation, and it used to find that out after ringing a real person. */
-  if (sttAuthorisedFn) {
+   * conversation, and it used to find that out after ringing a real person.
+   * A PC told to hear offline does not need the portal's permission first -
+   * checking it would refuse to dial on exactly the install this exists for. */
+  const localMode = String((config.ai && config.ai.mode) || "").toLowerCase() === "local";
+  const localHearing = localMode && require("./local-stt").installed();
+  if (sttAuthorisedFn && !localHearing) {
     const hear = await sttAuthorisedFn({ portal: config.portalUrl, deviceToken: config.deviceToken });
     if (hear && hear.fatal) {
       throw new Error(
@@ -847,7 +854,7 @@ const capped = isOpening ? line : capTurnLength(line);
           let r = null;
           try {
             r = await Promise.race([
-              sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken }),
+              sttAuto(audio, { hint: sttHint, portal: config.portalUrl, deviceToken: config.deviceToken, ai: config.ai }),
               new Promise((res) => setTimeout(() => res({ error: `STT turn budget exhausted` }), Math.max(250, left))),
             ]);
           } catch (e) { r = { error: String((e && e.message) || e) }; }
@@ -1018,6 +1025,7 @@ const capped = isOpening ? line : capTurnLength(line);
         preparedOpeningText: openingText,
         portal: config.portalUrl,
         token: config.deviceToken,
+        ai: config.ai,
         /* Which lead this call is for, so the opening can use their name and the
          * conversation is about them. The queue passes it; a manual call has
          * none and the agent opens generically. */

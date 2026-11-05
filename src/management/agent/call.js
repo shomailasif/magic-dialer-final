@@ -29,7 +29,7 @@ async function voiceCall({
   contactEmail, token, portal, learning, locale = "en", voiceStyle = "friendly",
   voiceScript = null,
   preparedOpeningText = null, onLog = () => {}, onMode = () => {}, speakFn, listenFn,
-  firstSpeechFn,
+  firstSpeechFn, ai = null,
 }) {
   const callId = requestId();
 
@@ -61,7 +61,7 @@ async function voiceCall({
   onLog("Starting live call…");
   let result;
   try {
-    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, voiceScript, preparedOpeningText, portal, deviceToken: token, callId, waitForFirstSpeech });
+    result = await runCall({ product, leadFields, persona, companyName, callbackNumber, callbackIn, speak: say, listen, contactEmail, learning, locale, voiceScript, preparedOpeningText, portal, deviceToken: token, callId, waitForFirstSpeech, ai });
   } catch (e) {
     onLog("Call failed [" + callId + "]: " + safeError(e,[token]));
     return { transcript: [], score: 0, goodLead: false, strategies: [], summary: "Call failed", callId, learning: learning || {}, posted: null, emailed: false };
