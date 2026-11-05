@@ -117,6 +117,7 @@ const checks = [
   () => assert.match(read(path.join(agent, "local-call-controller.js")), /ai: config\.ai \}/, "the call controller must pass the mode to the transcriber"),
   () => assert.match(workflow, /local-ai\\\\whisper\\\\whisper-cli\.exe/, "CI smoke test must look for the installed transcriber"),
   () => assert.match(workflow, /& \$offlineHearing --version/, "the installed transcriber must be started by the smoke test"),
+  () => assert.match(workflow, /\$ErrorActionPreference = "Continue"/, "native --version output goes to stderr and must not abort the smoke test"),
 ];
 
 checks.forEach((fn) => fn());
