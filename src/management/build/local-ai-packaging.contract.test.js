@@ -118,6 +118,18 @@ const checks = [
   () => assert.match(workflow, /local-ai\\\\whisper\\\\whisper-cli\.exe/, "CI smoke test must look for the installed transcriber"),
   () => assert.match(workflow, /& \$offlineHearing --version/, "the installed transcriber must be started by the smoke test"),
   () => assert.match(workflow, /\$ErrorActionPreference = "Continue"/, "native --version output goes to stderr and must not abort the smoke test"),
+
+  // 9. It stays light while idle, and a rescue turn does not pay model load.
+  () => assert.match(localAi, /const IDLE_STOP_MS = 10 \* 60 \* 1000;/, "the model must be released when no call is running"),
+  () => assert.match(localAi, /idleTimer = setTimeout\(\(\) => \{[\s\S]*?stopServer\(\);/, "idle means stopped, not just unused"),
+  () => assert.match(localAi, /process\.once\("exit", \(\) => \{[\s\S]*?stopServer\(\);/, "an upgrade must not leave an orphaned llama-server holding the port"),
+  () => assert.match(localAi, /if \(r\.status === 200\) touchIdle\(\);/, "warming counts as activity, or the server stops under a live call"),
+  () => assert.match(localAi, /touchIdle\(\);\s*return \{/, "every answered turn pushes the idle stop back"),
+  () => {
+    const brain = read(path.join(agent, "intelligent-brain.js"));
+    assert.match(brain, /!localPreferred\(config\) && localAllowed\(config\) && localAi\.installed\(\)/, "auto mode must prewarm the fallback brain");
+    assert.match(brain, /warmLocal\(config\)\.catch\(\(\) => \{\}\);/, "prewarming must be background work, never part of the dial gate");
+  },
 ];
 
 checks.forEach((fn) => fn());

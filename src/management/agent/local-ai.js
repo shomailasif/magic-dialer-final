@@ -127,6 +127,30 @@ let child = null;
 let childPort = 0;
 let starting = null;
 let lastError = "";
+
+/* The model is ~1.3 GB of resident memory and it only matters while calls are
+ * happening. Ten idle minutes after the last turn it is stopped, so a dialer
+ * left running overnight is not holding that memory for nothing. The next call
+ * warms it again before the phone rings. */
+const IDLE_STOP_MS = 10 * 60 * 1000;
+let idleTimer = null;
+
+function touchIdle() {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    stopServer();
+  }, IDLE_STOP_MS);
+  /* Never keep the agent process alive just for this. */
+  if (idleTimer && typeof idleTimer.unref === "function") idleTimer.unref();
+}
+
+/* A server this process started must not outlive it. An upgrade kills and
+ * restarts the agent; without this the old llama-server would keep the port and
+ * ~1.3 GB until the machine reboots. */
+process.once("exit", () => {
+  try { stopServer(); } catch {}
+});
 let forcedInstalled = null;
 
 function healthy(port) {
@@ -179,6 +203,7 @@ async function startServer() {
       child = proc;
       childPort = port;
       lastError = "";
+      touchIdle();
       return port;
     } catch (e) {
       lastFailure = e;
@@ -200,6 +225,10 @@ function ensureServer() {
 }
 
 function stopServer() {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
   if (child) {
     try { child.kill(); } catch {}
     child = null;
@@ -238,6 +267,7 @@ async function chat({ messages, maxTokens = 64, temperature = 0.6, timeoutMs = 1
   const choice = data && data.choices && data.choices[0];
   const text = stripThinking(choice && choice.message && choice.message.content);
   if (!text) throw new Error("local model returned an empty reply");
+  touchIdle();
   return {
     text,
     finish: (choice && choice.finish_reason) || null,
@@ -269,6 +299,7 @@ async function warm({ system, timeoutMs = 30000 } = {}) {
       stream: false,
     },
   });
+  if (r.status === 200) touchIdle();
   return r.status === 200;
 }
 
@@ -374,6 +405,10 @@ module.exports = {
       starting = null;
       lastError = "";
       forcedInstalled = null;
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
     },
     lastError() {
       return lastError;

@@ -15,7 +15,7 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const localAi = require("./local-ai");
 const health = require("./gateway-health");
-const { complete, localSystemPrompt } = require("./intelligent-brain");
+const { complete, localSystemPrompt, preflightBrain } = require("./intelligent-brain");
 
 const prevKey = process.env.GROQ_API_KEY;
 const prevFetch = global.fetch;
@@ -125,10 +125,12 @@ async function main() {
     const r = await complete({ history: long, config: { ...CONFIG, ai: { mode: "local" } } });
     assert.equal(r.path, "local");
     const request = local.seen[0];
-    assert.ok(request.max_tokens <= 40, "the local reply budget must stay small, got " + request.max_tokens);
+    assert.ok(request.max_tokens <= 30, "the local reply budget must stay small, got " + request.max_tokens);
     const system = request.messages.find((m) => m.role === "system").content;
     const user = request.messages.find((m) => m.role === "user").content;
-    assert.ok(system.length < 1200, "the offline system prompt must stay compact, got " + system.length);
+    /* 700 chars is roughly the ~150 prompt tokens that prefill in ~4s here.
+     * Anything larger is time the prospect spends waiting. */
+    assert.ok(system.length < 700, "the offline system prompt must stay compact, got " + system.length);
     assert.ok(user.length < 1500, "only the last exchanges may travel, got " + user.length);
     assert.equal((user.match(/^CUSTOMER:/gm) || []).length, 4, "at most four prospect turns may travel: " + user);
     assert.ok(!user.includes("line 0 "), "the oldest history must be dropped");
@@ -195,6 +197,29 @@ async function main() {
     const user = local.seen[0].messages.find((m) => m.role === "user").content;
     assert.ok(!/^CUSTOMER: Start this OUTBOUND/m.test(user), "the opening instruction must not be spoken as the prospect: " + user);
     assert.match(user, /nobody has spoken yet/, "an empty call must tell the model the line is still silent");
+  });
+
+  // 10. "auto" prewarms the fallback before the phone rings, so a rescue turn
+  //     does not also pay the ~3s model load while the prospect waits.
+  await withLocal({ reply: "hello" }, async (local) => {
+    global.fetch = hostedOk("READY");
+    const ok = await preflightBrain({ ...CONFIG, ai: { mode: "auto" } });
+    assert.equal(ok, true, "the hosted preflight must still pass");
+    for (let i = 0; i < 40 && !local.seen.some((s) => s.max_tokens === 1); i++) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    assert.ok(
+      local.seen.some((s) => s.max_tokens === 1),
+      "auto must warm the local model in the background, not on the first rescue turn",
+    );
+  });
+
+  // 11. "hosted" must not spend memory or CPU on a local warm.
+  await withLocal({}, async (local) => {
+    global.fetch = hostedOk("READY");
+    await preflightBrain({ ...CONFIG, ai: { mode: "hosted" } });
+    await new Promise((r) => setTimeout(r, 150));
+    assert.equal(local.seen.length, 0, "hosted mode must not start the local model");
   });
 
   console.log("PASS: the offline brain answers locally, keeps its prompt small, and never costs a turn");

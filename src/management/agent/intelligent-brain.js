@@ -38,8 +38,8 @@ const MAX_ANSWER_TOKENS = 1200;
 
 /* The offline model gets a much smaller budget on purpose. It runs on the same
  * two cores as the audio pipeline, so a 900-token answer would be minutes of
- * silence; 40 tokens is one spoken sentence and roughly two seconds of decode. */
-const LOCAL_MAX_TOKENS = 40;
+ * silence; one spoken sentence is ~26 tokens and decodes in ~3s measured. */
+const LOCAL_MAX_TOKENS = 30;
 const LOCAL_TURN_TIMEOUT_MS = 6500;
 
 /** Keep only complete sentences from a truncated reply.
@@ -466,15 +466,15 @@ function localSystemPrompt(config) {
     .slice(0, 4);
   const locale = String(c.locale || "en").trim() || "en";
   return [
-    "You write the next spoken line for CALLER in a phone call.",
-    `CALLER is ${agentName} from ${company}, calling about: ${product}.`,
-    fields.length ? `What CALLER needs to ask about: ${fields.join(", ")}.` : "",
-    `Write in ${languageName(locale)} only.`,
-    `If nobody has spoken yet, introduce yourself as ${agentName} from ${company} in one sentence and stop.`,
-    "Otherwise write only CALLER's next words: one short sentence, at most 20 words, at most one question.",
-    "Never write CUSTOMER lines, and never describe CUSTOMER's business as your own.",
-    "Never invent a price, a load, a lane or availability. If asked for a price, say a dispatcher will confirm on a callback.",
-    "If asked whether you are an AI, say you are an AI assistant. Never claim to be human.",
+    "Write CALLER's next spoken line in a phone call.",
+    `CALLER: ${agentName} of ${company}, calling about ${product}.`,
+    fields.length ? `Ask about: ${fields.join(", ")}.` : "",
+    `Language: ${languageName(locale)}.`,
+    `Opening (nobody has spoken yet): introduce yourself as ${agentName} from ${company} in one sentence, then stop.`,
+    "Otherwise: one short sentence, 20 words max, one question max.",
+    "Only CALLER lines. Never write CUSTOMER's, and never claim their business as yours.",
+    "Never invent a price, load, lane or availability; say a dispatcher will confirm.",
+    "If asked whether you are an AI, say you are an AI assistant.",
   ].filter(Boolean).join("\n");
 }
 
@@ -753,6 +753,13 @@ async function opening(config) {
      * a PC whose brain is working. */
     if (localPreferred(config) && localAi.installed()) {
       if (await warmLocal(config)) return true;
+    }
+    /* In "auto" the offline brain is only a fallback, so it is not part of this
+     * preflight. But if the hosted leg fails mid-call, the rescue turn would
+     * otherwise pay the model load (~2.5s) exactly when the prospect is
+     * waiting. Start it in the background here, while the phone is ringing. */
+    if (!localPreferred(config) && localAllowed(config) && localAi.installed()) {
+      warmLocal(config).catch(() => {});
     }
     const r = await complete({
       history: [{ role: "user", content: "Reply with exactly READY." }],
