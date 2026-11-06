@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.5.1
+AppVersion=1.5.2
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
@@ -35,7 +35,7 @@ Source: "dist\MagicDialer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The llama.cpp server that runs the offline brain, and the whisper.cpp
 ; transcriber that lets the same PC hear when the hosted transcriber is out of
-; quota. The 1.1 GB brain model and 74 MB hearing model are NOT shipped; the
+; quota. The 807 MB brain model and 74 MB hearing model are NOT shipped; the
 ; dashboard downloads them once into the customer's data folder, so the
 ; installer stays small and an upgrade never costs another download.
 Source: "dist\local-ai\*"; DestDir: "{app}\local-ai"; Flags: ignoreversion recursesubdirs createallsubdirs

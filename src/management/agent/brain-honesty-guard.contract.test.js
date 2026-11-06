@@ -42,11 +42,28 @@ for (const said of [
   assert.doesNotMatch(out, /MC number/i, `"${said}" must not be qualified, got: ${out}`);
 }
 
-// 4. Everything else is untouched - the guard is narrow on purpose.
+// 4. A rate the prospect never said is replaced, because a prospect who hears
+//    a number will hold the company to it. Measured: the 1B local model
+//    answered "How much do you charge per load?" with "We charge $2 per load".
+for (const said of ["How much do you charge per load?", "What's your rate?", "What's the price per mile?"]) {
+  const out = guardReply("We charge $2 per load with a ten load minimum.", [{ role: "lead", text: said }], cfg);
+  assert.doesNotMatch(out, /\$\s?\d|\b\d+\s*dollars?\b/i, `"${said}" must not produce a fabricated rate, got: ${out}`);
+  assert.match(out, /\b(dispatcher|lane)\b/i, `"${said}" must defer the number, got: ${out}`);
+}
+
+// A figure the prospect themselves gave can be repeated back.
+const echo = "You said $2 per mile - we can work with that.";
+assert.equal(
+  guardReply(echo, [{ role: "lead", text: "We pay $2 per mile." }], cfg),
+  echo,
+  "repeating the prospect's own number is not a fabricated price",
+);
+
+// 5. Everything else is untouched - the guard is narrow on purpose.
 const normal = "Sure, I can help with that. How many trucks are you running?";
 assert.equal(guardReply(normal, [{ role: "lead", text: "We have a small fleet." }], cfg), normal);
 
-// 5. Truncated replies keep complete sentences and drop the half-clause.
+// 6. Truncated replies keep complete sentences and drop the half-clause.
 assert.equal(
   trimToCompleteSentence("We can help with that. I just need your MC num"),
   "We can help with that.",
@@ -55,7 +72,7 @@ assert.equal(
 assert.equal(trimToCompleteSentence("I can get you set up and then we can"), "", "a fragment with no terminator is not speech");
 assert.equal(trimToCompleteSentence("One. Two! Three?"), "One. Two! Three?", "complete sentences are kept");
 
-// 6. The token budget is the one the measurement proved, not the old 220.
+// 7. The token budget is the one the measurement proved, not the old 220.
 assert.ok(DEFAULT_ANSWER_TOKENS >= 900, "the default answer budget must leave room to finish a sentence");
 assert.ok(MAX_ANSWER_TOKENS >= DEFAULT_ANSWER_TOKENS, "the retry budget must not be smaller than the default");
 

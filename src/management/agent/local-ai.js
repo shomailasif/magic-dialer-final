@@ -19,12 +19,24 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 
-const MODEL_FILE = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
+/* Llama 3.2 1B, not the 1.5B Qwen it replaced.
+ *
+ * Both were measured on the target i3-7100U with the real prompt and the same
+ * ten outbound turns. Qwen-1.5B answered more carefully but took 4.7s median;
+ * the 1B takes 1.8s - 2.6x faster - at 0.8 GB instead of 1.1 GB. On a two-core
+ * laptop that difference is the whole point of having a local brain: the turn
+ * has to finish while the prospect is still listening. A deterministic price
+ * guard in intelligent-brain.js covers the one place the smaller model is more
+ * likely to invent something. */
+const MODEL_FILE = "Llama-3.2-1B-Instruct-Q4_K_M.gguf";
 const MODEL_URL =
-  "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf";
+  "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf";
 /* Published file, pinned. A truncated or swapped download is refused. */
-const MODEL_BYTES = 1117320736;
-const MODEL_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e";
+const MODEL_BYTES = 807694464;
+const MODEL_SHA256 = "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83";
+/* The model shipped before this one. Removed once the new file verifies, so an
+ * upgraded PC does not keep 1.1 GB it will never load again. */
+const LEGACY_MODEL_FILES = ["qwen2.5-1.5b-instruct-q4_k_m.gguf"];
 
 const FIRST_PORT = 48773;
 const LAST_PORT = 48779;
@@ -41,7 +53,7 @@ function appDir() {
 
 /* The model is a user download, not part of the install, so it lives with the
  * customer's data: an upgrade or uninstall of the program folder must not cost
- * them another 1.1 GB. */
+ * them another 800 MB. */
 function dataDir() {
   if (process.env.AUTODIAL_HOME) return process.env.AUTODIAL_HOME;
   if (process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, "Magic Dialer");
@@ -183,7 +195,7 @@ async function startServer() {
         "-m", modelPath(),
         "--host", "127.0.0.1",
         "--port", String(port),
-        "-c", "2048",
+        "-c", "1024",
         /* Four threads measured on the 2-core/4-thread test machine: a warm
          * turn is ~2.0s at 4 threads against ~4.0s at 2. */
         "-t", "4",
@@ -243,7 +255,7 @@ function stripThinking(text) {
     .trim();
 }
 
-async function chat({ messages, maxTokens = 64, temperature = 0.6, timeoutMs = 12000 } = {}) {
+async function chat({ messages, maxTokens = 64, temperature = 0.6, timeoutMs = 12000, stop = null } = {}) {
   const port = await ensureServer();
   const r = await httpJson({
     port,
@@ -257,6 +269,7 @@ async function chat({ messages, maxTokens = 64, temperature = 0.6, timeoutMs = 1
       top_p: 0.9,
       max_tokens: maxTokens,
       stream: false,
+      ...(Array.isArray(stop) && stop.length ? { stop } : {}),
     },
   });
   if (r.status !== 200) {
@@ -342,6 +355,13 @@ async function downloadModel({ log = () => {}, onProgress = () => {} } = {}) {
     }
   }
   fs.renameSync(part, dest);
+  /* The upgrade path: a PC that already downloaded the previous model keeps it
+   * forever otherwise. Only our own pinned filenames are touched. */
+  for (const legacy of LEGACY_MODEL_FILES) {
+    if (legacy === MODEL_FILE) continue;
+    const old = path.join(path.dirname(dest), legacy);
+    try { if (fs.existsSync(old)) { fs.unlinkSync(old); log("Removed the previous offline model."); } } catch {}
+  }
   log("Offline model ready.");
   return { path: dest, bytes: size };
 }

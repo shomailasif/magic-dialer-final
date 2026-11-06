@@ -122,10 +122,17 @@ async function main() {
     for (let i = 0; i < 20; i++) {
       long.push({ role: i % 2 ? "assistant" : "user", content: `line ${i} ` + "x".repeat(80) });
     }
+    /* A question, so the turn is answered by the model rather than by the
+     * qualification policy; this case is about what the model is sent. */
+    long.push({ role: "user", content: "What do you need from me?" });
     const r = await complete({ history: long, config: { ...CONFIG, ai: { mode: "local" } } });
     assert.equal(r.path, "local");
     const request = local.seen[0];
-    assert.ok(request.max_tokens <= 30, "the local reply budget must stay small, got " + request.max_tokens);
+    assert.ok(request.max_tokens <= 20, "the local reply budget must stay small, got " + request.max_tokens);
+    assert.ok(
+      Array.isArray(request.stop) && request.stop.includes("\nCUSTOMER:"),
+      "the model must stop when it starts writing the prospect's line",
+    );
     const system = request.messages.find((m) => m.role === "system").content;
     const user = request.messages.find((m) => m.role === "user").content;
     /* 700 chars is roughly the ~150 prompt tokens that prefill in ~4s here.
@@ -220,6 +227,43 @@ async function main() {
     await preflightBrain({ ...CONFIG, ai: { mode: "hosted" } });
     await new Promise((r) => setTimeout(r, 150));
     assert.equal(local.seen.length, 0, "hosted mode must not start the local model");
+  });
+
+  // 12. A decisive sales turn is answered by policy without starting the model:
+  //     no latency, and no chance of a fabricated rate.
+  await withLocal({}, async (local) => {
+    global.fetch = hostedOk("hosted");
+    const r = await complete({
+      history: [
+        { role: "assistant", content: "Hi, this is Alex from Zaz Logistics. Do you have a minute?" },
+        { role: "user", content: "How much do you charge per load?" },
+      ],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.path, "local-policy", "the price turn must come from policy: " + JSON.stringify(r));
+    assert.equal(r.intent, "price");
+    assert.doesNotMatch(r.text, /\$\s?\d|\b\d+\s*(?:dollars?|per (?:load|mile))/i, "policy must never invent a rate: " + r.text);
+    assert.match(r.text, /lane/i, "the price answer must ask for the lane instead: " + r.text);
+    assert.equal(local.seen.length, 0, "a policy turn must not pay the model load");
+  });
+
+  // 13. A fact-giving turn moves the checklist on without the model, so the 1B
+  //     cannot answer "we run 20 trucks" with its own name or an invented
+  //     number. The facts it already gave are carried in the state line (pinned
+  //     in local-policy.behavior.test.js).
+  await withLocal({ reply: "What lanes do you run?" }, async (local) => {
+    global.fetch = hostedOk("hosted");
+    const r = await complete({
+      history: [
+        { role: "assistant", content: "Hi, this is Alex from Zaz Logistics. Do you have a minute?" },
+        { role: "user", content: "We run dry van out of Chicago, about 20 trucks." },
+      ],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.path, "local-policy", "a qualification turn must not pay the model load: " + JSON.stringify(r));
+    assert.equal(r.intent, "qualify");
+    assert.match(r.text, /^Got it\. Which lanes do you run most\?$/, "the next missing field must be asked: " + r.text);
+    assert.equal(local.seen.length, 0, "policy must answer without the model");
   });
 
   console.log("PASS: the offline brain answers locally, keeps its prompt small, and never costs a turn");

@@ -4,6 +4,7 @@ const { withPortalSlot, withPortalPrioritySlot } = require("./portal-queue");
 const { languageName } = require("./language");
 const { providerKey } = require("./provider-key");
 const localAi = require("./local-ai");
+const localPolicy = require("./local-policy");
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 /* 120b is the default for the DIRECT path and 20b is the fallback.
  *
@@ -38,8 +39,12 @@ const MAX_ANSWER_TOKENS = 1200;
 
 /* The offline model gets a much smaller budget on purpose. It runs on the same
  * two cores as the audio pipeline, so a 900-token answer would be minutes of
- * silence; one spoken sentence is ~26 tokens and decodes in ~3s measured. */
-const LOCAL_MAX_TOKENS = 30;
+ * silence. Ten spoken words is ~14 tokens and decodes in ~1.5s measured on the
+ * target machine; 20 leaves room for a model that overshoots. */
+const LOCAL_MAX_TOKENS = 20;
+/* The model is told to write one sentence and stop; this makes it stop even
+ * when it starts writing the other side of the conversation. */
+const LOCAL_STOP = ["\nCUSTOMER:", "\nCALLER:", "\n\n"];
 const LOCAL_TURN_TIMEOUT_MS = 6500;
 
 /** Keep only complete sentences from a truncated reply.
@@ -455,7 +460,7 @@ function localAllowed(config) {
  * offline prompt keeps only the identity, the job, and the four rules that must
  * never be broken. A local model that answers plainly beats one that has read
  * 1,200 tokens it cannot follow. */
-function localSystemPrompt(config) {
+function localSystemPrompt(config, stateLine) {
   const c = config || {};
   const agentName = asText(c.persona, ["name", "agentName", "firstName", "displayName"], "Alex");
   const company = asText(c.companyName, ["name", "companyName", "company"], "our company");
@@ -468,11 +473,15 @@ function localSystemPrompt(config) {
   return [
     "Write CALLER's next spoken line in a phone call.",
     `CALLER: ${agentName} of ${company}, calling about ${product}.`,
-    fields.length ? `Ask about: ${fields.join(", ")}.` : "",
+    /* The state line already says what is still needed, and repeating the same
+     * list twice is prompt the model has to read before it can speak. */
+    !stateLine && fields.length ? `Ask about: ${fields.join(", ")}.` : "",
     `Language: ${languageName(locale)}.`,
+    stateLine ? `Call so far - ${String(stateLine).trim()}` : "",
     `Opening (nobody has spoken yet): introduce yourself as ${agentName} from ${company} in one sentence, then stop.`,
-    "Otherwise: one short sentence, 20 words max, one question max.",
+    "Otherwise: one short sentence, 10 words max, one question max. No preamble, no 'how can I help'.",
     "Only CALLER lines. Never write CUSTOMER's, and never claim their business as yours.",
+    "Never repeat a question already asked.",
     "Never invent a price, load, lane or availability; say a dispatcher will confirm.",
     "If asked whether you are an AI, say you are an AI assistant.",
   ].filter(Boolean).join("\n");
@@ -484,7 +493,7 @@ const LOCAL_META = /^(start this outbound|reply with exactly)/i;
 
 function localTranscript(history) {
   const rows = (Array.isArray(history) ? history : [])
-    .filter((m) => m && m.content && !(m.role === "user" && LOCAL_META.test(String(m.content).trim())))
+    .filter((m) => m && m.content && !(m.role === "user" && (LOCAL_META.test(String(m.content).trim()) || localPolicy.isInstruction(m.content))))
     .slice(-8)
     .map((m) => `${m.role === "assistant" ? "CALLER" : "CUSTOMER"}: ${String(m.content).replace(/\s+/g, " ").trim()}`);
   return rows.length
@@ -496,15 +505,40 @@ function localTranscript(history) {
  * can fall through to the hosted brain without a second decision. */
 async function completeLocal({ history, config, maxTokens, timeoutMs }) {
   const startedAt = Date.now();
+  /* The decisive turns first, without starting the model. Price, a brush-off,
+   * "where did you get my number" and the MC question are the turns a 1B model
+   * gets wrong, and skipping the sampler makes them instant as well as correct.
+   * An intent with every phrased variant already spent returns null here, so the
+   * conversation still moves. */
+  const policy = localPolicy.policyReply(localPolicy.lastLeadLine(history), { config, history });
+  if (policy) {
+    return {
+      ok: true,
+      text: policy.text,
+      model: "local-policy",
+      path: "local-policy",
+      intent: policy.intent,
+      elapsedMs: Date.now() - startedAt,
+      usage: null,
+    };
+  }
   const budget = Math.max(1500, Math.min(Number(timeoutMs) || LOCAL_TURN_TIMEOUT_MS, LOCAL_TURN_TIMEOUT_MS));
+  const messages = [
+    { role: "system", content: localSystemPrompt(config, localPolicy.conversationState(history, config)) },
+    { role: "user", content: localTranscript(history) },
+  ];
+  /* A separate trailing instruction, not part of the transcript: the 1B model
+   * follows a direct "ask about X" far better than a state line buried in the
+   * system prompt. Omitted when the prospect asked something, so a question is
+   * answered rather than deflected into the checklist. */
+  const hint = localPolicy.nextQuestionHint(history, config);
+  if (hint) messages.push({ role: "user", content: hint });
   const r = await localAi.chat({
-    messages: [
-      { role: "system", content: localSystemPrompt(config) },
-      { role: "user", content: localTranscript(history) },
-    ],
+    messages,
     maxTokens: Math.min(Number(maxTokens) || LOCAL_MAX_TOKENS, LOCAL_MAX_TOKENS),
     temperature: 0.5,
     timeoutMs: budget,
+    stop: LOCAL_STOP,
   });
   return {
     ok: true,
@@ -708,6 +742,8 @@ const AI_QUESTION_RE = /\b(?:are you|is this|am i (?:talking|speaking) to)\b[^?.
 const CLAIMS_HUMAN_RE = /\b(?:i(?:'m| am)|this is)\b[^.!?]{0,25}\b(?:a )?(?:real person|real human|human being)\b|\bnot (?:a|an) (?:robot|bot|ai|machine|automated)\b|\b100% (?:human|real)\b/i;
 const DRIVER_RE = /\b(?:i (?:just |only )?drive|i(?:'m| am) (?:just |only )?(?:a )?driver|i do(?:n'?t| not) own|not the owner|i work for (?:a|someone|somebody|another)|company driver|i(?:'m| am) not the (?:owner|boss|decision ?maker)|talk to my boss)\b/i;
 const OWNER_ASK_RE = /\b(?:mc number|dot number|how many trucks|truck type|lanes?|equipment|authority)\b/i;
+/* A money figure the agent could be held to: "$2", "2 dollars", "2.50 per mile". */
+const MONEY_RE = /\$\s?\d|\b\d+(?:[.,]\d+)?\s*(?:dollars?|bucks|cents?|per\s+(?:load|mile|mileage|stop|pallet))\b/i;
 
 function guardReply(text, transcript, config) {
   let out = String(text || "");
@@ -722,6 +758,14 @@ function guardReply(text, transcript, config) {
   }
   if (DRIVER_RE.test(heard) && OWNER_ASK_RE.test(out)) {
     return "Got it - who owns the trucks or handles dispatch there? I can speak with them instead.";
+  }
+  /* A fabricated price is the one hallucination that costs real money: the
+   * prospect hears a rate nobody quoted and holds the company to it. The 1B
+   * model that made local turns 2.6x faster is also more literal, and invented
+   * "$2 per load" when asked about pricing in testing. Only a figure the
+   * prospect did not say is replaced, so repeating their own number is fine. */
+  if (MONEY_RE.test(out) && !MONEY_RE.test(heard)) {
+    return "A dispatcher can confirm the rate. What lanes do you run?";
   }
   return out;
 }
@@ -748,7 +792,7 @@ async function opening(config) {
   async function preflightBrain(config) {
     const startedAt = Date.now();
     /* The offline brain is verified by proving it loads and answers, not by
-     * matching the word READY: a 1.5B model will not follow that instruction
+     * matching the word READY: a 1B model will not follow that instruction
      * reliably, and failing the preflight over wording would refuse to dial on
      * a PC whose brain is working. */
     if (localPreferred(config) && localAi.installed()) {

@@ -6,7 +6,7 @@
  * needs are actually shipped, pinned and installed:
  *
  *   1. The installer carries the llama.cpp server next to agent.exe.
- *   2. The 1.1 GB model is NOT in the installer; it is downloaded into the
+ *   2. The 807 MB model is NOT in the installer; it is downloaded into the
  *      customer's data folder, so upgrades never cost another download.
  *   3. The runtime download is pinned by release tag AND SHA-256.
  *   4. The model download is pinned by size AND SHA-256.
@@ -38,7 +38,7 @@ const checks = [
   () => assert.doesNotMatch(installer, /\/\*/, "Inno comments must use ';': a '/*' line aborts the installer build"),
 
   // 2. The model is a download, not installer payload.
-  () => assert.doesNotMatch(installer, /\.gguf/i, "the 1.1 GB model must never be bundled into the installer"),
+  () => assert.doesNotMatch(installer, /\.gguf/i, "the 807 MB model must never be bundled into the installer"),
   () => assert.doesNotMatch(installer, /qwen/i, "the installer must not name a model file"),
   () => assert.match(
     localAi,
@@ -51,7 +51,7 @@ const checks = [
     delete process.env.AUTODIAL_HOME;
     const p = localRuntime.modelPath();
     if (here !== undefined) process.env.AUTODIAL_HOME = here;
-    assert.ok(/models[\\/]qwen2\.5-1\.5b-instruct-q4_k_m\.gguf$/.test(p), "unexpected model path: " + p);
+    assert.ok(/models[\\/]Llama-3\.2-1B-Instruct-Q4_K_M\.gguf$/.test(p), "unexpected model path: " + p);
     assert.ok(!/local-ai[\\/]models/.test(p), "the model must not be looked up inside the install folder: " + p);
   },
 
@@ -66,16 +66,17 @@ const checks = [
   () => assert.match(prepare, /mtmd\.dll/, "llama-server needs mtmd.dll at load time"),
 
   // 4. The model download is pinned by size and hash, and resumes.
-  () => assert.match(localAi, /qwen2\.5-1\.5b-instruct-q4_k_m\.gguf/, "pinned model file"),
-  () => assert.match(localAi, /const MODEL_BYTES = 1117320736;/, "pinned model size"),
-  () => assert.match(localAi, /const MODEL_SHA256 = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"/, "pinned model SHA-256"),
+  () => assert.match(localAi, /const MODEL_FILE = "Llama-3\.2-1B-Instruct-Q4_K_M\.gguf";/, "pinned model file"),
+  () => assert.match(localAi, /const MODEL_BYTES = 807694464;/, "pinned model size"),
+  () => assert.match(localAi, /const MODEL_SHA256 = "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83"/, "pinned model SHA-256"),
+  () => assert.match(localAi, /const LEGACY_MODEL_FILES = \["qwen2\.5-1\.5b-instruct-q4_k_m\.gguf"\]/, "the replaced model must be cleaned up after an upgrade"),
   () => assert.match(localAi, /if \(MODEL_BYTES && size !== MODEL_BYTES\) throw/, "a truncated download must be refused"),
   () => assert.match(localAi, /if \(got !== MODEL_SHA256\)/, "a swapped download must be refused"),
   () => assert.match(localAi, /Range: `bytes=\$\{have\}-`/, "the download must resume instead of restarting"),
   () => assert.match(localAi, /if \(MODEL_BYTES && stat\.size !== MODEL_BYTES\) return false;/, "a partial model must not count as installed"),
 
   // 5. The flags that make it usable on a two-core laptop.
-  () => assert.match(localAi, /"-c", "2048"/, "a small context keeps memory and prefill low"),
+  () => assert.match(localAi, /"-c", "1024"/, "a small context keeps memory and prefill low"),
   () => assert.match(localAi, /"-t", "4"/, "four threads was the measured sweet spot"),
   () => assert.match(localAi, /"-np", "1"/, "one slot: calls are sequential"),
   () => assert.match(localAi, /"--no-webui"/, "no web UI to load or expose"),
@@ -129,6 +130,20 @@ const checks = [
     const brain = read(path.join(agent, "intelligent-brain.js"));
     assert.match(brain, /!localPreferred\(config\) && localAllowed\(config\) && localAi\.installed\(\)/, "auto mode must prewarm the fallback brain");
     assert.match(brain, /warmLocal\(config\)\.catch\(\(\) => \{\}\);/, "prewarming must be background work, never part of the dial gate");
+  },
+
+  // 10. The decisive sales turns are answered by policy, not by a 1B sampler.
+  () => {
+    const brain = read(path.join(agent, "intelligent-brain.js"));
+    const policy = read(path.join(agent, "local-policy.js"));
+    assert.match(brain, /require\("\.\/local-policy"\)/, "the brain must load the sales policy layer");
+    assert.match(brain, /localPolicy\.policyReply\(localPolicy\.lastLeadLine\(history\)/, "policy must run before the model");
+    assert.match(brain, /localPolicy\.conversationState\(history, config\)/, "the offline prompt must know what was already said");
+    assert.match(policy, /case "price":/, "price must be a policy turn");
+    assert.match(policy, /It depends on the lane and volume/, "the price answer must not invent a number");
+    assert.match(policy, /case "not-interested":/, "a brush-off must be a policy turn");
+    assert.match(policy, /case "source":/, "the number-source question must be answered honestly");
+    assert.match(policy, /Already asked: /, "the model must be told which questions it already asked");
   },
 ];
 

@@ -26,6 +26,7 @@ $tests = @(
   "agent\brain-outage.behavior.test.js",
   "agent\direct-provider.behavior.test.js",
   "agent\local-brain.behavior.test.js",
+  "agent\local-policy.behavior.test.js",
   "agent\local-stt.behavior.test.js",
   "agent\portal-queue-priority.behavior.test.js",
   "agent\repeat-ask.behavior.test.js",

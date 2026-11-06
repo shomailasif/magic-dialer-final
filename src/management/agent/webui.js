@@ -314,7 +314,7 @@ const PAGE = `<!doctype html>
             <option value="local">Offline first - never uses the quota</option>
             <option value="hosted">Hosted only</option>
           </select>
-          <button id="aiLocalGet" class="btn teal">Download offline brain (1.1 GB)</button>
+          <button id="aiLocalGet" class="btn teal">Download offline brain (807 MB)</button>
         </div>
         <div class="inl" style="gap:8px;flex-wrap:wrap;margin-top:8px">
           <button id="aiSttGet" class="btn ghost">Download offline hearing (74 MB)</button>
@@ -521,7 +521,7 @@ $id("pkSave").addEventListener("click",function(){saveProviderKey(false)});
 $id("pkClear").addEventListener("click",function(){if(window.confirm("Remove the AI key from this PC? The agent will stop being able to talk."))saveProviderKey(true)});
 $id("pkKey").addEventListener("keydown",function(e){if(e.key==="Enter")saveProviderKey(false)});
 /* The offline brain is what keeps a call working after the free quota is gone:
- * a 1.1 GB model, downloaded once from this page and then never metered again.
+ * an 807 MB model, downloaded once from this page and then never metered again.
  * Hearing has its own small model (74 MB) so a PC can keep understanding the
  * prospect even when the hosted transcriber is out of quota. */
 var aiLocalPoll=null;
@@ -541,13 +541,13 @@ function renderAiLocal(d){
     get.classList.add("hidden");
   }else if(dl&&dl.error){
     line.textContent="The brain download failed: "+dl.error;
-    get.classList.remove("hidden");get.textContent="Retry brain download (1.1 GB)";
+    get.classList.remove("hidden");get.textContent="Retry brain download (807 MB)";
   }else if(dl&&!dl.done){
     line.textContent="Downloading the offline brain: "+mb(dl.written)+" of "+mb(dl.total)+" MB. This happens once; you can keep using the dialer.";
     get.classList.add("hidden");
   }else{
-    line.textContent="Not installed. Download once (1.1 GB) and this PC keeps thinking with no quota and no internet.";
-    get.classList.remove("hidden");get.textContent="Download offline brain (1.1 GB)";
+    line.textContent="Not installed. Download once (807 MB) and this PC keeps thinking with no quota and no internet.";
+    get.classList.remove("hidden");get.textContent="Download offline brain (807 MB)";
   }
   var st=d.stt||{},sdl=d.sttDownload||null;
   if(st.installed){
