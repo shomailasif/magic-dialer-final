@@ -147,8 +147,11 @@ const checks = [
     assert.match(policy, /case "past-dispatcher":/, "a past dispatch failure must be explored");
     assert.match(policy, /case "partner":/, "a partner check must ask for a time, not pitch");
     assert.match(policy, /case "value":/, "a value question must be answered with the outcome");
+    assert.match(policy, /case "needs":/, "a co-operative question must get the smallest next step");
     assert.match(policy, /case "close":/, "a completed checklist must ask for the appointment");
     assert.match(policy, /intent: "close"/, "the close must be a policy turn, not a model turn");
+    assert.match(brain, /repeatedSpokenLine\(text, history\)/, "a repeated local line must fall through instead of being spoken twice");
+    assert.match(brain, /AGENT\|PROSPECT\|LEAD/, "an echoed transcript label must be stripped before speech");
     assert.match(policy, /Already asked: /, "the model must be told which questions it already asked");
   },
 ];

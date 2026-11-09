@@ -124,7 +124,7 @@ async function main() {
     }
     /* A question, so the turn is answered by the model rather than by the
      * qualification policy; this case is about what the model is sent. */
-    long.push({ role: "user", content: "What do you need from me?" });
+    long.push({ role: "user", content: "Can you explain how it works?" });
     const r = await complete({ history: long, config: { ...CONFIG, ai: { mode: "local" } } });
     assert.equal(r.path, "local");
     const request = local.seen[0];
@@ -281,6 +281,33 @@ async function main() {
     assert.equal(r.intent, "close");
     assert.match(r.text, /time|number/i, "the close must ask for an appointment: " + r.text);
     assert.equal(local.seen.length, 0, "the close must be answered without the model");
+  });
+
+  // 15. The 1B sometimes continues the transcript instead of the caller's line.
+  //     A "CALLER:" prefix must never be spoken.
+  await withLocal({ reply: "CALLER: Which lanes do you run?" }, async () => {
+    global.fetch = hostedOk("hosted");
+    const r = await complete({
+      history: [{ role: "user", content: "Can you tell me more?" }],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.path, "local");
+    assert.equal(r.text, "Which lanes do you run?", "a transcript label must be stripped: " + r.text);
+  });
+
+  // 16. A local reply that repeats a line the prospect already heard is not
+  //     spoken again; the turn falls through to the hosted brain instead.
+  await withLocal({ reply: "What lanes do you run?" }, async (local) => {
+    global.fetch = hostedOk("hosted answer");
+    const r = await complete({
+      history: [
+        { role: "assistant", content: "What lanes do you run?" },
+        { role: "user", content: "Can you tell me more?" },
+      ],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.text, "hosted answer", "a repeated local line must not be spoken twice: " + JSON.stringify(r));
+    assert.equal(local.seen.length, 1, "the repeat is only detectable after the local model answers");
   });
 
   console.log("PASS: the offline brain answers locally, keeps its prompt small, and never costs a turn");

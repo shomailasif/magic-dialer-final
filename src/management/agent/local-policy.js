@@ -87,6 +87,10 @@ const PAST_DISPATCH =
   /\b(?:tried|used|had)\b[^?.!]{0,25}\b(?:dispatcher|dispatch (?:service|company))\b[^?.!]{0,25}\b(?:before|and it|but)\b|\b(?:last|previous) dispatcher\b|\bdispatcher (?:didn'?t|did not) work\b/i;
 const VALUE_QUESTION =
   /\b(?:what'?s in it for me|why should i|what do i get|how (?:does|would) (?:this|that|it) help|what'?s the benefit)\b/i;
+/* "What do you need from me?" is the most co-operative thing a prospect says.
+ * It deserves the smallest possible next step, not a feature list. */
+const NEEDS_QUESTION =
+  /\bwhat (?:do|would) you (?:need|want) (?:from (?:me|us)|to know|to get started)\b|\bwhat (?:info|information|details) (?:do you need|are you after)\b|\bwhat do you need\b/i;
 const NOT_INTERESTED =
   /\b(?:not interested|no thanks|no thank you|don'?t (?:need|want) (?:it|that|any)|not (?:right )?now|we'?re good|we are good|no need)\b/i;
 const EMAIL_REQUEST =
@@ -100,6 +104,7 @@ const INTENTS = [
   { id: "price", test: MONEY_QUESTION },
   { id: "source", test: SOURCE_QUESTION },
   { id: "value", test: VALUE_QUESTION },
+  { id: "needs", test: NEEDS_QUESTION },
   /* "We used a dispatcher before and it didn't work" is not the same as "we
    * already have one". It is a reason to ask what went wrong, not to concede. */
   { id: "past-dispatcher", test: PAST_DISPATCH },
@@ -192,6 +197,13 @@ function variants(intent, config) {
       return [
         "Your trucks stay loaded and the paperwork is handled. What lanes do you run?",
         "You get more loads without chasing brokers. Where are you running now?",
+      ];
+    case "needs":
+      /* The co-operative question gets the smallest next step, and asking for
+       * the MC here is what a rep would do. */
+      return [
+        "Just your MC and how many trucks you run. What's your MC?",
+        "Two things - your MC and your truck count. Can I get your MC?",
       ];
     case "close":
       /* The checklist is done. A rep asks for the appointment here, not for one

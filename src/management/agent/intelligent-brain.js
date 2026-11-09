@@ -27,7 +27,15 @@ const DEFAULT_MODEL = "openai/gpt-oss-20b";
 const DEFAULT_DIRECT_MODEL = "openai/gpt-oss-120b";
 
 function clean(text) {
-  return String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").replace(/^([\"'`]+)|([\"'`]+)$/g, "").trim();
+  return String(text || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    /* The offline 1B sometimes continues the transcript instead of the line:
+       it answered "Tuesday at two works" with "CALLER: Great. What's the best
+       time..." and that label was then spoken aloud. Strip a leading speaker
+       label - the transcript only uses these three names. */
+    .replace(/^\s*(?:CALLER|CUSTOMER|AGENT|PROSPECT|LEAD)\s*:\s*/i, "")
+    .replace(/^([\"'`]+)|([\"'`]+)$/g, "")
+    .trim();
 }
 
 /* A 220-token ceiling is not enough for a reasoning model: the thinking phase
@@ -491,6 +499,19 @@ function localSystemPrompt(config, stateLine) {
  * labelling them CUSTOMER: made the model answer its own setup text. */
 const LOCAL_META = /^(start this outbound|reply with exactly)/i;
 
+/* The 1B sometimes copies the previous caller line instead of answering: after
+ * the policy close it replied "CALLER: Great. What's the best time..." verbatim.
+ * Repeating a sentence the prospect just heard is worse than a hosted turn, so
+ * the local answer is rejected and the ordinary fallback speaks instead. */
+function repeatedSpokenLine(text, history) {
+  const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const t = norm(text);
+  if (!t) return false;
+  return (Array.isArray(history) ? history : []).some(
+    (m) => m && m.content && (m.role === "assistant" || m.role === "agent") && norm(m.content) === t,
+  );
+}
+
 function localTranscript(history) {
   const rows = (Array.isArray(history) ? history : [])
     .filter((m) => m && m.content && !(m.role === "user" && (LOCAL_META.test(String(m.content).trim()) || localPolicy.isInstruction(m.content))))
@@ -540,9 +561,11 @@ async function completeLocal({ history, config, maxTokens, timeoutMs }) {
     timeoutMs: budget,
     stop: LOCAL_STOP,
   });
+  const text = clean(r.text);
+  if (repeatedSpokenLine(text, history)) throw new Error("offline model repeated a spoken line");
   return {
     ok: true,
-    text: clean(r.text),
+    text,
     model: "local",
     path: "local",
     elapsedMs: Date.now() - startedAt,

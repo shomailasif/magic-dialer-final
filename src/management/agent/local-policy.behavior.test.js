@@ -39,6 +39,7 @@ const CASES = [
   ["Let me check with my partner first.", "partner", /time|both|them/i],
   ["We tried a dispatcher before and it didn't work.", "past-dispatcher", /wrong|miss/i],
   ["What's in it for me?", "value", /loaded|paperwork|lanes|loads/i],
+  ["What do you need from me?", "needs", /MC|trucks/i],
 ];
 for (const [said, intent, shape] of CASES) {
   const r = ask(said);

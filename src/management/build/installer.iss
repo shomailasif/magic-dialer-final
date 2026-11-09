@@ -12,7 +12,7 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.5.4
+AppVersion=1.5.5
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
