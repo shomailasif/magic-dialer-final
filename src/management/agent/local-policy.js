@@ -196,11 +196,9 @@ function variants(intent, config) {
     case "close":
       /* The checklist is done. A rep asks for the appointment here, not for one
        * more data point - and the line asks for a time rather than promising a
-       * callback the dialer cannot guarantee. */
-      return [
-        "Great. What's the best time and number to reach you?",
-        "Perfect. What's the best number and time to call you?",
-      ];
+       * callback the dialer cannot guarantee. One phrasing only: asking for the
+       * appointment twice sounds like a machine. */
+      return ["Great. What's the best time and number to reach you?"];
     default:
       return [];
   }
@@ -270,11 +268,14 @@ function policyReply(lastLead, { config, history } = {}) {
 
   /* The checklist is complete and the prospect has actually told us something:
    * ask for the appointment. Without this the local brain either invents a
-   * closing line or keeps qualifying somebody who has answered everything. */
+   * closing line or keeps qualifying somebody who has answered everything.
+   * Asked once: repeating it after the prospect answers sounds like a machine,
+   * so a second closing turn goes to the model instead. */
   if (!state.evidence) return null;
   const closeAlready = new Set(agentMessages(effective).map((m) => normalise(m.content)));
-  const close = variants("close", config).find((line) => !closeAlready.has(normalise(line)));
-  return close ? { intent: "close", text: close } : null;
+  const closeLines = variants("close", config);
+  if (closeLines.some((line) => closeAlready.has(normalise(line)))) return null;
+  return closeLines.length ? { intent: "close", text: closeLines[0] } : null;
 }
 
 const REFUSAL_RE = /^(?:no|nope|nah|none|not sure|don'?t know|dont know|skip|never ?mind|not right now|maybe later|n\/a)\b/i;

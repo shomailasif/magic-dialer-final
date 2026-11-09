@@ -132,21 +132,17 @@ const third = ask("Still not interested.", [
 ]);
 assert.equal(third, null, "with every variant spent, fall through to the model instead of repeating");
 
-// The close has two phrasings and is spent the same way, so a long call cannot
-// end with the same sentence three times.
+// The close is asked once. If the prospect answers the appointment question,
+// the next turn belongs to the conversation, not to a second scripted ask.
 const closeOne = ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.");
-const closeTwo = ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.", [
-  { role: "assistant", content: closeOne.text },
-]);
-assert.ok(closeTwo, "a second completed-checklist turn must still close");
-assert.notEqual(closeTwo.text, closeOne.text, "the close must not be repeated verbatim");
+assert.equal(closeOne.intent, "close");
 assert.equal(
-  ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.", [
+  ask("Tuesday at two works.", [
+    { role: "user", content: "We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks." },
     { role: "assistant", content: closeOne.text },
-    { role: "assistant", content: closeTwo.text },
   ]),
   null,
-  "with both closes spent, fall through to the model",
+  "the close must not be asked twice",
 );
 
 // 4. Our own instructions are not mistaken for something the prospect said.
