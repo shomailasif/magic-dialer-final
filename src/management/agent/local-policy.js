@@ -76,16 +76,35 @@ const CALLBACK_REQUEST =
   /\b(?:call|ring|phone)\s+(?:me|us)\s+back\b|\b(?:i'?m|i am)\s+(?:driving|on the road|behind the wheel|in the truck)\b|\bnot a good time\b|\bcan'?t talk (?:right )?now\b/i;
 const MC_QUESTION =
   /\b(?:why (?:do )?(?:you|y'?all) (?:need|want)|what(?:'s| is) (?:the )?(?:reason for|need for)|why ask for)\b[^?.!]{0,40}\b(?:mc|dot|authority|number)\b|\bmc number\b[^?.!]{0,30}\b(?:why|needed|need it)\b/i;
+/* A broker or a company with no trucks is not a lead. Disqualifying fast is a
+ * sales skill: it protects the prospect's time and leaves the door open for a
+ * referral instead of arguing. */
+const WRONG_FIT =
+  /\b(?:we(?:'re| are) (?:a |an )?(?:freight )?broker|we (?:don'?t|do not) (?:have|own) (?:any )?(?:trucks?|equipment)|no trucks|we broker|brokerage)\b/i;
+const PARTNER_CHECK =
+  /\b(?:talk to|check with|ask|run it by|speak with)\b[^?.!]{0,35}\b(?:partner|boss|wife|husband|manager|owner|team)\b|\b(?:my|our) (?:partner|boss|manager|wife|husband) (?:handles|decides|is)\b/i;
+const PAST_DISPATCH =
+  /\b(?:tried|used|had)\b[^?.!]{0,25}\b(?:dispatcher|dispatch (?:service|company))\b[^?.!]{0,25}\b(?:before|and it|but)\b|\b(?:last|previous) dispatcher\b|\bdispatcher (?:didn'?t|did not) work\b/i;
+const VALUE_QUESTION =
+  /\b(?:what'?s in it for me|why should i|what do i get|how (?:does|would) (?:this|that|it) help|what'?s the benefit)\b/i;
 const NOT_INTERESTED =
   /\b(?:not interested|no thanks|no thank you|don'?t (?:need|want) (?:it|that|any)|not (?:right )?now|we'?re good|we are good|no need)\b/i;
 const EMAIL_REQUEST =
   /\b(?:send|email|e-mail)\b[^?.!]{0,30}\b(?:info|information|details|email|e-mail)\b|\bemail me\b|\bwhat'?s your email\b/i;
 
 const INTENTS = [
+  /* Disqualifying beats every other intent: a broker with no trucks must not be
+   * qualified or pitched, however the sentence is phrased. */
+  { id: "wrong-fit", test: WRONG_FIT },
   { id: "ai", test: AI_QUESTION },
   { id: "price", test: MONEY_QUESTION },
   { id: "source", test: SOURCE_QUESTION },
+  { id: "value", test: VALUE_QUESTION },
+  /* "We used a dispatcher before and it didn't work" is not the same as "we
+   * already have one". It is a reason to ask what went wrong, not to concede. */
+  { id: "past-dispatcher", test: PAST_DISPATCH },
   { id: "dispatcher", test: DISPATCHER_STATEMENT },
+  { id: "partner", test: PARTNER_CHECK },
   { id: "callback", test: CALLBACK_REQUEST },
   { id: "mc", test: MC_QUESTION },
   { id: "not-interested", test: NOT_INTERESTED },
@@ -147,6 +166,41 @@ function variants(intent, config) {
         "Happy to. What's the best address to send it to?",
         "Sure - I'll send it over. What's the best email?",
       ];
+    case "wrong-fit":
+      /* No trucks means no lead. Ending the pitch quickly and asking for a
+       * referral is the honest move, and it is the one a broker remembers. */
+      return [
+        "Understood - you're on the brokerage side. Is there a carrier you'd point us to?",
+        "Got it, no trucks on your side. Anyone you'd recommend we talk to?",
+      ];
+    case "partner":
+      /* The decision-maker is not on the line. Ask for a time instead of
+       * pitching the person who cannot say yes. */
+      return [
+        "Of course. When's a good time to catch you both?",
+        "Makes sense. What's the best time to talk it through with them?",
+      ];
+    case "past-dispatcher":
+      /* A past failure is the most useful thing a prospect can tell us, and one
+       * question about it does more than any feature list. */
+      return [
+        "That's fair. What went wrong with the last one?",
+        "I understand. What did they miss that you needed?",
+      ];
+    case "value":
+      /* "What's in it for me" deserves the outcome, not a feature list. */
+      return [
+        "Your trucks stay loaded and the paperwork is handled. What lanes do you run?",
+        "You get more loads without chasing brokers. Where are you running now?",
+      ];
+    case "close":
+      /* The checklist is done. A rep asks for the appointment here, not for one
+       * more data point - and the line asks for a time rather than promising a
+       * callback the dialer cannot guarantee. */
+      return [
+        "Great. What's the best time and number to reach you?",
+        "Perfect. What's the best number and time to call you?",
+      ];
     default:
       return [];
   }
@@ -202,13 +256,25 @@ function policyReply(lastLead, { config, history } = {}) {
     normalise(lastRow.content) === normalise(heard);
   const effective = sameTurn ? rows : [...rows, { role: "user", content: heard }];
   const state = analyse(effective, config);
-  if (state.pending.length && state.lastLead && !QUESTION_RE.test(state.lastLead) && !SMALL_TALK_RE.test(state.lastLead)) {
+  /* A prospect asking us something must be answered by the model, and a
+   * two-word "okay" is not a cue to jump to the close. */
+  if (!state.lastLead || QUESTION_RE.test(state.lastLead) || SMALL_TALK_RE.test(state.lastLead)) return null;
+
+  if (state.pending.length) {
     const ack = NEGATIVE_RE.test(state.lastLead) ? "I hear you. " : "Got it. ";
     const text = ack + questionFor(state.pending[0]);
     const already = new Set(agentMessages(effective).map((m) => normalise(m.content)));
     if (!already.has(normalise(text))) return { intent: "qualify", text };
+    return null;
   }
-  return null;
+
+  /* The checklist is complete and the prospect has actually told us something:
+   * ask for the appointment. Without this the local brain either invents a
+   * closing line or keeps qualifying somebody who has answered everything. */
+  if (!state.evidence) return null;
+  const closeAlready = new Set(agentMessages(effective).map((m) => normalise(m.content)));
+  const close = variants("close", config).find((line) => !closeAlready.has(normalise(line)));
+  return close ? { intent: "close", text: close } : null;
 }
 
 const REFUSAL_RE = /^(?:no|nope|nah|none|not sure|don'?t know|dont know|skip|never ?mind|not right now|maybe later|n\/a)\b/i;
@@ -303,7 +369,10 @@ function analyse(history, config) {
 
   const asked = fields.filter((f) => !answered[fieldKind(f)] && askedByQuestion(f, askedText));
   const pending = fields.filter((f) => !answered[fieldKind(f)] && !asked.includes(f));
-  return { leads, agents, fields, facts, asked, pending, lastLead };
+  /* Somebody has actually answered something, as opposed to the line simply
+   * having been silent or small-talked. Only then is a close earned. */
+  const evidence = facts.length > 0 || Object.values(answered).some(Boolean);
+  return { leads, agents, fields, facts, asked, pending, lastLead, evidence };
 }
 
 /* What the offline model cannot work out for itself: which facts the prospect

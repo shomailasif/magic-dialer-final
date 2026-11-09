@@ -266,6 +266,23 @@ async function main() {
     assert.equal(local.seen.length, 0, "policy must answer without the model");
   });
 
+  // 14. A completed checklist is closed by policy: the 1B must not invent a
+  //     closing pitch or keep qualifying somebody who answered everything.
+  await withLocal({ reply: "unused" }, async (local) => {
+    global.fetch = hostedOk("hosted");
+    const r = await complete({
+      history: [
+        { role: "assistant", content: "We dispatch freight for carriers. Which lanes do you run most?" },
+        { role: "user", content: "We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks." },
+      ],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.path, "local-policy", "the close must not pay the model load: " + JSON.stringify(r));
+    assert.equal(r.intent, "close");
+    assert.match(r.text, /time|number/i, "the close must ask for an appointment: " + r.text);
+    assert.equal(local.seen.length, 0, "the close must be answered without the model");
+  });
+
   console.log("PASS: the offline brain answers locally, keeps its prompt small, and never costs a turn");
 }
 

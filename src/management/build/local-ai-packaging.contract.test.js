@@ -143,6 +143,12 @@ const checks = [
     assert.match(policy, /It depends on the lane and volume/, "the price answer must not invent a number");
     assert.match(policy, /case "not-interested":/, "a brush-off must be a policy turn");
     assert.match(policy, /case "source":/, "the number-source question must be answered honestly");
+    assert.match(policy, /case "wrong-fit":/, "a broker with no trucks must be disqualified, not pitched");
+    assert.match(policy, /case "past-dispatcher":/, "a past dispatch failure must be explored");
+    assert.match(policy, /case "partner":/, "a partner check must ask for a time, not pitch");
+    assert.match(policy, /case "value":/, "a value question must be answered with the outcome");
+    assert.match(policy, /case "close":/, "a completed checklist must ask for the appointment");
+    assert.match(policy, /intent: "close"/, "the close must be a policy turn, not a model turn");
     assert.match(policy, /Already asked: /, "the model must be told which questions it already asked");
   },
 ];

@@ -35,6 +35,10 @@ const CASES = [
   ["Why do you need my MC number?", "mc", /carrier|MC/i],
   ["Am I talking to a robot?", "ai", /AI assistant/i],
   ["Sounds good, send me an email.", "email", /email|address/i],
+  ["We're a freight broker, we don't have any trucks.", "wrong-fit", /carrier|recommend/i],
+  ["Let me check with my partner first.", "partner", /time|both|them/i],
+  ["We tried a dispatcher before and it didn't work.", "past-dispatcher", /wrong|miss/i],
+  ["What's in it for me?", "value", /loaded|paperwork|lanes|loads/i],
 ];
 for (const [said, intent, shape] of CASES) {
   const r = ask(said);
@@ -60,10 +64,36 @@ const complaint = ask("Rates are terrible this year.");
 assert.equal(complaint.intent, "qualify");
 assert.match(complaint.text, /^I hear you\. /, "a complaint is acknowledged before the next question: " + complaint.text);
 assert.equal(ask("How does the dispatch work?"), null, "a question must be answered by the model, not turned into a checklist");
+// A completed checklist moves to the close instead of asking another
+// qualification question the prospect has already answered.
+const closed = ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.");
+assert.equal(closed.intent, "close", "a complete checklist must move to the close: " + JSON.stringify(closed));
+assert.match(closed.text, /time|number/i, "the close must ask for an appointment: " + closed.text);
+assert.doesNotMatch(closed.text, /which lanes|how many|what equipment/i, "the close must not re-qualify: " + closed.text);
+assert.doesNotMatch(
+  closed.text,
+  /(?:\bi'?ll|\bwe'?ll|\bi will|\bwe will)\s+(?:call|ring|phone)\s+(?:you|back)/i,
+  "the close must ask for a time, not promise a callback: " + closed.text,
+);
+// A broker is disqualified before the brush-off is read as an objection.
 assert.equal(
-  ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks."),
-  null,
-  "a complete checklist must not keep asking",
+  ask("We're a broker and we're not interested.").intent,
+  "wrong-fit",
+  "disqualification must outrank the brush-off",
+);
+// A short answer that completes a one-field checklist can close immediately.
+const minimal = { ...CONFIG, leadFields: ["lanes"] };
+const closedEarly = policyReply("Chicago to Indianapolis", {
+  config: minimal,
+  history: [{ role: "assistant", content: "Which lanes do you run most?" }],
+});
+assert.equal(closedEarly.intent, "close", "a completed checklist must close even on a short answer");
+// Small talk and questions are never read as a cue to close.
+assert.equal(policyReply("Okay, sounds good.", { config: minimal, history: [] }), null, "small talk must reach the model");
+assert.equal(
+  policyReply("What do you charge per load?", { config: minimal, history: [] }).intent,
+  "price",
+  "a price question must stay with the price intent, not become a close",
 );
 
 // 3. A phrase already spoken is not said twice. The second turn gets the other
@@ -79,6 +109,23 @@ const third = ask("Still not interested.", [
   { role: "assistant", content: second.text },
 ]);
 assert.equal(third, null, "with every variant spent, fall through to the model instead of repeating");
+
+// The close has two phrasings and is spent the same way, so a long call cannot
+// end with the same sentence three times.
+const closeOne = ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.");
+const closeTwo = ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.", [
+  { role: "assistant", content: closeOne.text },
+]);
+assert.ok(closeTwo, "a second completed-checklist turn must still close");
+assert.notEqual(closeTwo.text, closeOne.text, "the close must not be repeated verbatim");
+assert.equal(
+  ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.", [
+    { role: "assistant", content: closeOne.text },
+    { role: "assistant", content: closeTwo.text },
+  ]),
+  null,
+  "with both closes spent, fall through to the model",
+);
 
 // 4. Our own instructions are not mistaken for something the prospect said.
 assert.equal(isInstruction("ALREADY COLLECTED: equipment=dry van"), true);
