@@ -296,8 +296,16 @@ function fieldKind(field) {
   if (key.includes("mc") || key.includes("dot") || key.includes("authority")) return "mc";
   if (key.includes("name")) return "name";
   if (key.includes("email")) return "email";
+  /* Fields the lead record already carries, or that cannot be asked in one
+   * short sentence. Leaving them in the checklist is how the live config would
+   * have asked a prospect "What's your text request?" and never closed. */
+  if (key.includes("phone") || key.includes("telephone") || key.includes("mobile")) return "phone";
+  if (key.includes("request") || key.includes("note") || key.includes("comment")) return "note";
+  if (key.includes("where") || key.includes("location") || key.includes("city") || key.includes("pickup") || key.includes("empty")) return "location";
   return "other";
 }
+
+const LEAD_ONLY = new Set(["phone", "note", "location"]);
 
 function askedByQuestion(field, question) {
   const q = String(question || "").toLowerCase();
@@ -330,7 +338,11 @@ function analyse(history, config) {
   const askedText = agents.slice(-8).map(spokenText).join(" ");
   const fields = (Array.isArray(config && config.leadFields) ? config.leadFields : [])
     .map((f) => (typeof f === "string" ? f : f && (f.label || f.key)))
-    .filter(Boolean);
+    .filter(Boolean)
+    /* Phone, the customer's own note fields and the empty-where column are
+     * already in the lead record. They cannot be asked in a phone call, and on
+     * the live config they kept the checklist permanently open. */
+    .filter((f) => !LEAD_ONLY.has(fieldKind(f)));
 
   const facts = [];
   const trucks = told.match(/\b(\d{1,4})\s+(?:trucks?|units?|power units?|rigs?|trailers?)\b/i);

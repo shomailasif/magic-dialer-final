@@ -96,6 +96,28 @@ assert.equal(
   "a price question must stay with the price intent, not become a close",
 );
 
+// 2c. The live lead sheet has phone, notes and an empty-where column. Those are
+//     already in the record and cannot be asked on a call; they must neither be
+//     spoken as questions nor keep the checklist open forever.
+const LIVE_FIELDS = ["NAME", "MC NUMBER", "PHONE NUMBER", "TEXT REQUEST", "TRUCK TYPE", "TRUCK SIZE", "EMPTY WHERE AND WHEN"];
+const live = { ...CONFIG, leadFields: LIVE_FIELDS };
+const liveEmpty = conversationState([], live);
+assert.match(liveEmpty, /Still needed: NAME, MC NUMBER, TRUCK TYPE, TRUCK SIZE\./, "only askable fields belong in the checklist: " + liveEmpty);
+assert.doesNotMatch(liveEmpty, /PHONE|TEXT REQUEST|EMPTY WHERE/i, "lead-only columns must never be asked: " + liveEmpty);
+const liveHistory = [
+  { role: "assistant", content: "Who am I speaking with?" },
+  { role: "user", content: "Mike." },
+  { role: "assistant", content: "Thanks Mike. What's your MC number?" },
+  { role: "user", content: "MC 123456." },
+  { role: "assistant", content: "Got it. What equipment are you running?" },
+  { role: "user", content: "Dry van." },
+  { role: "assistant", content: "And how many trucks are you running?" },
+  { role: "user", content: "Twelve trucks." },
+];
+const liveClose = policyReply("Twelve trucks.", { config: live, history: liveHistory });
+assert.equal(liveClose.intent, "close", "the live checklist must be closable: " + JSON.stringify(liveClose));
+assert.match(liveClose.text, /time|number/i, "the live close must ask for an appointment: " + liveClose.text);
+
 // 3. A phrase already spoken is not said twice. The second turn gets the other
 //    phrasing; once both are spent the model is asked for something new.
 const first = ask("I'm not interested, thanks.");
