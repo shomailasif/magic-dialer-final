@@ -206,8 +206,18 @@ jobs:
           if (-not (Test-Path $privatePython)) { throw "Installer missing private Python TTS runtime" }
           $ttsMp3 = Join-Path $env:RUNNER_TEMP "magic-dialer-private-tts.mp3"
           $ttsRaw = Join-Path $env:RUNNER_TEMP "magic-dialer-private-tts.raw"
-          & $privatePython -m edge_tts --voice en-US-AvaNeural --text "Magic Dialer audio proof" --write-media $ttsMp3
-          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ttsMp3) -or (Get-Item $ttsMp3).Length -lt 100) { throw "Private edge-tts synthesis failed" }
+          # The free Edge endpoint rate-limits bursts with HTTP 429; a release
+          # must not fail because Microsoft was busy. Three bounded attempts
+          # still prove real synthesis while tolerating that.
+          $ttsOk = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            if (Test-Path $ttsMp3) { Remove-Item $ttsMp3 -Force }
+            & $privatePython -m edge_tts --voice en-US-AvaNeural --text "Magic Dialer audio proof" --write-media $ttsMp3
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $ttsMp3) -and (Get-Item $ttsMp3).Length -ge 100) { $ttsOk = $true; break }
+            Write-Host "edge-tts attempt $attempt failed (HTTP 429 is a rate limit, not a missing runtime); retrying"
+            Start-Sleep -Seconds (10 * $attempt)
+          }
+          if (-not $ttsOk) { throw "Private edge-tts synthesis failed after 3 attempts" }
           $privateFfmpeg = (& $privatePython -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())").Trim()
           if (-not (Test-Path $privateFfmpeg)) { throw "Private FFmpeg binary unavailable" }
           & $privateFfmpeg -loglevel error -i $ttsMp3 -ar 8000 -ac 1 -f mulaw -y $ttsRaw
