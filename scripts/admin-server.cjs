@@ -38,12 +38,17 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const http = require("node:http");
+const path = require("node:path");
 const lib = require("./license-lib.cjs");
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = Number(process.env.ADMIN_PORT) || 48772;
 const BODY_LIMIT = 64 * 1024;
 const TOKEN_HEADER = "x-admin-token";
+/* The URL carries this run's token, so it is written next to the other
+ * vendor-only files and deleted when the console stops. Without it, a console
+ * started by the logon task has its URL only in a log file. */
+const URL_FILE = path.join(__dirname, "..", "licenses", "admin-url.txt");
 
 let TOKEN = "";
 let ACTIVE_PORT = DEFAULT_PORT;
@@ -263,11 +268,20 @@ if (require.main === module) {
       console.log("");
       console.log("  signing key : " + lib.PRIVATE_KEY_PATH + "  (present, never published)");
       console.log("  binding     : " + HOST + ":" + port + "  (loopback only)");
+      try {
+        fs.writeFileSync(URL_FILE, url + "\n", { mode: 0o600 });
+        console.log("  URL file    : " + URL_FILE);
+      } catch (e) {
+        console.log("  URL file    : could not be written (" + ((e && e.message) || e) + ")");
+      }
       console.log("");
       console.log("  The token in the URL is new every run. Keep this window open;");
       console.log("  closing it (Ctrl+C) shuts the console and invalidates the token.");
       console.log("");
-      const stop = () => server.close(() => process.exit(0));
+      const stop = () => {
+        try { fs.unlinkSync(URL_FILE); } catch {}
+        server.close(() => process.exit(0));
+      };
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
     })

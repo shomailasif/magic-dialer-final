@@ -151,6 +151,7 @@ const checks = [
     assert.match(policy, /case "close":/, "a completed checklist must ask for the appointment");
     assert.match(policy, /intent: "close"/, "the close must be a policy turn, not a model turn");
     assert.match(brain, /repeatedSpokenLine\(text, history\)/, "a repeated local line must fall through instead of being spoken twice");
+    assert.match(brain, /r\.finish === "length" \? trimToCompleteSentence/, "a truncated local reply must stop at the last complete sentence");
     assert.match(brain, /AGENT\|PROSPECT\|LEAD/, "an echoed transcript label must be stripped before speech");
     assert.match(policy, /Already asked: /, "the model must be told which questions it already asked");
   },

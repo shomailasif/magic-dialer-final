@@ -22,7 +22,7 @@ const prevFetch = global.fetch;
 
 /* A stand-in for llama-server: it records the exact request the brain sends and
  * answers in the OpenAI-compatible shape llama.cpp uses. */
-function startLocal(reply, { delayMs = 0, fail = false } = {}) {
+function startLocal(reply, { delayMs = 0, fail = false, finish = "stop" } = {}) {
   const seen = [];
   const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/health") {
@@ -42,7 +42,7 @@ function startLocal(reply, { delayMs = 0, fail = false } = {}) {
         return;
       }
       const payload = {
-        choices: [{ message: { content: reply }, finish_reason: "stop" }],
+        choices: [{ message: { content: reply }, finish_reason: finish }],
         usage: { prompt_tokens: 100, completion_tokens: 12, total_tokens: 112 },
       };
       setTimeout(() => {
@@ -308,6 +308,27 @@ async function main() {
     });
     assert.equal(r.text, "hosted answer", "a repeated local line must not be spoken twice: " + JSON.stringify(r));
     assert.equal(local.seen.length, 1, "the repeat is only detectable after the local model answers");
+  });
+
+  // 17. A 20-token budget can cut a sentence mid-clause. The fragment must
+  //     never be spoken: keep the complete sentences, or fall through.
+  await withLocal({ reply: "Our dispatch team will confirm the details, including truck type", finish: "length" }, async () => {
+    global.fetch = hostedOk("hosted answer");
+    const r = await complete({
+      history: [{ role: "user", content: "Can you explain how it works?" }],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.text, "hosted answer", "a reply with no complete sentence must fall through: " + JSON.stringify(r));
+  });
+
+  await withLocal({ reply: "Your trucks stay loaded. The paperwork is", finish: "length" }, async () => {
+    global.fetch = hostedOk("hosted answer");
+    const r = await complete({
+      history: [{ role: "user", content: "Can you explain how it works?" }],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.text, "Your trucks stay loaded.", "a truncated reply must stop at the last full sentence: " + r.text);
+    assert.equal(r.path, "local");
   });
 
   console.log("PASS: the offline brain answers locally, keeps its prompt small, and never costs a turn");

@@ -27,6 +27,24 @@ Open that URL. The token is new every run, the server is bound to `127.0.0.1`
 only, and every API call needs the token, so a random web page cannot drive it.
 Press `Ctrl+C` in that window to shut it down.
 
+### It comes back by itself
+
+A logon task named **Magic Dialer Admin Console** starts it hidden on this PC:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-admin.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-admin.ps1 -Open
+```
+
+The script does nothing if the console is already answering, starts it hidden if
+not, and prints the URL. The current URL is also written to
+`licenses\admin-url.txt` (gitignored) and deleted when the console stops, so a
+console started at logon can still be opened. Remove the task with:
+
+```powershell
+Unregister-ScheduledTask -TaskName "Magic Dialer Admin Console" -Confirm:$false
+```
+
 If the signing key is missing, it prints `ADMIN CONSOLE NOT STARTED` and exits.
 That is the correct behaviour on a customer PC.
 

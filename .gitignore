@@ -76,4 +76,8 @@ src/management/build/fixtures/*.wav
 # engines have to read both.
 /licenses/license.private.key
 /licenses/grants.local.json
+# The running console's tokenised URL and its log. Both are local to this PC.
+/licenses/admin-url.txt
+/licenses/admin.log
+/licenses/admin-err.log
 **/build/cache/

@@ -563,9 +563,15 @@ async function completeLocal({ history, config, maxTokens, timeoutMs }) {
   });
   const text = clean(r.text);
   if (repeatedSpokenLine(text, history)) throw new Error("offline model repeated a spoken line");
+  /* The 20-token budget can end a sentence mid-clause ("...and confirm the").
+   * A prospect must never hear that, so a truncated reply keeps only the
+   * sentences that finished. If none did, the turn falls through to the hosted
+   * brain instead of speaking a fragment. */
+  const complete = r.finish === "length" ? trimToCompleteSentence(text) : text;
+  if (!complete) throw new Error("offline model was cut off before a complete sentence");
   return {
     ok: true,
-    text,
+    text: complete,
     model: "local",
     path: "local",
     elapsedMs: Date.now() - startedAt,
