@@ -48,9 +48,9 @@ const MAX_ANSWER_TOKENS = 1200;
 /* The offline model gets a much smaller budget on purpose. It runs on the same
  * two cores as the audio pipeline, so a 900-token answer would be minutes of
  * silence. Ten spoken words is ~14 tokens and decodes in ~1.5s measured on the
- * target machine; 40 gives an off-book answer the two sentences it needs to
+ * target machine; 28 gives an off-book answer the two short sentences it needs to
  * answer and still ask one question, while the timeout remains the hard stop. */
-const LOCAL_MAX_TOKENS = 40;
+const LOCAL_MAX_TOKENS = 28;
 /* The model is told to write one sentence and stop; this makes it stop even
  * when it starts writing the other side of the conversation. */
 const LOCAL_STOP = ["\nCUSTOMER:", "\nCALLER:", "\n\n"];
@@ -469,7 +469,7 @@ function localAllowed(config) {
  * offline prompt keeps only the identity, the job, and the four rules that must
  * never be broken. A local model that answers plainly beats one that has read
  * 1,200 tokens it cannot follow. */
-function localSystemPrompt(config, stateLine, opening = !stateLine) {
+function localSystemPrompt(config) {
   const c = config || {};
   const agentName = asText(c.persona, ["name", "agentName", "firstName", "displayName"], "Alex");
   const company = asText(c.companyName, ["name", "companyName", "company"], "our company");
@@ -482,17 +482,11 @@ function localSystemPrompt(config, stateLine, opening = !stateLine) {
   return [
     "Write CALLER's next spoken line in a phone call.",
     `CALLER: ${agentName} of ${company}, calling about ${product}.`,
-    /* The state line already says what is still needed, and repeating the same
-     * list twice is prompt the model has to read before it can speak. */
-    !stateLine && fields.length ? `Ask about: ${fields.join(", ")}.` : "",
+    fields.length ? `Ask about: ${fields.join(", ")}.` : "",
     `Language: ${languageName(locale)}.`,
-    stateLine ? `Call so far - ${String(stateLine).trim()}` : "",
-    /* The opening rule is only useful before anyone has spoken; leaving it in a
-     * live turn is prompt the model reads and can mistake for its job. */
-    opening ? `Opening: introduce yourself as ${agentName} from ${company} in one sentence, then stop.` : "",
     /* Off-book questions are normal conversation. The old "one sentence, 10
      * words" rule produced clipped, evasive answers; answer first, then ask. */
-    "Otherwise: answer what they asked first, then one short question. 25 words max. Sound human, no preamble.",
+    "Answer what they asked first, then one short question. 20 words max. Sound human, no preamble.",
     "Only CALLER lines. Never write CUSTOMER's or claim their business.",
     "Never repeat a question already asked.",
     "Never invent a price, load, lane, coverage, hours, app, history or contract term. If you don't know, say so briefly and ask one question.",
@@ -549,17 +543,31 @@ async function completeLocal({ history, config, maxTokens, timeoutMs }) {
     };
   }
   const budget = Math.max(1500, Math.min(Number(timeoutMs) || LOCAL_TURN_TIMEOUT_MS, LOCAL_TURN_TIMEOUT_MS));
-  const stateLine = localPolicy.conversationState(history, config);
   const messages = [
-    { role: "system", content: localSystemPrompt(config, stateLine, !localPolicy.lastLeadLine(history)) },
+    { role: "system", content: localSystemPrompt(config) },
     { role: "user", content: localTranscript(history) },
   ];
-  /* A separate trailing instruction, not part of the transcript: the 1B model
-   * follows a direct "ask about X" far better than a state line buried in the
-   * system prompt. Omitted when the prospect asked something, so a question is
-   * answered rather than deflected into the checklist. */
-  const hint = localPolicy.nextQuestionHint(history, config);
-  if (hint) messages.push({ role: "user", content: hint });
+  /* Call state and the opening instruction are instructions, not things the
+   * prospect said. Keeping them out of the system prompt is what lets llama.cpp
+   * reuse the warmed prefix for the whole call; the first live turn used to
+   * re-prefill 4.8s because the state line changed the system prompt. */
+  const leadLine = localPolicy.lastLeadLine(history);
+  if (!leadLine) {
+    const name = asText(config && config.persona, ["name", "agentName", "firstName", "displayName"], "Alex");
+    const company = asText(config && config.companyName, ["name", "companyName", "company"], "our company");
+    messages.push({ role: "user", content: `Nobody has spoken yet. Introduce yourself as ${name} from ${company} in one sentence, then stop.` });
+  } else {
+    const stateLine = localPolicy.conversationState(history, config);
+    /* A "Still needed" line on a question turn pushes the 1B back into the
+     * checklist, so only real facts (and what was already asked) are appended. */
+    if (stateLine && /^Known:/i.test(stateLine)) messages.push({ role: "user", content: `Call so far - ${String(stateLine).trim()}` });
+    /* A separate trailing instruction, not part of the transcript: the 1B model
+     * follows a direct "ask about X" far better than a state line buried in the
+     * system prompt. Omitted when the prospect asked something, so a question is
+     * answered rather than deflected into the checklist. */
+    const hint = localPolicy.nextQuestionHint(history, config);
+    if (hint) messages.push({ role: "user", content: hint });
+  }
   const r = await localAi.chat({
     messages,
     maxTokens: Math.min(Number(maxTokens) || LOCAL_MAX_TOKENS, LOCAL_MAX_TOKENS),
@@ -569,7 +577,7 @@ async function completeLocal({ history, config, maxTokens, timeoutMs }) {
   });
   const text = clean(r.text);
   if (repeatedSpokenLine(text, history)) throw new Error("offline model repeated a spoken line");
-  /* The 20-token budget can end a sentence mid-clause ("...and confirm the").
+  /* The 28-token budget can end a sentence mid-clause ("...and confirm the").
    * A prospect must never hear that, so a truncated reply keeps only the
    * sentences that finished. If none did, the turn falls through to the hosted
    * brain instead of speaking a fragment. */

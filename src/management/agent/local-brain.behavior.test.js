@@ -140,9 +140,9 @@ async function main() {
     const r = await complete({ history: long, config: { ...CONFIG, ai: { mode: "local" } } });
     assert.equal(r.path, "local");
     const request = local.seen[0];
-    /* 40 tokens is two short sentences: enough to answer an off-book question
+    /* 28 tokens is two short sentences: enough to answer an off-book question
      * and ask one back, still a few seconds of decode, never a speech. */
-    assert.ok(request.max_tokens <= 40, "the local reply budget must stay small, got " + request.max_tokens);
+    assert.ok(request.max_tokens <= 28, "the local reply budget must stay small, got " + request.max_tokens);
     assert.ok(
       Array.isArray(request.stop) && request.stop.includes("\nCUSTOMER:"),
       "the model must stop when it starts writing the prospect's line",
@@ -157,17 +157,47 @@ async function main() {
     assert.ok(!user.includes("line 0 "), "the oldest history must be dropped");
     assert.ok(user.endsWith("CALLER:"), "the model must be asked to continue the caller's line");
     assert.match(system, /answer what they asked first/i, "off-book turns must be answered before a question is asked: " + system);
-    assert.doesNotMatch(system, /^Opening:/m, "a live turn must not be told to re-introduce itself: " + system);
+    assert.doesNotMatch(system, /^Opening:|^Call so far/m, "per-turn state must not break the cached prefix: " + system);
   });
 
   // 3. The system prompt is stable for a whole call, so llama.cpp can reuse the
-  //    cached prefix instead of re-reading it every turn.
+  //    cached prefix instead of re-reading it every turn. State and the opening
+  //    instruction ride in the user turns, where they cannot invalidate it.
   await withLocal({}, async () => {
     const a = localSystemPrompt({ ...CONFIG, locale: "en" });
     const b = localSystemPrompt({ ...CONFIG, locale: "en" });
     assert.equal(a, b, "the cached prefix must not change between turns");
-    assert.match(localSystemPrompt(CONFIG, "", true), /^Opening:/m, "an empty call must still introduce the caller");
-    assert.doesNotMatch(localSystemPrompt(CONFIG, "Known: none.", false), /^Opening:/m, "a live call must not repeat the introduction");
+    assert.doesNotMatch(a, /^Opening:|^Call so far/m, "the cached prefix must not carry per-turn state");
+  });
+
+  await withLocal({}, async (local) => {
+    await complete({
+      history: [],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    const request = local.seen[0];
+    const system = request.messages.find((m) => m.role === "system").content;
+    const trailing = request.messages.slice(1).filter((m) => m.role === "user").map((m) => m.content).join("\n");
+    assert.doesNotMatch(system, /Nobody has spoken yet/, "the opening rule must not sit in the cached prefix");
+    assert.match(trailing, /Nobody has spoken yet/, "an empty call must still introduce the caller: " + trailing);
+  });
+
+  // 3b. Known facts still reach the model, but in the user turn where they do
+  //     not break the cached prefix.
+  await withLocal({}, async (local) => {
+    await complete({
+      history: [
+        { role: "user", content: "We run twenty trucks out of Chicago." },
+        { role: "assistant", content: "Got it. Which lanes do you run most?" },
+        { role: "user", content: "Do you work with team drivers?" },
+      ],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    const request = local.seen[0];
+    const system = request.messages.find((m) => m.role === "system").content;
+    const trailing = request.messages.slice(1).filter((m) => m.role === "user").map((m) => m.content).join("\n");
+    assert.doesNotMatch(system, /Known:/, "known facts must not change the cached prefix: " + system);
+    assert.match(trailing, /Call so far - Known: .*Chicago/i, "known facts must reach the model in the user turn: " + trailing);
   });
 
   // 4. A local server that errors falls through to the hosted brain.

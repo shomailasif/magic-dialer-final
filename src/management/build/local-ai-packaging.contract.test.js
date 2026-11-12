@@ -164,7 +164,7 @@ const checks = [
     assert.match(policy, /case "coverage":/, "equipment coverage must be answered without inventing a lane");
     assert.match(brain, /hours, app, history or contract term/, "the offline prompt must forbid inventing business facts");
     assert.match(brain, /answer what they asked first/i, "the offline prompt must answer the question before asking one");
-    assert.match(brain, /const LOCAL_MAX_TOKENS = 40;/, "the offline budget must allow a two-sentence answer");
+    assert.match(brain, /const LOCAL_MAX_TOKENS = 28;/, "the offline budget must allow a two-sentence answer");
     assert.match(policy, /case "identity":/, "who-are-you shapes must name the caller from config");
     assert.match(policy, /case "location":/, "a location question must be answered with coverage, not a made-up city");
     assert.match(policy, /case "how-it-works":/, "how-it-works must give the three dispatch jobs, then qualify");
