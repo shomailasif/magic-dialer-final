@@ -57,6 +57,20 @@ const CASES = [
   ["I'm just the driver.", "referral", /who handles|right person/i],
   ["How soon can you start?", "start", /lanes|MC|week/i],
   ["Can you text me the details?", "text", /number/i],
+  /* Business facts the config cannot supply. The 1B model fabricated a mobile
+   * app, 8am-5pm EST hours and "short on capacity today"; each is a lie a
+   * prospect can check, so policy answers them without a fact it does not have. */
+  ["What are your hours?", "hours", /guess|time to reach/i],
+  ["Are you open on weekends?", "hours", /guess|time to reach/i],
+  ["Do you have an app?", "app", /phone|email/i],
+  ["How long have you been in business?", "experience", /dispatch end to end|number/i],
+  ["Can I get a load today?", "capacity", /promise|lanes|real/i],
+  ["Do you have any loads available?", "capacity", /promise|lanes|real/i],
+  ["Do you cover reefer loads?", "coverage", /equipment|lane/i],
+  /* The contract question has many shapes, and "what if it doesn't work out"
+   * is the one a prospect says when they are close to yes. */
+  ["What if it doesn't work out?", "contract", /time|terms/i],
+  ["If I don't like it, can I leave?", "contract", /time|terms/i],
 ];
 for (const [said, intent, shape] of CASES) {
   const r = ask(said);
@@ -90,7 +104,8 @@ assert.match(qualified.text, /^Got it\. Which lanes do you run most\?$/, "ask th
 const complaint = ask("Rates are terrible this year.");
 assert.equal(complaint.intent, "qualify");
 assert.match(complaint.text, /^I hear you\. /, "a complaint is acknowledged before the next question: " + complaint.text);
-assert.equal(ask("Do you cover reefer loads?"), null, "an ordinary question must reach the model, not become a checklist");
+assert.equal(ask("Do you cover reefer loads?").intent, "coverage", "an equipment question must be answered without inventing a lane");
+assert.equal(ask("Is this a good time?"), null, "an ordinary question must reach the model, not become a checklist");
 assert.equal(ask("How does the dispatch work?").intent, "how-it-works", "how-it-works is a decisive policy turn");
 // A completed checklist moves to the close instead of asking another
 // qualification question the prospect has already answered.

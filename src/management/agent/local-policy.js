@@ -115,7 +115,7 @@ const HOW_IT_WORKS =
 const PRICE_OBJECTION =
   /\b(?:too|really|very|so|pretty) (?:expensive|pricey|much|costly)\b|\bthat'?s (?:a lot|steep|too much|pricey|expensive)\b|\bcan'?t afford\b|\bout of (?:my|our) budget\b/i;
 const CONTRACT_QUESTION =
-  /\b(?:contract|commitment|lock(?:ed)? in|minimum term|cancel anytime|tie me down)\b|\bsign (?:anything|a contract|paperwork)\b|\b(?:free )?trial(?: period)?\b|\btry (?:it|you) (?:out|first)\b/i;
+  /\b(?:contract|commitment|lock(?:ed)? in|minimum term|cancel anytime|tie me down)\b|\bsign (?:anything|a contract|paperwork)\b|\b(?:free )?trial(?: period)?\b|\btry (?:it|you) (?:out|first)\b|\bwhat if (?:it|this|things?) (?:doesn'?t|do not|don'?t) work out\b|\bif i (?:don'?t|do not) like it\b|\bcan i (?:leave|get out of it)\b/i;
 const THINK_ABOUT_IT =
   /\b(?:need to|let me|i'?ll|gonna|going to) think (?:about it|it over|on it)\b|\bthink (?:about it|it over)\b/i;
 const FLEET_MINIMUM =
@@ -123,6 +123,20 @@ const FLEET_MINIMUM =
 /* Off-book questions are the ones no script anticipated. They still have
  * truthful, useful answers, and answering them here keeps the 1B model from
  * either guessing or deflecting with a question. */
+/* Business facts the config never supplies. The 1B model invented "we have a
+ * mobile app", "8am to 5pm EST" and "short on capacity today" when asked these;
+ * each is a lie a prospect can check. The honest answer is that we will not
+ * guess, plus the next useful question. */
+const HOURS_QUESTION =
+  /\b(?:what|which) (?:are your|are the) hours\b|\bwhen are you (?:open|available|around)\b|\bare you open\b/i;
+const APP_QUESTION =
+  /\bdo you (?:have|use) (?:an? )?(?:app|website|portal)\b|\bis there an? (?:app|website)\b|\bwhat'?s your (?:app|website)\b/i;
+const EXPERIENCE_QUESTION =
+  /\bhow long (?:have you|you'?ve) been\b|\bhow many years (?:have you|in business)\b|\bwhen did you (?:start|begin)\b/i;
+const CAPACITY_QUESTION =
+  /\bcan (?:you|we|i) (?:get|book|find) (?:me |us )?(?:a |any )?(?:load|freight)s? (?:today|now|this week)\b|\bdo you have (?:any )?loads? (?:today|now|available)\b|\bhow (?:soon|fast) can you (?:get|find|book) (?:me |us )?(?:a )?load\b/i;
+const COVERAGE_QUESTION =
+  /\bdo you (?:cover|handle|work with|run|book)\b[^?.!]{0,25}\b(?:reefer|dry van|flatbed|tanker|hazmat|oversize|hotshot|refrigerated)\b/i;
 const TRUST_QUESTION =
   /\b(?:are you|is this) (?:a )?(?:legit(?:imate)?|real (?:company|business)|insured|bonded|registered)\b|\bhow do i know (?:you'?re|this is) (?:legit|real|not a scam)\b/i;
 /* "How do you make money?" is not a rate request; it is the prospect testing
@@ -159,6 +173,11 @@ const INTENTS = [
   { id: "identity", test: IDENTITY_QUESTION },
   { id: "location", test: LOCATION_QUESTION },
   { id: "how-it-works", test: HOW_IT_WORKS },
+  { id: "hours", test: HOURS_QUESTION },
+  { id: "app", test: APP_QUESTION },
+  { id: "experience", test: EXPERIENCE_QUESTION },
+  { id: "capacity", test: CAPACITY_QUESTION },
+  { id: "coverage", test: COVERAGE_QUESTION },
   { id: "value", test: VALUE_QUESTION },
   { id: "guarantee", test: GUARANTEE_QUESTION },
   { id: "catch", test: CATCH_QUESTION },
@@ -235,6 +254,33 @@ function variants(intent, config) {
       return [
         "We find the loads, negotiate the rate and handle the paperwork - you just drive. What lanes do you run?",
         "You tell us your lanes and equipment; we book the freight and handle the paperwork. Where are you running?",
+      ];
+    case "hours":
+      /* We do not know the team's hours from this config, so we never invent
+       * them; asking for a time keeps the call moving honestly. */
+      return [
+        "I don't want to guess at the team's exact hours - what's the best time to reach you?",
+        "I'd rather not guess at the exact hours. What's the best time to reach you?",
+      ];
+    case "app":
+      return [
+        "We keep it simple - phone and email. Where are you running?",
+        "No app to learn - phone and email. Where are you running?",
+      ];
+    case "experience":
+      return [
+        "I'd rather not guess at the years. What I can tell you is we handle dispatch end to end. What are you running?",
+        "I don't want to put a number on it. We handle dispatch end to end. What are you running?",
+      ];
+    case "capacity":
+      return [
+        "I can't promise a load today. The team works your lanes and brings you real options. Where are you running?",
+        "I can't promise same-day freight. The team works your lanes and comes back with what's real. Where are you running?",
+      ];
+    case "coverage":
+      return [
+        "Most equipment is no problem - it depends on the lane. Where are you running?",
+        "We work most equipment types. What lanes do you run?",
       ];
     case "guarantee":
       /* The honest answer is no, and saying it plainly builds more trust than

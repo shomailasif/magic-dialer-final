@@ -156,6 +156,13 @@ const checks = [
     assert.match(policy, /case "referral":/, "a non-decision-maker must be routed to the right person");
     assert.match(policy, /case "start":/, "a start-time question must give the next step");
     assert.match(policy, /case "text":/, "a text request must ask for the number");
+    /* Facts the config never supplies must not be invented by a 1B model. */
+    assert.match(policy, /case "hours":/, "hours must be answered without inventing opening times");
+    assert.match(policy, /case "app":/, "an app question must not invent a product");
+    assert.match(policy, /case "experience":/, "years-in-business must be answered without inventing a number");
+    assert.match(policy, /case "capacity":/, "same-day capacity must never be promised");
+    assert.match(policy, /case "coverage":/, "equipment coverage must be answered without inventing a lane");
+    assert.match(brain, /hours, app, history or contract term/, "the offline prompt must forbid inventing business facts");
     assert.match(brain, /answer what they asked first/i, "the offline prompt must answer the question before asking one");
     assert.match(brain, /const LOCAL_MAX_TOKENS = 40;/, "the offline budget must allow a two-sentence answer");
     assert.match(policy, /case "identity":/, "who-are-you shapes must name the caller from config");

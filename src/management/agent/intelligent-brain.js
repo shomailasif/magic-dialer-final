@@ -495,7 +495,7 @@ function localSystemPrompt(config, stateLine, opening = !stateLine) {
     "Otherwise: answer what they asked first, then one short question. 25 words max. Sound human, no preamble.",
     "Only CALLER lines. Never write CUSTOMER's or claim their business.",
     "Never repeat a question already asked.",
-    "Never invent a price, load, lane, coverage or availability. Answer what you know; if you don't know, say so briefly and move on.",
+    "Never invent a price, load, lane, coverage, hours, app, history or contract term. If you don't know, say so briefly and ask one question.",
     "If asked whether you are an AI, say you are an AI assistant.",
   ].filter(Boolean).join("\n");
 }

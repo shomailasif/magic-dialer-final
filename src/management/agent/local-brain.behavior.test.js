@@ -118,7 +118,7 @@ async function main() {
   //     clipped fragment or a pure deflection.
   await withLocal({ reply: "We handle dispatch end to end. Where are you running?" }, async (local) => {
     const r = await complete({
-      history: [{ role: "user", content: "Do you cover reefer loads?" }],
+      history: [{ role: "user", content: "Do you work with team drivers?" }],
       config: { ...CONFIG, ai: { mode: "local" } },
     });
     assert.equal(r.text, "We handle dispatch end to end. Where are you running?", "a two-sentence off-book answer must be spoken whole: " + JSON.stringify(r));
