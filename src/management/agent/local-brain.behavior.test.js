@@ -114,6 +114,18 @@ async function main() {
     assert.equal(local.seen.length, 1, "exactly one local request expected");
   });
 
+  // 1b. An off-book question gets a complete answer and one follow-up, not a
+  //     clipped fragment or a pure deflection.
+  await withLocal({ reply: "We handle dispatch end to end. Where are you running?" }, async (local) => {
+    const r = await complete({
+      history: [{ role: "user", content: "Do you cover reefer loads?" }],
+      config: { ...CONFIG, ai: { mode: "local" } },
+    });
+    assert.equal(r.text, "We handle dispatch end to end. Where are you running?", "a two-sentence off-book answer must be spoken whole: " + JSON.stringify(r));
+    assert.equal(r.path, "local");
+    assert.equal(local.seen.length, 1);
+  });
+
   // 2. The prompt is small, the reply budget is small, and only the last
   //    exchanges travel: a 2-core laptop cannot prefill the hosted prompt.
   await withLocal({}, async (local) => {
@@ -128,7 +140,9 @@ async function main() {
     const r = await complete({ history: long, config: { ...CONFIG, ai: { mode: "local" } } });
     assert.equal(r.path, "local");
     const request = local.seen[0];
-    assert.ok(request.max_tokens <= 20, "the local reply budget must stay small, got " + request.max_tokens);
+    /* 40 tokens is two short sentences: enough to answer an off-book question
+     * and ask one back, still a few seconds of decode, never a speech. */
+    assert.ok(request.max_tokens <= 40, "the local reply budget must stay small, got " + request.max_tokens);
     assert.ok(
       Array.isArray(request.stop) && request.stop.includes("\nCUSTOMER:"),
       "the model must stop when it starts writing the prospect's line",
@@ -142,6 +156,8 @@ async function main() {
     assert.equal((user.match(/^CUSTOMER:/gm) || []).length, 4, "at most four prospect turns may travel: " + user);
     assert.ok(!user.includes("line 0 "), "the oldest history must be dropped");
     assert.ok(user.endsWith("CALLER:"), "the model must be asked to continue the caller's line");
+    assert.match(system, /answer what they asked first/i, "off-book turns must be answered before a question is asked: " + system);
+    assert.doesNotMatch(system, /^Opening:/m, "a live turn must not be told to re-introduce itself: " + system);
   });
 
   // 3. The system prompt is stable for a whole call, so llama.cpp can reuse the
@@ -150,6 +166,8 @@ async function main() {
     const a = localSystemPrompt({ ...CONFIG, locale: "en" });
     const b = localSystemPrompt({ ...CONFIG, locale: "en" });
     assert.equal(a, b, "the cached prefix must not change between turns");
+    assert.match(localSystemPrompt(CONFIG, "", true), /^Opening:/m, "an empty call must still introduce the caller");
+    assert.doesNotMatch(localSystemPrompt(CONFIG, "Known: none.", false), /^Opening:/m, "a live call must not repeat the introduction");
   });
 
   // 4. A local server that errors falls through to the hosted brain.

@@ -40,6 +40,23 @@ const CASES = [
   ["We tried a dispatcher before and it didn't work.", "past-dispatcher", /wrong|miss/i],
   ["What's in it for me?", "value", /loaded|paperwork|lanes|loads/i],
   ["What do you need from me?", "needs", /MC|trucks/i],
+  ["That's too expensive for us.", "price-objection", /paying|cost/i],
+  ["Who are you?", "identity", /Zaz Logistics|dispatch/i],
+  ["Where are you based?", "location", /running|where/i],
+  ["How does it work?", "how-it-works", /loads|paperwork|lanes/i],
+  ["What's the minimum number of trucks?", "minimum", /how many trucks/i],
+  ["Am I locked into a contract?", "contract", /time|terms/i],
+  ["Can I try it first?", "contract", /time|terms/i],
+  ["Let me think about it.", "think", /cleared up|need to know/i],
+  ["We're happy with our current setup.", "dispatcher", /loads|busy|room/i],
+  ["Are you legit?", "trust", /dispatch service|authority/i],
+  ["How do you make money?", "model", /trucks move|book your freight|paid/i],
+  ["What's your cut?", "model", /trucks move|book your freight|paid/i],
+  ["Do you guarantee loads?", "guarantee", /guarantee|busy/i],
+  ["What's the catch?", "catch", /catch|fit/i],
+  ["I'm just the driver.", "referral", /who handles|right person/i],
+  ["How soon can you start?", "start", /lanes|MC|week/i],
+  ["Can you text me the details?", "text", /number/i],
 ];
 for (const [said, intent, shape] of CASES) {
   const r = ask(said);
@@ -47,14 +64,23 @@ for (const [said, intent, shape] of CASES) {
   assert.equal(r.intent, intent, `"${said}" was classified as ${r.intent}`);
   assert.match(r.text, shape, `"${said}" must be answered usefully, got: ${r.text}`);
   assert.doesNotMatch(r.text, money, `"${said}" must never invent a figure, got: ${r.text}`);
+  assert.doesNotMatch(
+    r.text,
+    /rather than guess|let me note it|for the team to follow up|as an ai|i don'?t have access/i,
+    `"${said}" must never answer with a meta disclaimer, got: ${r.text}`,
+  );
   assert.ok(r.text.split(/\s+/).length <= 24, `"${said}" must stay short, got: ${r.text}`);
   assert.ok((r.text.match(/\?/g) || []).length <= 1, `"${said}" must ask at most one question, got: ${r.text}`);
 }
 
-// 2. "Who is this?" belongs to the call runner, which already answers it from
-//    the config before the brain is asked. Policy must not duplicate that.
-assert.equal(ask("Who is this?"), null, "the identity question is not a policy turn");
+// 2. The exact "Who is this?" shape belongs to the call runner, which answers
+//    it from the config before the brain is asked. Policy answers the shapes
+//    that actually reach the brain ("Who are you?", "Which company is this?")
+//    and must not duplicate the call runner's list.
+assert.equal(ask("Who is this?"), null, "the call runner owns the exact who-is-this shape");
+assert.equal(ask("Which company is this?").intent, "identity", "the brain's identity shapes must still be answered");
 assert.equal(ask("Okay, go ahead."), null, "ordinary conversation must reach the model");
+assert.equal(ask("Don't text me again."), null, "a do-not-text request must never become a request for a number");
 
 // 2b. A fact-giving turn moves the checklist on with a scripted question: no
 //     model load, no chance of "Alex from Zaz Logistics" or "around 50 trucks".
@@ -64,7 +90,8 @@ assert.match(qualified.text, /^Got it\. Which lanes do you run most\?$/, "ask th
 const complaint = ask("Rates are terrible this year.");
 assert.equal(complaint.intent, "qualify");
 assert.match(complaint.text, /^I hear you\. /, "a complaint is acknowledged before the next question: " + complaint.text);
-assert.equal(ask("How does the dispatch work?"), null, "a question must be answered by the model, not turned into a checklist");
+assert.equal(ask("Do you cover reefer loads?"), null, "an ordinary question must reach the model, not become a checklist");
+assert.equal(ask("How does the dispatch work?").intent, "how-it-works", "how-it-works is a decisive policy turn");
 // A completed checklist moves to the close instead of asking another
 // qualification question the prospect has already answered.
 const closed = ask("We run dry van lanes out of Chicago, about 20 loads a week, 20 trucks.");

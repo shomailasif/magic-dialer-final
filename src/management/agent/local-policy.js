@@ -71,7 +71,7 @@ const MONEY_QUESTION =
 const SOURCE_QUESTION =
   /\b(?:where (?:did|do) you (?:get|find)|how did you (?:get|find)|who gave you|where'?d you get)\b[^?.!]{0,40}\b(?:number|info|information|details)\b|\b(?:is this|are you) (?:a )?(?:scam|spam|telemarketer|sales call)\b/i;
 const DISPATCHER_STATEMENT =
-  /\b(?:already|have|got|use)\s+(?:a|an|our own|our)\s+(?:dispatcher|dispatch service|dispatch company|dispatch team)\b|\bwe (?:do|handle|run) (?:our own )?dispatch\b|\bsomeone (?:already )?(?:does|handles) (?:our )?dispatch\b/i;
+  /\b(?:already|have|got|use)\s+(?:a|an|our own|our)\s+(?:dispatcher|dispatch service|dispatch company|dispatch team)\b|\bwe (?:do|handle|run) (?:our own )?dispatch\b|\bsomeone (?:already )?(?:does|handles) (?:our )?dispatch\b|\b(?:happy|satisfied|fine) with (?:our|my|the) (?:current |existing )?(?:dispatcher|dispatch|setup|service)\b/i;
 const CALLBACK_REQUEST =
   /\b(?:call|ring|phone)\s+(?:me|us)\s+back\b|\b(?:i'?m|i am)\s+(?:driving|on the road|behind the wheel|in the truck)\b|\bnot a good time\b|\bcan'?t talk (?:right )?now\b/i;
 const MC_QUESTION =
@@ -95,30 +95,95 @@ const NOT_INTERESTED =
   /\b(?:not interested|no thanks|no thank you|don'?t (?:need|want) (?:it|that|any)|not (?:right )?now|we'?re good|we are good|no need)\b/i;
 const EMAIL_REQUEST =
   /\b(?:send|email|e-mail)\b[^?.!]{0,30}\b(?:info|information|details|email|e-mail)\b|\bemail me\b|\bwhat'?s your email\b/i;
+/* "Who are you?" is the one answer the 1B model most often gets wrong (it
+ * introduces itself as the prospect). The exact "who is this / what's your
+ * name" phrasings are answered earlier by call-runner's WHO_IS_THIS_RE, so they
+ * are deliberately not repeated here; these are the shapes that reach the
+ * brain. */
+const IDENTITY_QUESTION =
+  /\bwho are you\b|\b(?:which|what) company (?:is (?:this|it)|are you (?:with|from))\b|\bwho do you (?:work for|represent)\b/i;
+/* Location is answered honestly without naming a city the model would have to
+ * invent; the coverage answer is the one a dispatcher gives. */
+const LOCATION_QUESTION =
+  /\bwhere (?:are|is) (?:you|your company) (?:based|located|from)\b|\bwhere are you (?:guys )?(?:at|located)\b/i;
+/* "How does it work" deserves the three things dispatch actually does, not a
+ * feature list and not a rate the model invented. */
+const HOW_IT_WORKS =
+  /\bhow (?:does|do) (?:it|this|that|you|(?:the |your )?(?:service|process|dispatch)) work\b|\bwhat (?:do|does) (?:you|your (?:service|company)) (?:actually )?do\b/i;
+/* An objection is not a price question. "Too expensive" is answered with a
+ * question about what they pay now, never with a number of ours. */
+const PRICE_OBJECTION =
+  /\b(?:too|really|very|so|pretty) (?:expensive|pricey|much|costly)\b|\bthat'?s (?:a lot|steep|too much|pricey|expensive)\b|\bcan'?t afford\b|\bout of (?:my|our) budget\b/i;
+const CONTRACT_QUESTION =
+  /\b(?:contract|commitment|lock(?:ed)? in|minimum term|cancel anytime|tie me down)\b|\bsign (?:anything|a contract|paperwork)\b|\b(?:free )?trial(?: period)?\b|\btry (?:it|you) (?:out|first)\b/i;
+const THINK_ABOUT_IT =
+  /\b(?:need to|let me|i'?ll|gonna|going to) think (?:about it|it over|on it)\b|\bthink (?:about it|it over)\b/i;
+const FLEET_MINIMUM =
+  /\b(?:what'?s the minimum|is there a minimum|minimum (?:fleet|number of trucks|trucks)|smallest fleet|do you (?:guys )?work with (?:owner[- ]operators?|single trucks?|one truck)|how many trucks do you (?:need|require|want))\b/i;
+/* Off-book questions are the ones no script anticipated. They still have
+ * truthful, useful answers, and answering them here keeps the 1B model from
+ * either guessing or deflecting with a question. */
+const TRUST_QUESTION =
+  /\b(?:are you|is this) (?:a )?(?:legit(?:imate)?|real (?:company|business)|insured|bonded|registered)\b|\bhow do i know (?:you'?re|this is) (?:legit|real|not a scam)\b/i;
+/* "How do you make money?" is not a rate request; it is the prospect testing
+ * whether there is a hidden cost. Say the model plainly, with no figure. */
+const MODEL_QUESTION =
+  /\bhow do you (?:make (?:your )?money|get paid|earn)\b|\bwhat'?s your cut\b|\bwhere does your money come from\b|\bdo you charge (?:me|us) (?:upfront|monthly|a monthly)\b/i;
+const GUARANTEE_QUESTION =
+  /\b(?:do you|can you) guarantee\b|\bguaranteed (?:loads?|freight|work)\b|\bhow do i know (?:i'?ll|we'?ll) (?:get|have) (?:loads?|freight|work)\b/i;
+const CATCH_QUESTION =
+  /\bwhat'?s the catch\b|\bwhere'?s the catch\b|\btoo good to be true\b|\bwhat'?s the downside\b/i;
+/* "I'm just the driver" is a referral, not a brush-off: the useful move is to
+ * ask who does decide, which also respects that they cannot. */
+const REFERRAL =
+  /\bi'?m (?:just|only) (?:the |a )?driver\b|\bnot (?:the )?(?:right|correct) person\b|\bi don'?t (?:handle|deal with|make) (?:that|this|those|dispatch)\b|\b(?:that'?s|it'?s) (?:my|the) (?:boss|owner|partner)'?s? (?:job|call|decision)\b/i;
+const START_QUESTION =
+  /\b(?:how soon|how quickly|how fast|when) can (?:you|we|the team) (?:start|begin|get started)\b|\bcan (?:you|we) start (?:this|next) week\b/i;
+/* Anchored so "don't text me" is a refusal, never a request for a number. */
+const TEXT_REQUEST =
+  /(?:^|[.!?]\s*)(?:(?:can|could|would) you |please |just |you can )?(?:text me|send (?:me )?a text|shoot me a text)\b/i;
+/* A channel refusal is the call runner's to close; policy must not turn it
+ * into a qualification question. */
+const NO_CONTACT = /\b(?:don'?t|do not|stop) (?:text|texting|message|messaging)\b/i;
 
 const INTENTS = [
   /* Disqualifying beats every other intent: a broker with no trucks must not be
    * qualified or pitched, however the sentence is phrased. */
   { id: "wrong-fit", test: WRONG_FIT },
   { id: "ai", test: AI_QUESTION },
+  { id: "trust", test: TRUST_QUESTION },
+  { id: "model", test: MODEL_QUESTION },
   { id: "price", test: MONEY_QUESTION },
+  { id: "price-objection", test: PRICE_OBJECTION },
   { id: "source", test: SOURCE_QUESTION },
+  { id: "identity", test: IDENTITY_QUESTION },
+  { id: "location", test: LOCATION_QUESTION },
+  { id: "how-it-works", test: HOW_IT_WORKS },
   { id: "value", test: VALUE_QUESTION },
+  { id: "guarantee", test: GUARANTEE_QUESTION },
+  { id: "catch", test: CATCH_QUESTION },
   { id: "needs", test: NEEDS_QUESTION },
+  { id: "start", test: START_QUESTION },
   /* "We used a dispatcher before and it didn't work" is not the same as "we
    * already have one". It is a reason to ask what went wrong, not to concede. */
   { id: "past-dispatcher", test: PAST_DISPATCH },
   { id: "dispatcher", test: DISPATCHER_STATEMENT },
   { id: "partner", test: PARTNER_CHECK },
+  { id: "referral", test: REFERRAL },
   { id: "callback", test: CALLBACK_REQUEST },
   { id: "mc", test: MC_QUESTION },
+  { id: "minimum", test: FLEET_MINIMUM },
+  { id: "contract", test: CONTRACT_QUESTION },
+  { id: "think", test: THINK_ABOUT_IT },
   { id: "not-interested", test: NOT_INTERESTED },
+  { id: "text", test: TEXT_REQUEST },
   { id: "email", test: EMAIL_REQUEST },
 ];
 
 function variants(intent, config) {
   const c = config || {};
   const company = String(c.companyName || "our company").trim() || "our company";
+  const name = String((c.persona && c.persona.name) || c.agentName || "Alex").trim() || "Alex";
   switch (intent) {
     case "ai":
       return [
@@ -132,6 +197,75 @@ function variants(intent, config) {
       return [
         "It depends on the lane and volume. What lanes do you run?",
         "Rates are set per load, so it depends on the lane. Where are you running?",
+      ];
+    case "price-objection":
+      /* "That's too expensive" is an objection, not a request for a rate. The
+       * only honest move is to ask what they pay now - never to defend a price
+       * or invent one. */
+      return [
+        "Fair. What are you paying per load now?",
+        "I hear you. What does your current dispatch cost you?",
+      ];
+    case "trust":
+      /* A trust question is not an accusation. Say what we are - a dispatch
+       * service, not a carrier - because that is the reassurance that is true. */
+      return [
+        "Fair question. We're a dispatch service, not a carrier, so your authority stays yours. What are you running?",
+        "We're a dispatch service, not a carrier - your authority and insurance stay yours. What are you running?",
+      ];
+    case "model":
+      /* No percentage, no monthly figure: the shape of the deal, in one line. */
+      return [
+        "We only make money when your trucks move. What are you running now?",
+        "We get paid when we book your freight, not before. Where are you running?",
+      ];
+    case "identity":
+      return [
+        `This is ${name} with ${company}. We handle dispatch for carriers - do you run your own trucks?`,
+        `It's ${name} from ${company}. We book freight for carriers. Do you run your own trucks?`,
+      ];
+    case "location":
+      return [
+        "We work with carriers wherever they run. Where are you running out of?",
+        "We're not tied to one state. Where are you running out of?",
+      ];
+    case "how-it-works":
+      /* Three things dispatch actually does, then the next qualification
+       * question. No rate, no promised load count. */
+      return [
+        "We find the loads, negotiate the rate and handle the paperwork - you just drive. What lanes do you run?",
+        "You tell us your lanes and equipment; we book the freight and handle the paperwork. Where are you running?",
+      ];
+    case "guarantee":
+      /* The honest answer is no, and saying it plainly builds more trust than
+       * a promise the business cannot keep. */
+      return [
+        "Nobody can guarantee loads. We work your lanes hard to keep your truck busy. What are you running?",
+        "No one honest guarantees freight. We keep your truck busy by working your lanes. What equipment do you run?",
+      ];
+    case "catch":
+      return [
+        "No catch. If it's not a fit, we shake hands and part friendly. What are you running?",
+        "There's no catch. If it's not a fit, we part friendly. Where are you running?",
+      ];
+    case "minimum":
+      /* Never promise a fleet size this business may not serve; ask for the
+       * number and decide from the answer. */
+      return [
+        "Tell me how many trucks you run and I'll say whether it's a fit. How many are you running?",
+        "How many trucks are you running? I'll make sure it's a fit.",
+      ];
+    case "contract":
+      return [
+        "That's a fair question for the team. When's a good time to talk it through?",
+        "The team can walk you through the terms. What's the best time to call?",
+      ];
+    case "think":
+      /* "Let me think about it" is a soft no. Asking for the one open question
+       * is what reopens it; repeating the pitch is what ends the call. */
+      return [
+        "Of course. What's the one thing you'd want cleared up?",
+        "Makes sense. What would you need to know to feel good about it?",
       ];
     case "source":
       /* Never name a data source the product cannot prove. "On file" is true
@@ -166,6 +300,11 @@ function variants(intent, config) {
         "Fair enough. Are you the one who handles dispatch there?",
         "No problem. Do you run your own trucks, or broker the freight?",
       ];
+    case "text":
+      return [
+        "Sure - what's the best number to text?",
+        "Happy to. What number should I use?",
+      ];
     case "email":
       return [
         "Happy to. What's the best address to send it to?",
@@ -184,6 +323,12 @@ function variants(intent, config) {
       return [
         "Of course. When's a good time to catch you both?",
         "Makes sense. What's the best time to talk it through with them?",
+      ];
+    case "referral":
+      /* They cannot decide. Asking who can is the only useful next step. */
+      return [
+        "No problem - who handles dispatch there?",
+        "Understood. Who's the right person to talk to?",
       ];
     case "past-dispatcher":
       /* A past failure is the most useful thing a prospect can tell us, and one
@@ -204,6 +349,11 @@ function variants(intent, config) {
       return [
         "Just your MC and how many trucks you run. What's your MC?",
         "Two things - your MC and your truck count. Can I get your MC?",
+      ];
+    case "start":
+      return [
+        "Quickly. The team starts with your lanes and MC. What are you running this week?",
+        "As soon as your lanes and MC are in hand. What are you running this week?",
       ];
     case "close":
       /* The checklist is done. A rep asks for the appointment here, not for one
@@ -253,6 +403,10 @@ function policyReply(lastLead, { config, history } = {}) {
     if (!unused) return null;
     return { intent: intent.id, text: unused };
   }
+
+  /* "Don't text me" is a refusal, not a fact to qualify on. The call runner
+   * closes the call; falling through here asks nothing. */
+  if (NO_CONTACT.test(heard)) return null;
 
   /* Nothing decisive was asked, and the prospect just told us something while a
    * field is still missing: ask for it here, in a line that cannot invent a

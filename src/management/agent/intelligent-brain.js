@@ -48,8 +48,9 @@ const MAX_ANSWER_TOKENS = 1200;
 /* The offline model gets a much smaller budget on purpose. It runs on the same
  * two cores as the audio pipeline, so a 900-token answer would be minutes of
  * silence. Ten spoken words is ~14 tokens and decodes in ~1.5s measured on the
- * target machine; 20 leaves room for a model that overshoots. */
-const LOCAL_MAX_TOKENS = 20;
+ * target machine; 40 gives an off-book answer the two sentences it needs to
+ * answer and still ask one question, while the timeout remains the hard stop. */
+const LOCAL_MAX_TOKENS = 40;
 /* The model is told to write one sentence and stop; this makes it stop even
  * when it starts writing the other side of the conversation. */
 const LOCAL_STOP = ["\nCUSTOMER:", "\nCALLER:", "\n\n"];
@@ -468,7 +469,7 @@ function localAllowed(config) {
  * offline prompt keeps only the identity, the job, and the four rules that must
  * never be broken. A local model that answers plainly beats one that has read
  * 1,200 tokens it cannot follow. */
-function localSystemPrompt(config, stateLine) {
+function localSystemPrompt(config, stateLine, opening = !stateLine) {
   const c = config || {};
   const agentName = asText(c.persona, ["name", "agentName", "firstName", "displayName"], "Alex");
   const company = asText(c.companyName, ["name", "companyName", "company"], "our company");
@@ -486,11 +487,15 @@ function localSystemPrompt(config, stateLine) {
     !stateLine && fields.length ? `Ask about: ${fields.join(", ")}.` : "",
     `Language: ${languageName(locale)}.`,
     stateLine ? `Call so far - ${String(stateLine).trim()}` : "",
-    `Opening (nobody has spoken yet): introduce yourself as ${agentName} from ${company} in one sentence, then stop.`,
-    "Otherwise: one short sentence, 10 words max, one question max. No preamble, no 'how can I help'.",
-    "Only CALLER lines. Never write CUSTOMER's, and never claim their business as yours.",
+    /* The opening rule is only useful before anyone has spoken; leaving it in a
+     * live turn is prompt the model reads and can mistake for its job. */
+    opening ? `Opening: introduce yourself as ${agentName} from ${company} in one sentence, then stop.` : "",
+    /* Off-book questions are normal conversation. The old "one sentence, 10
+     * words" rule produced clipped, evasive answers; answer first, then ask. */
+    "Otherwise: answer what they asked first, then one short question. 25 words max. Sound human, no preamble.",
+    "Only CALLER lines. Never write CUSTOMER's or claim their business.",
     "Never repeat a question already asked.",
-    "Never invent a price, load, lane or availability; say a dispatcher will confirm.",
+    "Never invent a price, load, lane, coverage or availability. Answer what you know; if you don't know, say so briefly and move on.",
     "If asked whether you are an AI, say you are an AI assistant.",
   ].filter(Boolean).join("\n");
 }
@@ -544,8 +549,9 @@ async function completeLocal({ history, config, maxTokens, timeoutMs }) {
     };
   }
   const budget = Math.max(1500, Math.min(Number(timeoutMs) || LOCAL_TURN_TIMEOUT_MS, LOCAL_TURN_TIMEOUT_MS));
+  const stateLine = localPolicy.conversationState(history, config);
   const messages = [
-    { role: "system", content: localSystemPrompt(config, localPolicy.conversationState(history, config)) },
+    { role: "system", content: localSystemPrompt(config, stateLine, !localPolicy.lastLeadLine(history)) },
     { role: "user", content: localTranscript(history) },
   ];
   /* A separate trailing instruction, not part of the transcript: the 1B model

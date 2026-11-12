@@ -98,6 +98,10 @@ function configText(value, keys, fallback = "") {
  */
 const STOP_RE = new RegExp([
   "\\b(?:stop calling|do not call|don'?t call|remove me|take me off|unsubscribe|not call me again)\\b",
+  /* A refusal of one channel is still a refusal. Honouring "don't text me"
+   * costs nothing; answering it with a qualification question is how a list of
+   * numbers becomes a complaint. */
+  "\\b(?:don'?t|do not|stop) (?:text|texting|message|messaging)\\b",
   /* Roman Urdu / Hindi / Punjabi */
   "call (?:na|mat) kar(?:o|ein|en|na)",
   "(?:mujhe|muje|humein|hamein) (?:call|phone) (?:na|mat)",
@@ -288,12 +292,23 @@ function fallbackOpening({ companyName, product, locale }) {
 
 function fallbackReply(text, { callbackNumber, callbackIn, locale }) {
   const lang = normalizeLanguage(locale, "en");
-  if (STOP_RE.test(String(text || ""))) return lang === "en" ? "Absolutely. I'll end the sales conversation here." : "Understood. I will end the call now.";
-  if (HUMAN_RE.test(String(text || ""))) {
+  const said = String(text || "");
+  if (STOP_RE.test(said)) return lang === "en" ? "Absolutely. I'll end the sales conversation here." : "Understood. I will end the call now.";
+  if (HUMAN_RE.test(said)) {
     if (callbackNumber) return lang === "en" ? `Of course. I can have a person follow up, or you can call ${callbackNumber}${callbackIn ? ` ${callbackIn}` : ""}.` : `A person can follow up. ${callbackNumber}${callbackIn ? ` ${callbackIn}` : ""}.`;
     return lang === "en" ? "Of course. I'll mark this for a human follow-up." : "Understood. I will request human follow-up.";
   }
-  return lang === "en" ? "I want to answer that accurately rather than guess. Let me note it for the team to follow up." : "I do not have that detail, so I will not guess. I will note it for follow-up.";
+  /* The old last resort - "I want to answer that accurately rather than guess.
+   * Let me note it for the team to follow up" - is the exact line that made a
+   * prospect say "The f---?" on a live call. It answers nothing, promises a
+   * callback and sounds like a machine reading a disclaimer. The bridge has to
+   * stay honest, say the one thing that is always true of a dispatch service,
+   * and hand the turn back with a question that moves the call. */
+  const asked = /\?|(?:^|[.!?]\s*)(?:who|what|when|where|why|how|do|does|did|can|could|would|will|are|is|should)\b/i.test(said);
+  if (lang !== "en") return "I don't have that detail, so I won't guess. Where are you running?";
+  return asked
+    ? "That's a fair question, and I don't want to guess at it. What I can tell you is we handle dispatch end to end; where are you running?"
+    : "Got it. Just so I point you the right way, where are you running?";
 }
 
 /* Repetition is the loudest thing a prospect notices. The brain is told not to
