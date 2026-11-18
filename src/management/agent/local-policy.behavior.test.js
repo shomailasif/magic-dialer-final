@@ -150,6 +150,39 @@ assert.equal(
   "a price question must stay with the price intent, not become a close",
 );
 
+// 2b-ii. Turns the adversarial battery caught in the real transcripts. A removal
+// demand outranks every conversational intent; a named callback time is
+// confirmed rather than asked for again; a number already on file is
+// acknowledged; a fleet count in words closes the checklist.
+const removal = ask("I'm not interested. Take me off your list and don't call me again.");
+assert.equal(removal.intent, "removal", "a removal demand must not become a qualification question");
+assert.doesNotMatch(removal.text, /\?/, "nothing may be asked after being told to stop: " + removal.text);
+assert.match(removal.text, /off our list|remove you|won't call/i, "the removal must be honoured: " + removal.text);
+assert.doesNotMatch(removal.text, /MC number|how many trucks|our service/i, "no pitch after a removal demand: " + removal.text);
+const hostile = ask("This is a scam. Stop calling me or I'll report you.");
+assert.equal(hostile.intent, "removal", "a report threat with 'stop calling' is a removal demand");
+assert.doesNotMatch(hostile.text, /\?/, "a hostile prospect is not asked another question");
+
+const callback = ask("I can't talk right now. Call me tomorrow at three.");
+assert.equal(callback.intent, "callback");
+assert.match(callback.text, /tomorrow/i, "the named day must be confirmed: " + callback.text);
+assert.match(callback.text, /\b3\b/, "the named hour must be confirmed, not asked for again: " + callback.text);
+assert.doesNotMatch(callback.text, /better time/i, "asking for a time they just gave is not listening: " + callback.text);
+
+const haveNumber = ask("You already have my number. It's the one you called.");
+assert.equal(haveNumber.intent, "have-number", "an existing number must be acknowledged, not re-requested");
+assert.match(haveNumber.text, /on file|right|correct/i, "confirm we have it: " + haveNumber.text);
+assert.doesNotMatch(haveNumber.text, /what'?s (?:the|your) (?:best )?(?:phone )?number|share (?:your|the) number/i, "never ask for a number they said we have");
+
+const fleetFields = { ...CONFIG, leadFields: ["MC number", "number of trucks", "lanes"] };
+const gaveEverything = policyReply("My name is Raj, my MC is 123456, I run four trucks between Chicago and Dallas.", {
+  config: fleetFields,
+  history: [],
+});
+assert.equal(gaveEverything.intent, "close", "a fully answered checklist must close: " + JSON.stringify(gaveEverything));
+assert.match(gaveEverything.text, /4 trucks/i, "the close must use the fleet count the prospect actually gave: " + gaveEverything.text);
+assert.doesNotMatch(gaveEverything.text, /your MC number|how many trucks|which lanes/i, "never re-ask what was just answered: " + gaveEverything.text);
+
 // 2c. The live lead sheet has phone, notes and an empty-where column. Those are
 //     already in the record and cannot be asked on a call; they must neither be
 //     spoken as questions nor keep the checklist open forever.

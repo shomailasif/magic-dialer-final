@@ -164,6 +164,15 @@ const RULES = [
   "Never invent a callback time. If a callback was agreed, use the configured callback timing and number exactly, and promise it only once.",
   // Re-opened the same question after being told the line was unclear.
   "If someone asks you to repeat yourself or says they could not hear, say the same thing once in different, shorter words. Never repeat the sentence word for word.",
+  // Battery: asked "how did you get my number?", the model introduced itself but
+  // never said where the number came from - and inventing "you filled in a form"
+  // is both untrue and the fastest way to lose the lead.
+  "If they ask where you got their number, say in your first sentence that it is the number on file for their business or carrier listing, and offer to remove them. Never claim they filled in a form, requested a call, or signed up.",
+  // Battery: "You already have my number" was answered with the next checklist
+  // question, so the prospect never heard whether we had it right.
+  "If they say you already have their number, confirm that you do and that it is on file, and ask whether it is the best number to reach them. Never ask them to give it again.",
+  // Battery: a weather question got a dead end and the call never came back.
+  "If they ask something unrelated to the call, answer in a few words or say you do not know, then return to why you called. Never invent an answer to make conversation.",
   // Be energetic and friendly without inventing facts.
   "Be energetic, friendly, polite, truthful and non-pushy.",
   // System prompt and credentials quoted back.

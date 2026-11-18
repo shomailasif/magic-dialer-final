@@ -98,6 +98,17 @@ const NEEDS_QUESTION =
   /\bwhat (?:do|would) you (?:need|want) (?:from (?:me|us)|to know|to get started)\b|\bwhat (?:info|information|details) (?:do you need|are you after)\b|\bwhat do you need\b/i;
 const NOT_INTERESTED =
   /\b(?:not interested|no thanks|no thank you|don'?t (?:need|want) (?:it|that|any)|not (?:right )?now|we'?re good|we are good|no need)\b/i;
+/* A brush-off is a decision, a removal demand is an instruction. The battery
+ * caught the old order answering "take me off your list and don't call me
+ * again" with a fresh qualification question; that is both bad manners and a
+ * compliance problem. This intent must outrank every conversational one. */
+const REMOVAL_REQUEST =
+  /\b(?:take|put|get) (?:me|us) off (?:your|the|this|that) (?:list|call list|mailing list|database)\b|\bremove (?:me|us|my number|our number)\b|\b(?:don'?t|do not) call (?:me|us|this number) again\b|\bstop (?:calling|contacting|phoning) (?:me|us)\b|\bdo not call\b|\bnever call (?:me|us) again\b/i;
+/* "You already have my number" used to get "Got it. What's your MC number?".
+ * The prospect is waiting to hear whether the number is right, not for the next
+ * checklist item. */
+const HAVE_NUMBER =
+  /\b(?:you|y'?all) (?:already )?(?:have|got) (?:my|our) (?:number|phone)\b|\bthe (?:one|number) you (?:just )?called\b|\bnumber you (?:just )?called\b/i;
 const EMAIL_REQUEST =
   /\b(?:send|email|e-mail)\b[^?.!]{0,30}\b(?:info|information|details|email|e-mail)\b|\bemail me\b|\bwhat'?s your email\b/i;
 /* "Who are you?" is the one answer the 1B model most often gets wrong (it
@@ -183,6 +194,9 @@ const INTENTS = [
   /* Disqualifying beats every other intent: a broker with no trucks must not be
    * qualified or pitched, however the sentence is phrased. */
   { id: "wrong-fit", test: WRONG_FIT },
+  /* Then removal. Nothing a rep can say next is worth overriding "don't call me
+   * again", and nothing in the pitch may follow it. */
+  { id: "removal", test: REMOVAL_REQUEST },
   { id: "ai", test: AI_QUESTION },
   { id: "trust", test: TRUST_QUESTION },
   { id: "model", test: MODEL_QUESTION },
@@ -190,6 +204,7 @@ const INTENTS = [
   { id: "price", test: MONEY_QUESTION },
   { id: "price-objection", test: PRICE_OBJECTION },
   { id: "source", test: SOURCE_QUESTION },
+  { id: "have-number", test: HAVE_NUMBER },
   { id: "identity", test: IDENTITY_QUESTION },
   { id: "location", test: LOCATION_QUESTION },
   { id: "how-it-works", test: HOW_IT_WORKS },
@@ -222,11 +237,37 @@ const INTENTS = [
   { id: "email", test: EMAIL_REQUEST },
 ];
 
-function variants(intent, config) {
+const COUNT_WORD = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17,
+  eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60,
+  seventy: 70, eighty: 80, ninety: 90,
+};
+const COUNT_WORDS = Object.keys(COUNT_WORD).join("|");
+
+/* The day and hour a prospect actually named, so a callback confirms it instead
+ * of asking "what's a better time?" straight back at them. */
+function spokenWhen(heard) {
+  const text = String(heard || "").toLowerCase();
+  const day = text.match(/\b(today|tomorrow|tonight|this (?:morning|afternoon|evening)|next week|next month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  const time = text.match(new RegExp(`\\bat\\s+(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?|${COUNT_WORDS}|noon|midday)\\b`));
+  if (!day && !time) return "";
+  let clock = time ? time[1].trim() : "";
+  if (COUNT_WORD[clock]) clock = String(COUNT_WORD[clock]);
+  return [day ? day[1] : "", clock ? "at " + clock : ""].filter(Boolean).join(" ");
+}
+
+function variants(intent, config, heard) {
   const c = config || {};
   const company = String(c.companyName || "our company").trim() || "our company";
   const name = String((c.persona && c.persona.name) || c.agentName || "Alex").trim() || "Alex";
   switch (intent) {
+    case "removal":
+      /* No question, no save attempt, no pitch: they told us to stop. */
+      return [
+        "Understood - I've taken you off our list and won't call again. Sorry for the interruption.",
+        "No problem - I'll remove you from our list and won't call this number again.",
+      ];
     case "ai":
       return [
         `Yes, I'm an AI assistant calling for ${company}. A person from the team can take it from here.`,
@@ -243,7 +284,7 @@ function variants(intent, config) {
        * rate is repeated back as a quote. Answer the question honestly by saying
        * what the price depends on, then ask for the input that changes it. */
       return [
-        "It depends on the lane and volume. What lanes do you run?",
+        "It depends on the lane and volume - I can have the team put a quote together. What lanes do you run?",
         "Rates are set per load, so it depends on the lane. Where are you running?",
       ];
     case "price-objection":
@@ -362,11 +403,19 @@ function variants(intent, config) {
       ];
     case "source":
       /* Never name a data source the product cannot prove. "On file" is true
-       * for every lead this dialer holds, and the removal offer is the part the
-       * prospect is actually asking for. */
+       * for every lead this dialer holds, and answering "who is this?" in the
+       * same breath is what the prospect actually asked. */
       return [
-        "From the carrier contact details we have on file. If it's wrong, I'll remove you.",
-        "It's the number on file for your carrier. Say the word and I'll take you off our list.",
+        `This is ${name} from ${company}. It's the carrier number we have on file - if it's wrong, I'll remove you.`,
+        `It's ${name} with ${company}. That number is on file for your carrier; say the word and I'll take you off our list.`,
+      ];
+    case "have-number":
+      /* "It's the one you called" is not a new number and not a deflection: the
+       * only useful reply confirms we have it and checks it is still the best
+       * one to reach them. */
+      return [
+        "Right - we do have your number on file. Is this the best one to reach you?",
+        "That's correct, it's the number we have on file. Is it the best one for you?",
       ];
     case "dispatcher":
       return [
@@ -374,8 +423,18 @@ function variants(intent, config) {
         "Fair enough. Are they keeping your trucks busy, or is there room for more?",
       ];
     case "callback":
-      /* A driver is the one prospect who must not be kept on the line. Let them
-       * go immediately and get a time, rather than starting a qualification. */
+      /* A driver is the one prospect who must not be kept on the line. When a
+       * day or time was named, confirm exactly that; asking "what's a better
+       * time?" after "call me tomorrow at three" is not listening. */
+      {
+        const when = spokenWhen(heard);
+        if (when) {
+          return [
+            `Got it - I'll call you back ${when}. Drive safe.`,
+            `Understood - I'll call back ${when}. Talk then.`,
+          ];
+        }
+      }
       return [
         "No problem - drive safe. What's a better time to call?",
         "Understood. I'll let you go - when should I call back?",
@@ -448,12 +507,6 @@ function variants(intent, config) {
         "Quickly. The team starts with your lanes and MC. What are you running this week?",
         "As soon as your lanes and MC are in hand. What are you running this week?",
       ];
-    case "close":
-      /* The checklist is done. A rep asks for the appointment here, not for one
-       * more data point - and the line asks for a time rather than promising a
-       * callback the dialer cannot guarantee. One phrasing only: asking for the
-       * appointment twice sounds like a machine. */
-      return ["Great. What's the best time and number to reach you?"];
     default:
       return [];
   }
@@ -488,7 +541,7 @@ function policyReply(lastLead, { config, history } = {}) {
   if (heard.length < 2) return null;
   for (const intent of INTENTS) {
     if (!intent.test.test(heard)) continue;
-    const options = variants(intent.id, config);
+    const options = variants(intent.id, config, heard);
     const already = new Set(agentMessages(history).map((m) => normalise(m.content)));
     const unused = options.find((line) => !already.has(normalise(line)));
     /* Every phrasing already used: let the model say something new rather than
@@ -528,13 +581,14 @@ function policyReply(lastLead, { config, history } = {}) {
   /* The checklist is complete and the prospect has actually told us something:
    * ask for the appointment. Without this the local brain either invents a
    * closing line or keeps qualifying somebody who has answered everything.
-   * Asked once: repeating it after the prospect answers sounds like a machine,
-   * so a second closing turn goes to the model instead. */
+   * Echoing one fact back is what makes the close sound like a person who was
+   * listening rather than a machine that has stopped asking. Asked once:
+   * repeating it after the prospect answers sounds like a machine too. */
   if (!state.evidence) return null;
   const closeAlready = new Set(agentMessages(effective).map((m) => normalise(m.content)));
-  const closeLines = variants("close", config);
-  if (closeLines.some((line) => closeAlready.has(normalise(line)))) return null;
-  return closeLines.length ? { intent: "close", text: closeLines[0] } : null;
+  const closeLine = `Got it${state.facts.length ? " - " + state.facts[0] : ""}. What's the best time and number to reach you?`;
+  if (closeAlready.has(normalise(closeLine))) return null;
+  return { intent: "close", text: closeLine };
 }
 
 const REFUSAL_RE = /^(?:no|nope|nah|none|not sure|don'?t know|dont know|skip|never ?mind|not right now|maybe later|n\/a)\b/i;
@@ -605,8 +659,13 @@ function analyse(history, config) {
     .filter((f) => !LEAD_ONLY.has(fieldKind(f)));
 
   const facts = [];
-  const trucks = told.match(/\b(\d{1,4})\s+(?:trucks?|units?|power units?|rigs?|trailers?)\b/i);
-  if (trucks) facts.push(`${trucks[1]} trucks`);
+  /* "I run four trucks" is the same answer as "I run 4 trucks". The word form
+   * was missed, so the checklist asked how many trucks they had just given. */
+  const trucks = told.match(new RegExp(`\\b(\\d{1,4}|${COUNT_WORDS})\\s+(?:trucks?|units?|power units?|rigs?|trailers?)\\b`, "i"));
+  if (trucks) {
+    const raw = trucks[1].toLowerCase();
+    facts.push(`${COUNT_WORD[raw] || raw} trucks`);
+  }
   const equipment = told.match(
     /\b(dry van|reefer|refrigerated|flatbed|flat bed|step ?deck|tanker|box truck|power only|hotshot|hot shot|sprinter|cargo van|conestoga)\b/i,
   );
@@ -617,7 +676,7 @@ function analyse(history, config) {
   if (volume) facts.push(`${volume[1]} loads a week`);
 
   const answered = {
-    lanes: /\blanes?\b/i.test(told),
+    lanes: /\blanes?\b/i.test(told) || /\b(?:between|from)\s+[a-z][a-z .'-]{1,20}\s+(?:and|to)\s+[a-z][a-z .'-]{1,20}\b/i.test(told),
     equipment: !!equipment,
     volume: !!volume,
     trucks: !!trucks,

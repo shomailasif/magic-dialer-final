@@ -94,6 +94,12 @@ const REQUIRED = [
     /before asking anything of your own/i],
   ["keeps the agent's own name stable",
     /introduce yourself by the name given above/i],
+  ["names where the number came from without inventing a form",
+    /number on file for their business or carrier listing/i],
+  ["confirms a number the prospect says we already have",
+    /already have their number/i],
+  ["brings an unrelated question back to the call",
+    /unrelated to the call/i],
 ];
 
 for (const [what, pattern] of REQUIRED) {

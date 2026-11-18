@@ -193,7 +193,12 @@ const checks = [
     assert.match(policy, /case "contract":/, "a contract question must be promised to the team, not guessed");
     assert.match(policy, /case "think":/, "a soft no must be reopened with one question");
     assert.match(policy, /const IDENTITY_QUESTION =\s*\/\\bwho are you\\b/, "policy must not re-own the call runner's who-is-this shape");
-    assert.match(policy, /case "close":/, "a completed checklist must ask for the appointment");
+    /* The close used to be a static variant. It is now built in policyReply so
+     * it can echo a fact the prospect actually gave; the contract that matters
+     * is unchanged - a completed checklist asks for the appointment, and the
+     * line is a policy turn rather than a model turn. */
+    assert.match(policy, /const closeLine = `Got it\$\{state\.facts\.length/, "the close must echo a fact the prospect gave");
+    assert.match(policy, /What's the best time and number to reach you\?/, "a completed checklist must ask for the appointment");
     assert.match(policy, /intent: "close"/, "the close must be a policy turn, not a model turn");
     assert.match(brain, /repeatedSpokenLine\(text, history\)/, "a repeated local line must fall through instead of being spoken twice");
     assert.match(brain, /r\.finish === "length" \? trimToCompleteSentence/, "a truncated local reply must stop at the last complete sentence");
