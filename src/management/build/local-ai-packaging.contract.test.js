@@ -6,10 +6,11 @@
  * needs are actually shipped, pinned and installed:
  *
  *   1. The installer carries the llama.cpp server next to agent.exe.
- *   2. The 807 MB model is NOT in the installer; it is downloaded into the
- *      customer's data folder, so upgrades never cost another download.
+ *   2. The 807 MB brain model and 74 MB hearing model are in the same
+ *      installer and land in the customer's data folder, so a fresh PC needs
+ *      no first-run download.
  *   3. The runtime download is pinned by release tag AND SHA-256.
- *   4. The model download is pinned by size AND SHA-256.
+ *   4. The model downloads are pinned by size AND SHA-256.
  *   5. The server is started with the flags measured on the target hardware.
  */
 const assert = require("node:assert/strict");
@@ -37,13 +38,25 @@ const checks = [
   ),
   () => assert.doesNotMatch(installer, /\/\*/, "Inno comments must use ';': a '/*' line aborts the installer build"),
 
-  // 2. The model is a download, not installer payload.
-  () => assert.doesNotMatch(installer, /\.gguf/i, "the 807 MB model must never be bundled into the installer"),
-  () => assert.doesNotMatch(installer, /qwen/i, "the installer must not name a model file"),
+  // 2. Both models are installer payload and land where the engine looks.
+  () => assert.match(
+    installer,
+    /Source:\s*"dist\\models\\\*";\s*DestDir:\s*"\{app\}\\models"/,
+    "the installer must carry the offline brain and hearing models",
+  ),
+  () => assert.match(installer, /nocompression/, "already-compressed model weights must skip compression"),
+  () => assert.doesNotMatch(installer, /qwen/i, "the installer must not name a replaced model file"),
+  () => assert.match(prepare, /Llama-3\.2-1B-Instruct-Q4_K_M\.gguf/, "the build must stage the pinned brain model"),
+  () => assert.match(prepare, /\$modelSize = 807694464/, "the staged brain model size must be pinned"),
+  () => assert.match(prepare, /6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83/, "the staged brain model SHA-256 must be pinned"),
+  () => assert.match(prepare, /ggml-tiny\.bin/, "the build must stage the pinned hearing model"),
+  () => assert.match(prepare, /\$hearingSize = 77691713/, "the staged hearing model size must be pinned"),
+  () => assert.match(prepare, /be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21/, "the staged hearing model SHA-256 must be pinned"),
+  () => assert.match(prepare, /curl\.exe/, "the large pinned downloads must use curl instead of buffering in PowerShell"),
   () => assert.match(
     localAi,
     /function modelPath\(\) \{\s*return path\.join\(dataDir\(\), "models", MODEL_FILE\);/,
-    "the model must live in the customer data folder, not the install folder",
+    "the model must live in the customer data folder, which {app}\\models satisfies",
   ),
   () => assert.match(localAi, /function dataDir\(\)[\s\S]*?LOCALAPPDATA/, "the data folder is the customer's profile"),
   () => {
@@ -90,21 +103,23 @@ const checks = [
   () => assert.match(workflow, /local-ai\\\\llama-server\.exe/, "CI smoke test must look for the installed server"),
   () => assert.match(workflow, /if \(-not \(Test-Path -LiteralPath \$offlineServer\)\) \{ throw/, "a missing installed runtime must fail the build"),
   () => assert.match(workflow, /& \$offlineServer --version/, "the installed runtime must be started by the smoke test"),
+  () => assert.match(workflow, /models\\\\Llama-3\.2-1B-Instruct-Q4_K_M\.gguf/, "CI smoke test must prove the brain model was installed"),
+  () => assert.match(workflow, /models\\\\ggml-tiny\.bin/, "CI smoke test must prove the hearing model was installed"),
 
   // 7. The brain gets the mode from a real call, or none of this is reachable.
   () => assert.match(read(path.join(agent, "local-call-controller.js")), /ai: config\.ai/, "the call controller must pass the brain choice through"),
   () => assert.match(read(path.join(agent, "call-runner.js")), /voiceScript, ai \}/, "the call runner must pass the brain choice through"),
   () => assert.match(read(path.join(agent, "call.js")), /waitForFirstSpeech, ai \}/, "the call path must pass the brain choice through"),
 
-  // 8. The offline transcriber ships too, with a model that is downloaded, not
-  //    bundled, and a timeout that fits inside the controller's turn budget.
+  // 8. The offline transcriber ships too, with its model in the same
+  //    installer, and a timeout that fits inside the controller's turn budget.
   () => assert.match(prepare, /releases\/download\/b5454\/whisper-bin-x64\.zip/, "pinned whisper.cpp release URL"),
   () => assert.match(prepare, /\$whisperSha = "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb"/, "pinned whisper.cpp archive SHA-256"),
   () => assert.match(prepare, /whisper-cli\.exe/, "the transcriber binary must be staged"),
   () => assert.match(prepare, /\$wdest = Join-Path \$dest "whisper"/, "whisper needs its own folder: it ships different ggml DLLs than llama-server"),
   () => assert.match(prepare, /& \$whisper --version/, "the staged transcriber must prove it starts"),
   () => assert.match(installer, /recursesubdirs createallsubdirs/, "the installer must recurse into local-ai\\whisper"),
-  () => assert.doesNotMatch(installer, /ggml-tiny|\.bin/i, "the hearing model must never be bundled into the installer"),
+  () => assert.match(installer, /DestDir:\s*"\{app\}\\models"/, "the hearing model must be installed into {app}\\models"),
   () => assert.match(localStt, /const MODEL_FILE = "ggml-tiny\.bin";/, "pinned hearing model file"),
   () => assert.match(localStt, /const MODEL_BYTES = 77691713;/, "pinned hearing model size"),
   () => assert.match(localStt, /const MODEL_SHA256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"/, "pinned hearing model SHA-256"),
@@ -162,6 +177,12 @@ const checks = [
     assert.match(policy, /case "experience":/, "years-in-business must be answered without inventing a number");
     assert.match(policy, /case "capacity":/, "same-day capacity must never be promised");
     assert.match(policy, /case "coverage":/, "equipment coverage must be answered without inventing a lane");
+    assert.match(policy, /case "driver-setup":/, "team and solo drivers must be answered, not handed to the model");
+    assert.match(policy, /case "service-detail":/, "detention and fuel questions must not invent a policy");
+    assert.match(policy, /case "tool":/, "tool and integration questions must not claim a product");
+    assert.match(policy, /case "fee":/, "startup-fee questions must not invent a fee or a base rate");
+    assert.match(brain, /LOCAL_INVENTED_FACT/, "an invented business fact must be rejected before it is spoken");
+    assert.match(brain, /LOCAL_INVENTED_MONEY/, "an invented price or percentage must be rejected before it is spoken");
     assert.match(brain, /hours, app, history or contract term/, "the offline prompt must forbid inventing business facts");
     assert.match(brain, /answer what they asked first/i, "the offline prompt must answer the question before asking one");
     assert.match(brain, /const LOCAL_MAX_TOKENS = 28;/, "the offline budget must allow a two-sentence answer");

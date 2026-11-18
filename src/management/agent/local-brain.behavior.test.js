@@ -118,7 +118,7 @@ async function main() {
   //     clipped fragment or a pure deflection.
   await withLocal({ reply: "We handle dispatch end to end. Where are you running?" }, async (local) => {
     const r = await complete({
-      history: [{ role: "user", content: "Do you work with team drivers?" }],
+      history: [{ role: "user", content: "Can you handle last-minute loads?" }],
       config: { ...CONFIG, ai: { mode: "local" } },
     });
     assert.equal(r.text, "We handle dispatch end to end. Where are you running?", "a two-sentence off-book answer must be spoken whole: " + JSON.stringify(r));
@@ -189,7 +189,7 @@ async function main() {
       history: [
         { role: "user", content: "We run twenty trucks out of Chicago." },
         { role: "assistant", content: "Got it. Which lanes do you run most?" },
-        { role: "user", content: "Do you work with team drivers?" },
+        { role: "user", content: "Can you handle last-minute loads?" },
       ],
       config: { ...CONFIG, ai: { mode: "local" } },
     });
@@ -207,6 +207,27 @@ async function main() {
     const r = await complete({ history, config: { ...CONFIG, ai: { mode: "local" } } });
     assert.equal(r.text, "hosted answer", "a local failure must not cost the turn: " + JSON.stringify(r));
     assert.ok(hosted.length >= 1, "the hosted brain must be tried after a local failure");
+  });
+
+  // 4b. A local reply that invents a fact the config never supplied is not
+  //     spoken; the hosted brain answers instead.
+  await withLocal({ reply: "We have a mobile app that tracks every load." }, async () => {
+    global.fetch = hostedOk("hosted truthful answer");
+    const r = await complete({ history, config: { ...CONFIG, ai: { mode: "local" } } });
+    assert.equal(r.text, "hosted truthful answer", "an invented business fact must be rejected: " + JSON.stringify(r));
+    assert.notEqual(r.path, "local", "the invented local line must not be used");
+  });
+
+  await withLocal({ reply: "I am available Monday to Friday, 8am to 5pm EST." }, async () => {
+    global.fetch = hostedOk("hosted hours answer");
+    const r = await complete({ history, config: { ...CONFIG, ai: { mode: "local" } } });
+    assert.equal(r.text, "hosted hours answer", "invented opening hours must be rejected: " + JSON.stringify(r));
+  });
+
+  await withLocal({ reply: "We don't charge an initial fee, but we do have a base rate for dispatch." }, async () => {
+    global.fetch = hostedOk("hosted fee answer");
+    const r = await complete({ history, config: { ...CONFIG, ai: { mode: "local" } } });
+    assert.equal(r.text, "hosted fee answer", "an invented fee or rate must be rejected: " + JSON.stringify(r));
   });
 
   // 5. "auto" keeps the fast hosted brain first.

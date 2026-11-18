@@ -58,6 +58,7 @@ $tests = @(
   "agent\refusal-i18n.behavior.test.js",
   "agent\voip-line-and-provider.behavior.test.js",
   "agent\qualified-lead-email.behavior.test.js",
+  "agent\lead-email-setup.contract.test.js",
   "agent\smtp-transport.behavior.test.js",
   "build\release-version-consistency.test.js",
   "build\local-ai-packaging.contract.test.js",

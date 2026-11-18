@@ -474,24 +474,24 @@ function localSystemPrompt(config) {
   const agentName = asText(c.persona, ["name", "agentName", "firstName", "displayName"], "Alex");
   const company = asText(c.companyName, ["name", "companyName", "company"], "our company");
   const product = asText(c.product, ["name", "title", "product", "description"], "our service");
-  const fields = (Array.isArray(c.leadFields) ? c.leadFields : [])
-    .map((f) => (typeof f === "string" ? f : (f && (f.label || f.key)) || ""))
-    .filter(Boolean)
-    .slice(0, 4);
   const locale = String(c.locale || "en").trim() || "en";
   return [
     "Write CALLER's next spoken line in a phone call.",
     `CALLER: ${agentName} of ${company}, calling about ${product}.`,
-    fields.length ? `Ask about: ${fields.join(", ")}.` : "",
     `Language: ${languageName(locale)}.`,
     /* Off-book questions are normal conversation. The old "one sentence, 10
      * words" rule produced clipped, evasive answers; answer first, then ask. */
     "Answer what they asked first, then one short question. 20 words max. Sound human, no preamble.",
+    /* The lead sheet is a list of columns, not questions. Feeding it to the
+     * model made every answer end with "can I get your name and number" and
+     * even "what about a text request". Discovery moves the call; the policy's
+     * nextQuestionHint still drives the one missing field on a data turn. */
+    "After answering, ask where they are running.",
     "Only CALLER lines. Never write CUSTOMER's or claim their business.",
     "Never repeat a question already asked.",
     "Never invent a price, load, lane, coverage, hours, app, history or contract term. If you don't know, say so briefly and ask one question.",
     "If asked whether you are an AI, say you are an AI assistant.",
-  ].filter(Boolean).join("\n");
+  ].join("\n");
 }
 
 /* The opening/preflight calls are instructions, not things a prospect said;
@@ -510,6 +510,18 @@ function repeatedSpokenLine(text, history) {
     (m) => m && m.content && (m.role === "assistant" || m.role === "agent") && norm(m.content) === t,
   );
 }
+
+/* The 1B model invents company facts when a question has no policy turn: it
+ * claimed a mobile app, "8am to 5pm EST" hours and "short on capacity today".
+ * The common shapes are answered before the model now, but a novel phrasing can
+ * still reach it. A local reply that asserts a fact the config never supplied is
+ * rejected, so the hosted brain or the honest bridge answers instead of a lie. */
+const LOCAL_INVENTED_FACT =
+  /(?:mobile app|our app|download (?:the|our) app|we(?:'re| are) open (?:from|until|at)|open (?:from|until) \d|\d{1,2}(?::\d{2})?\s*(?:am|pm)\s*(?:to|-|until)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)?|(?:over |more than )?\d+\+?\s+years? (?:of experience|in business)|we(?:'ve| have) been (?:in business|doing this) (?:for )?\d+|since (?:19|20)\d{2}|short on capacity|we cover (?:canada|mexico)|same[- ]day (?:loads?|freight)|base (?:rate|fee)|(?:no|zero) (?:initial|setup|startup|sign[- ]up|upfront|up-front) fee|we (?:don'?t|do not) charge (?:an? )?(?:initial|setup|startup|upfront|up-front) fee)\b/i;
+/* A dollar figure or percentage in a local reply is always invented: the config
+ * never carries a rate. Kept separate because "$250" has no word boundary
+ * inside the number, so it cannot share the word-ending rule above. */
+const LOCAL_INVENTED_MONEY = /\$\s?\d|\b\d+(?:\.\d+)?\s*(?:%|percent)\b|\bcents per mile\b/i;
 
 function localTranscript(history) {
   const rows = (Array.isArray(history) ? history : [])
@@ -577,6 +589,7 @@ async function completeLocal({ history, config, maxTokens, timeoutMs }) {
   });
   const text = clean(r.text);
   if (repeatedSpokenLine(text, history)) throw new Error("offline model repeated a spoken line");
+  if (LOCAL_INVENTED_FACT.test(text) || LOCAL_INVENTED_MONEY.test(text)) throw new Error("offline model invented a business fact");
   /* The 28-token budget can end a sentence mid-clause ("...and confirm the").
    * A prospect must never hear that, so a truncated reply keeps only the
    * sentences that finished. If none did, the turn falls through to the hosted

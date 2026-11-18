@@ -67,6 +67,17 @@ const CASES = [
   ["Can I get a load today?", "capacity", /promise|lanes|real/i],
   ["Do you have any loads available?", "capacity", /promise|lanes|real/i],
   ["Do you cover reefer loads?", "coverage", /equipment|lane/i],
+  ["Do you work with team drivers?", "driver-setup", /solo or team|both/i],
+  ["Can we use owner-operators?", "driver-setup", /solo or team|both/i],
+  ["Do you cover Canada?", "location", /wherever|running/i],
+  ["How do you handle detention?", "service-detail", /lane|broker/i],
+  ["What about fuel surcharges?", "service-detail", /lane|broker/i],
+  ["Do you support EDI?", "tool", /dispatch end to end|guess/i],
+  ["Are you on LoadLink?", "tool", /dispatch end to end|guess/i],
+  ["Is there a fee to start?", "fee", /guess|talking|fee/i],
+  ["Do I have to pay upfront?", "fee", /guess|talking|fee/i],
+  ["What's your setup fee?", "fee", /guess|talking|fee/i],
+  ["Do you work with small fleets?", "minimum", /how many trucks|trucks/i],
   /* The contract question has many shapes, and "what if it doesn't work out"
    * is the one a prospect says when they are close to yes. */
   ["What if it doesn't work out?", "contract", /time|terms/i],

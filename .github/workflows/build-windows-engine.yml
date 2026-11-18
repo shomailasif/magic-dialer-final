@@ -86,6 +86,7 @@ jobs:
         shell: powershell
         run: choco install innosetup -y --no-progress
       - name: Build installer
+        timeout-minutes: 15
         shell: powershell
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\installer.iss'
       - name: Poisoned-environment relaunch gate
@@ -181,15 +182,15 @@ jobs:
           Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue
           Write-Host "POISON GATE PASS: poisoned post-update relaunch reached engine ready on attempt 1"
       - name: Silent installer smoke test
-        timeout-minutes: 3
+        timeout-minutes: 15
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
           Write-Host "SMOKE MARKER A: starting silent installer"
           $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-smoke-setup.log"
           $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
-          if (-not $setup.WaitForExit(90000)) {
-            Write-Host "SMOKE DIAGNOSTIC: setup did not exit within 90 seconds"
+          if (-not $setup.WaitForExit(300000)) {
+            Write-Host "SMOKE DIAGNOSTIC: setup did not exit within 5 minutes"
             Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
             if (Test-Path $setupLog) {
               Write-Host "=== INNO SETUP LOG TAIL ==="
@@ -227,6 +228,15 @@ jobs:
           foreach ($file in @("agent.exe","MagicDialer.exe","logo.ico")) {
             if (-not (Test-Path (Join-Path $app $file))) { throw "Missing installed $file" }
           }
+          # The single installer must carry the model weights. A fresh PC may
+          # have no hosted quota and no network, so first run must not download.
+          $brainModel = Join-Path $app "models\\Llama-3.2-1B-Instruct-Q4_K_M.gguf"
+          if (-not (Test-Path -LiteralPath $brainModel)) { throw "Installer missing offline brain model" }
+          if ((Get-Item -LiteralPath $brainModel).Length -ne 807694464) { throw "Installed offline brain model has the wrong size" }
+          $hearingModel = Join-Path $app "models\\ggml-tiny.bin"
+          if (-not (Test-Path -LiteralPath $hearingModel)) { throw "Installer missing offline hearing model" }
+          if ((Get-Item -LiteralPath $hearingModel).Length -ne 77691713) { throw "Installed offline hearing model has the wrong size" }
+          Write-Host "OFFLINE BRAIN AND HEARING MODELS PRESENT"
           # The offline brain is what keeps a dialer working after the free
           # hosted quota is gone, so the installer must actually carry it.
           # These programs write their version banner to stderr. GitHub's
@@ -296,7 +306,7 @@ jobs:
           Write-Host "Rollback seed verified byte-for-byte: $seedHash"
           if (Test-Path (Join-Path $app "agent.exe")) { throw "Engine remained after uninstall" }
       - name: Reopen launcher while engine is already running
-        timeout-minutes: 3
+        timeout-minutes: 15
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
@@ -305,8 +315,8 @@ jobs:
           Write-Host "REOPEN MARKER A: starting silent installer"
           $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-reopen-setup.log"
           $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
-          if (-not $setup.WaitForExit(90000)) {
-            Write-Host "REOPEN DIAGNOSTIC: setup did not exit within 90 seconds"
+          if (-not $setup.WaitForExit(300000)) {
+            Write-Host "REOPEN DIAGNOSTIC: setup did not exit within 5 minutes"
             Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
             if (Test-Path $setupLog) { Write-Host "=== REOPEN INNO LOG TAIL ==="; Get-Content -LiteralPath $setupLog -Tail 120 }
             Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
@@ -351,7 +361,7 @@ jobs:
           if ($after -ne $before) { throw "Duplicate launcher changed agent process count: $before -> $after" }
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       - name: Exact customer reopen with packaged agent file locked
-        timeout-minutes: 3
+        timeout-minutes: 15
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
@@ -359,8 +369,8 @@ jobs:
           Write-Host "EXACT REOPEN MARKER A: starting silent installer"
           $setupLog = Join-Path $env:RUNNER_TEMP "magic-dialer-exact-reopen-setup.log"
           $setup = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$setupLog`"") -PassThru
-          if (-not $setup.WaitForExit(90000)) {
-            Write-Host "EXACT REOPEN DIAGNOSTIC: setup did not exit within 90 seconds"
+          if (-not $setup.WaitForExit(300000)) {
+            Write-Host "EXACT REOPEN DIAGNOSTIC: setup did not exit within 5 minutes"
             Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
             if (Test-Path $setupLog) { Write-Host "=== EXACT REOPEN INNO LOG TAIL ==="; Get-Content -LiteralPath $setupLog -Tail 120 }
             Stop-Process -Id $setup.Id -Force -ErrorAction SilentlyContinue
@@ -389,7 +399,7 @@ jobs:
           Get-Process agent -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
       # Fresh-run trigger: rerun bounded in-place upgrade gate after runner-side hang; no behavior change.
       - name: In-place upgrade with running old engine
-        timeout-minutes: 3
+        timeout-minutes: 20
         shell: powershell
         run: |
           $installer = Join-Path $PWD "build\\dist\\magic-dialer-engine-windows.exe"
@@ -398,12 +408,12 @@ jobs:
           Write-Host "UPGRADE MARKER A: starting preparation installer"
           $prepLog = Join-Path $env:RUNNER_TEMP "magic-dialer-upgrade-prep.log"
           $prep = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$prepLog`"") -PassThru
-          if (-not $prep.WaitForExit(90000)) {
+          if (-not $prep.WaitForExit(300000)) {
             Write-Host "UPGRADE DIAGNOSTIC: preparation installer did not exit"
             Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
             if (Test-Path $prepLog) { Write-Host "=== PREPARATION INNO LOG TAIL ==="; Get-Content -LiteralPath $prepLog -Tail 120 }
             Stop-Process -Id $prep.Id -Force -ErrorAction SilentlyContinue
-            throw "Preparation installer exceeded 90-second diagnostic bound"
+            throw "Preparation installer exceeded 5-minute diagnostic bound"
           }
           if ($prep.ExitCode -ne 0) { throw "Preparation installer exited with code $($prep.ExitCode)" }
           Write-Host "UPGRADE MARKER B: preparation installer returned"
@@ -421,12 +431,12 @@ jobs:
           $upgradeLog = Join-Path $env:RUNNER_TEMP "magic-dialer-in-place-upgrade.log"
           Write-Host "UPGRADE MARKER E: starting in-place installer"
           $upgrade = Start-Process -FilePath $installer -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART",("/LOG=`"$upgradeLog`"") -PassThru
-          if (-not $upgrade.WaitForExit(90000)) {
+          if (-not $upgrade.WaitForExit(300000)) {
             Write-Host "UPGRADE DIAGNOSTIC: in-place installer did not exit"
             Get-CimInstance Win32_Process | Where-Object { $_.Name -in @("magic-dialer-engine-windows.exe","MagicDialer.exe","agent.exe","cmd.exe") } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
             if (Test-Path $upgradeLog) { Write-Host "=== IN-PLACE INNO LOG TAIL ==="; Get-Content -LiteralPath $upgradeLog -Tail 120 }
             try { $upgrade.Kill() } catch {}
-            throw "In-place upgrade installer exceeded 90-second hard timeout"
+            throw "In-place upgrade installer exceeded 5-minute hard timeout"
           }
           if ($upgrade.ExitCode -ne 0) { throw "In-place upgrade installer failed with exit code $($upgrade.ExitCode)" }
           Write-Host "UPGRADE MARKER F: in-place installer returned"

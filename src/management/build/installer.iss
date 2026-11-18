@@ -12,14 +12,18 @@
 
 [Setup]
 AppName=Magic Dialer
-AppVersion=1.5.8
+AppVersion=1.5.9
 DefaultDirName={localappdata}\Magic Dialer
 DefaultGroupName=Magic Dialer
 DisableProgramGroupPage=yes
 OutputDir=dist
 OutputBaseFilename=magic-dialer-engine-windows
 Compression=lzma
-SolidCompression=yes
+; The ~884 MB of model files are already-compressed weights. Solid compression
+; would spend several minutes and a lot of RAM trying to squeeze them, then
+; produce almost the same bytes, so each file is compressed on its own and the
+; models carry the nocompression flag below.
+SolidCompression=no
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName=Magic Dialer
@@ -35,10 +39,13 @@ Source: "dist\MagicDialer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "dist\runtime\*"; DestDir: "{app}\runtime"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The llama.cpp server that runs the offline brain, and the whisper.cpp
 ; transcriber that lets the same PC hear when the hosted transcriber is out of
-; quota. The 807 MB brain model and 74 MB hearing model are NOT shipped; the
-; dashboard downloads them once into the customer's data folder, so the
-; installer stays small and an upgrade never costs another download.
+; quota. Both models ship in this same installer: a fresh PC must be able to
+; answer and hear with no download and no network. They are copied to
+; {app}\models, which is the customer's data folder, where local-ai.js and
+; local-stt.js already look for them. nocompression because GGUF and whisper
+; weights are already compressed.
 Source: "dist\local-ai\*"; DestDir: "{app}\local-ai"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\models\*"; DestDir: "{app}\models"; Flags: ignoreversion nocompression
 Source: "assets\logo-256.png"; DestDir: "{app}"; Flags: ignoreversion
 Source: "assets\logo.ico"; DestDir: "{app}"; Flags: ignoreversion
 

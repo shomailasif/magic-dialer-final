@@ -68,6 +68,11 @@ const AI_QUESTION =
   /\b(?:are you|is this|am i (?:talking|speaking) to)\b[^?.!]{0,40}\b(?:ai|a\.i\.|robot|bot|machine|automated|recorded|real person|real human|human)\b|\b(?:real person|real human)\b[^?.!]{0,20}\?/i;
 const MONEY_QUESTION =
   /\b(?:how much|what(?:'s| is| are)? (?:your |the )?(?:price|pricing|rate|rates|cost|fee|commission)|what do you (?:charge|get)|what does it cost|per load|per mile|percentage|cut of)\b/i;
+/* "Is there a fee to start?" is not "what's your rate" and used to reach the
+ * model, which answered "we don't charge an initial fee, but we do have a base
+ * rate" - two invented terms in one sentence. */
+const FEE_QUESTION =
+  /\b(?:is there|are there|do (?:i|we) (?:have to )?pay)\b[^?.!]{0,20}\b(?:fee|cost|charge|anything|upfront|up-front)\b|\b(?:setup|startup|sign[- ]up|initial|upfront|up-front) (?:fee|cost|charge)s?\b|\b(?:fee|cost|charge)s? to (?:start|begin|sign up|get started)\b|\bwhat(?:'s| is) (?:your|the) (?:setup |startup |sign[- ]up |initial |upfront )?fee\b/i;
 const SOURCE_QUESTION =
   /\b(?:where (?:did|do) you (?:get|find)|how did you (?:get|find)|who gave you|where'?d you get)\b[^?.!]{0,40}\b(?:number|info|information|details)\b|\b(?:is this|are you) (?:a )?(?:scam|spam|telemarketer|sales call)\b/i;
 const DISPATCHER_STATEMENT =
@@ -105,7 +110,7 @@ const IDENTITY_QUESTION =
 /* Location is answered honestly without naming a city the model would have to
  * invent; the coverage answer is the one a dispatcher gives. */
 const LOCATION_QUESTION =
-  /\bwhere (?:are|is) (?:you|your company) (?:based|located|from)\b|\bwhere are you (?:guys )?(?:at|located)\b/i;
+  /\bwhere (?:are|is) (?:you|your company) (?:based|located|from)\b|\bwhere are you (?:guys )?(?:at|located)\b|\b(?:do you|can you) (?:cover|work|run|serve)\b[^?.!]{0,20}\b(?:canada|mexico|provinces?|cross[- ]border|nationwide|nation[- ]wide|all (?:48|fifty)|lower 48)\b/i;
 /* "How does it work" deserves the three things dispatch actually does, not a
  * feature list and not a rate the model invented. */
 const HOW_IT_WORKS =
@@ -119,7 +124,7 @@ const CONTRACT_QUESTION =
 const THINK_ABOUT_IT =
   /\b(?:need to|let me|i'?ll|gonna|going to) think (?:about it|it over|on it)\b|\bthink (?:about it|it over)\b/i;
 const FLEET_MINIMUM =
-  /\b(?:what'?s the minimum|is there a minimum|minimum (?:fleet|number of trucks|trucks)|smallest fleet|do you (?:guys )?work with (?:owner[- ]operators?|single trucks?|one truck)|how many trucks do you (?:need|require|want))\b/i;
+  /\b(?:what'?s the minimum|is there a minimum|minimum (?:fleet|number of trucks|trucks)|smallest fleet|small (?:fleets?|carriers?)|do you (?:guys )?work with (?:owner[- ]operators?|single trucks?|one truck)|how many trucks do you (?:need|require|want))\b/i;
 /* Off-book questions are the ones no script anticipated. They still have
  * truthful, useful answers, and answering them here keeps the 1B model from
  * either guessing or deflecting with a question. */
@@ -137,6 +142,20 @@ const CAPACITY_QUESTION =
   /\bcan (?:you|we|i) (?:get|book|find) (?:me |us )?(?:a |any )?(?:load|freight)s? (?:today|now|this week)\b|\bdo you have (?:any )?loads? (?:today|now|available)\b|\bhow (?:soon|fast) can you (?:get|find|book) (?:me |us )?(?:a )?load\b/i;
 const COVERAGE_QUESTION =
   /\bdo you (?:cover|handle|work with|run|book)\b[^?.!]{0,25}\b(?:reefer|dry van|flatbed|tanker|hazmat|oversize|hotshot|refrigerated)\b/i;
+/* Team and solo are a driver setup, not equipment. The 1B answered "do you work
+ * with team drivers?" with "I have a team driver named Mike"; this is a common
+ * question with a truthful, useful answer that does not need a model. */
+const DRIVER_SETUP =
+  /\bdo you (?:work with|take|handle|use|run) (?:team|solo|owner[- ]operator) (?:drivers?|trucks?)\b|\b(?:can|do) (?:you|we) (?:use|run|work with) (?:team|solo) drivers?\b|\b(?:do|can) (?:you|we) (?:work with|take|use) owner[- ]operators?\b|\b(?:team|solo) drivers? (?:ok|okay|fine|allowed)\b/i;
+/* Service mechanics (detention, fuel, factoring) depend on the broker and the
+ * lane; the honest answer is that it varies, then the next qualification. */
+const SERVICE_DETAIL =
+  /\b(?:how do you (?:handle|deal with)|do you (?:handle|offer|provide|charge for)|what about|what'?s your policy on)\b[^?.!]{0,40}\b(?:detention|layover|tonu|fuel surcharges?|factoring|quick pay|advances?|escrow|ifta|drug tests?|compliance)\b/i;
+/* Tools and integrations are the other place the 1B says "yes, we do" without
+ * knowing. Name the pivot instead of claiming a product the config never
+ * supplied. */
+const TOOL_QUESTION =
+  /\b(?:do you|are you) (?:on|use|support|work with|connected to|integrated with)\b[^?.!]{0,25}\b(?:loadlink|load link|dat|truckstop|sylectus|edi|api|software|system|crm)\b/i;
 const TRUST_QUESTION =
   /\b(?:are you|is this) (?:a )?(?:legit(?:imate)?|real (?:company|business)|insured|bonded|registered)\b|\bhow do i know (?:you'?re|this is) (?:legit|real|not a scam)\b/i;
 /* "How do you make money?" is not a rate request; it is the prospect testing
@@ -167,6 +186,7 @@ const INTENTS = [
   { id: "ai", test: AI_QUESTION },
   { id: "trust", test: TRUST_QUESTION },
   { id: "model", test: MODEL_QUESTION },
+  { id: "fee", test: FEE_QUESTION },
   { id: "price", test: MONEY_QUESTION },
   { id: "price-objection", test: PRICE_OBJECTION },
   { id: "source", test: SOURCE_QUESTION },
@@ -178,6 +198,9 @@ const INTENTS = [
   { id: "experience", test: EXPERIENCE_QUESTION },
   { id: "capacity", test: CAPACITY_QUESTION },
   { id: "coverage", test: COVERAGE_QUESTION },
+  { id: "driver-setup", test: DRIVER_SETUP },
+  { id: "service-detail", test: SERVICE_DETAIL },
+  { id: "tool", test: TOOL_QUESTION },
   { id: "value", test: VALUE_QUESTION },
   { id: "guarantee", test: GUARANTEE_QUESTION },
   { id: "catch", test: CATCH_QUESTION },
@@ -208,6 +231,12 @@ function variants(intent, config) {
       return [
         `Yes, I'm an AI assistant calling for ${company}. A person from the team can take it from here.`,
         "I am - an AI calling on behalf of the team. I can have a person follow up with you.",
+      ];
+    case "fee":
+      /* Talking is genuinely free; the terms are not ours to invent. */
+      return [
+        "I don't want to guess at fees. Talking costs nothing - where are you running?",
+        "I'd rather not quote a fee I'm not sure of. What lanes do you run?",
       ];
     case "price":
       /* The number is the one thing this layer must never produce: a fabricated
@@ -281,6 +310,24 @@ function variants(intent, config) {
       return [
         "Most equipment is no problem - it depends on the lane. Where are you running?",
         "We work most equipment types. What lanes do you run?",
+      ];
+    case "driver-setup":
+      return [
+        "Solo or team, both work. Where are you running?",
+        "We work with both. What lanes do you run?",
+      ];
+    case "service-detail":
+      /* Detention, fuel and factoring differ by broker and lane. Saying it
+       * varies is true, keeps the call moving, and never invents a policy. */
+      return [
+        "That depends on the lane and the broker. What lanes do you run?",
+        "It varies by lane and broker. Where are you running?",
+      ];
+    case "tool":
+      /* Never claim a tool or integration the config never supplied. */
+      return [
+        "I'd rather not guess on that. We handle dispatch end to end - where are you running?",
+        "I don't want to guess on the tools. We handle dispatch end to end. What lanes do you run?",
       ];
     case "guarantee":
       /* The honest answer is no, and saying it plainly builds more trust than

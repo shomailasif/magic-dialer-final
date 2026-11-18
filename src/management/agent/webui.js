@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { sendEmail } = require("./email");
 
 /**
  * Magic Dialer local dashboard/set-up server (zero dependencies).
@@ -14,6 +15,9 @@ const os = require("node:os");
  *   GET  /api/state   -> { configured, ... } so the page picks setup vs dashboard
  *   GET  /api/status  -> live status.json feed (status, stats, activity)
  *   POST /api/setup   -> validate + persist the one-time onboarding form
+ *   GET  /api/email   -> SMTP status (never the password)
+ *   POST /api/email   -> persist SMTP settings for lead delivery
+ *   POST /api/email/test -> send one test email to the configured lead address
  *   POST /api/resume  -> flip dashboard mode to "on"
  *   POST /api/pause   -> flip dashboard mode to "off"
  *   GET  /api/health  -> liveness probe
@@ -185,6 +189,35 @@ const PAGE = `<!doctype html>
           </div>
           <label for="fCallbackIn">Manager calls back within (optional)</label>
           <input id="fCallbackIn" placeholder="e.g. 30 minutes">
+          <div style="margin-top:14px;border-top:1px solid #e2e8f0;padding-top:14px">
+            <div class="desc" style="margin-bottom:8px">Send leads by email. Without a sending server, qualified leads are saved on this PC but not emailed. Use an app password, not your normal mailbox password.</div>
+            <div class="row">
+              <div>
+                <label for="fSmtpHost">SMTP server (optional)</label>
+                <input id="fSmtpHost" placeholder="smtp.gmail.com">
+              </div>
+              <div>
+                <label for="fSmtpPort">SMTP port</label>
+                <input id="fSmtpPort" inputmode="numeric" placeholder="587">
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="fSmtpUser">SMTP username</label>
+                <input id="fSmtpUser" autocomplete="username" placeholder="you@gmail.com">
+              </div>
+              <div>
+                <label for="fSmtpPass">SMTP app password</label>
+                <input id="fSmtpPass" type="password" autocomplete="new-password" placeholder="leave blank to keep a saved password">
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label for="fSmtpFrom">From address (optional)</label>
+                <input id="fSmtpFrom" type="email" placeholder="defaults to the SMTP username">
+              </div>
+            </div>
+          </div>
         </div>
         <div class="sec">
           <h2>Phone line (VOIP)</h2>
@@ -322,6 +355,47 @@ const PAGE = `<!doctype html>
         <div id="aiSttLine" class="sub" style="margin-top:6px">Checking&hellip;</div>
         <div class="err hidden" id="aiLocalErr"></div>
       </div>
+    </div>
+    <div class="card" style="padding:20px 24px">
+      <div class="inl" style="justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:1;min-width:260px">
+          <div class="lab">Lead email delivery</div>
+          <div id="emailLine" style="margin-top:6px">Checking&hellip;</div>
+          <div class="sub" style="margin-top:6px">Qualified leads are emailed from this PC through your own SMTP account. Without it they are saved to the outbox but nothing is sent.</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div>
+          <label for="smtpHost">SMTP server</label>
+          <input id="smtpHost" placeholder="smtp.gmail.com">
+        </div>
+        <div>
+          <label for="smtpPort">Port</label>
+          <input id="smtpPort" inputmode="numeric" placeholder="587">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="smtpUser">Username</label>
+          <input id="smtpUser" autocomplete="username" placeholder="you@gmail.com">
+        </div>
+        <div>
+          <label for="smtpPass">App password</label>
+          <input id="smtpPass" type="password" autocomplete="new-password" placeholder="leave blank to keep saved password">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="smtpFrom">From address (optional)</label>
+          <input id="smtpFrom" type="email" placeholder="defaults to the username">
+        </div>
+        <div class="inl" style="align-self:end;gap:8px;flex-wrap:wrap">
+          <button id="smtpSave" class="btn teal">Save email settings</button>
+          <button id="smtpTest" class="btn ghost">Send test email</button>
+        </div>
+      </div>
+      <div class="err hidden" id="emailErr"></div>
+      <div class="sub" id="emailMsg" style="margin-top:8px"></div>
     </div>
     <div class="card" style="padding:20px 24px">
       <div class="inl" style="justify-content:space-between;gap:16px;flex-wrap:wrap;align-items:flex-start">
@@ -609,6 +683,55 @@ async function loadState(){
     else{$id("dashView").classList.add("hidden");$id("doneView").classList.add("hidden");$id("setupView").classList.remove("hidden");document.title="Magic Dialer — Setup"}
   }catch(e){}
 }
+async function loadEmail(){
+  try{
+    var r=await fetch("/api/email");var d=await r.json();
+    if(!d.ok)return;
+    $id("smtpHost").value=d.host||"";
+    $id("smtpPort").value=d.port||"";
+    $id("smtpUser").value=d.user||"";
+    $id("smtpFrom").value=d.from||"";
+    $id("smtpPass").value="";
+    var line=$id("emailLine");
+    if(d.configured)line.textContent="Emailing qualified leads to "+(d.contactEmail||"your address")+" through "+d.host+".";
+    else if(!d.contactEmail)line.textContent="Add the lead email address first, then a sending server.";
+    else line.textContent="No sending server yet. Qualified leads are saved to the outbox, not emailed.";
+  }catch(e){}
+}
+async function saveEmail(){
+  var err=$id("emailErr"),msg=$id("emailMsg");
+  err.classList.add("hidden");msg.textContent="";
+  var host=$id("smtpHost").value.trim();
+  var user=$id("smtpUser").value.trim();
+  if(!host){err.textContent="Enter the SMTP server first.";err.classList.remove("hidden");return}
+  if(!user){err.textContent="Enter the SMTP username first.";err.classList.remove("hidden");return}
+  try{
+    var r=await fetch("/api/email",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      host:host,
+      port:$id("smtpPort").value.trim(),
+      user:user,
+      pass:$id("smtpPass").value,
+      from:$id("smtpFrom").value.trim()
+    })});
+    var d=await r.json();
+    if(!d.ok){err.textContent=d.error||"Those settings could not be saved.";err.classList.remove("hidden");return}
+    $id("smtpPass").value="";
+    msg.textContent="Saved. Send a test email to prove the mailbox accepts it.";
+    await loadEmail();
+  }catch(e){err.textContent="Could not reach the engine. Try again in a moment.";err.classList.remove("hidden")}
+}
+async function testEmail(){
+  var err=$id("emailErr"),msg=$id("emailMsg");
+  err.classList.add("hidden");msg.textContent="Sending a test email…";
+  try{
+    var r=await fetch("/api/email/test",{method:"POST"});
+    var d=await r.json();
+    if(!d.ok){err.textContent=d.error||"The test email failed.";err.classList.remove("hidden");msg.textContent="";return}
+    msg.textContent="Test email accepted by the mail server. Check "+(d.to||"your inbox")+".";
+  }catch(e){err.textContent="Could not reach the engine. Try again in a moment.";err.classList.remove("hidden");msg.textContent=""}
+}
+$id("smtpSave").addEventListener("click",saveEmail);
+$id("smtpTest").addEventListener("click",testEmail);
 /* Setup used to end by closing its own window, which left a brand-new customer
  * with no window at all - and therefore no way to reach the AI key field that
  * decides whether the agent can speak. Land them on the dashboard instead. */
@@ -617,7 +740,7 @@ function enterDashboard(){
   $id("doneView").classList.add("hidden");
   $id("dashView").classList.remove("hidden");
   document.title="Magic Dialer — Dashboard";
-  tick();loadLeads();loadCalls();queueTick();loadProviderKey();
+  tick();loadLeads();loadCalls();queueTick();loadProviderKey();loadEmail();
   if(!state.timer)state.timer=setInterval(tick,2000);
 }
 var tickN=0;
@@ -647,7 +770,12 @@ $id("setupForm").addEventListener("submit",async function(ev){
     voipServer:$id("fVoipServer").value.trim(),
     voipExt:$id("fVoipExt").value.trim(),
     voipDomain:$id("fVoipDomain").value.trim(),
-    voipPort:$id("fVoipPort").value.trim()};
+    voipPort:$id("fVoipPort").value.trim(),
+    smtpHost:$id("fSmtpHost").value.trim(),
+    smtpPort:$id("fSmtpPort").value.trim(),
+    smtpUser:$id("fSmtpUser").value.trim(),
+    smtpPass:$id("fSmtpPass").value,
+    smtpFrom:$id("fSmtpFrom").value.trim()};
   $id("setupErr").textContent="";
   var missing=[];
   if(!body.companyName)missing.push("company name");
@@ -1133,6 +1261,74 @@ async function startWebUi(opts) {
       }
       return;
     }
+    if (req.method === "GET" && p === "/api/email") {
+      const cfg = opts.readConfig() || {};
+      const smtp = cfg.smtp && typeof cfg.smtp === "object" ? cfg.smtp : {};
+      sendJson(res, 200, {
+        ok: true,
+        host: String(smtp.host || ""),
+        port: smtp.port || "",
+        user: String(smtp.user || ""),
+        from: String(smtp.from || ""),
+        secure: smtp.secure === true,
+        contactEmail: String(cfg.contactEmail || ""),
+        /* The password is never sent back to the page. */
+        configured: !!(smtp.host && smtp.user && smtp.pass),
+      });
+      return;
+    }
+    if (req.method === "POST" && p === "/api/email") {
+      const body = await readJson(req);
+      if (!body || typeof body !== "object") { sendJson(res, 400, { ok: false, error: "Bad request." }); return; }
+      const host = String(body.host || "").trim();
+      const user = String(body.user || "").trim();
+      const from = String(body.from || "").trim();
+      const pass = String(body.pass || "");
+      const portRaw = String(body.port || "").trim();
+      if (!host || !user) {
+        sendJson(res, 400, { ok: false, error: "SMTP server and username are required." });
+        return;
+      }
+      const cfg = opts.readConfig() || {};
+      const prior = cfg.smtp && typeof cfg.smtp === "object" ? cfg.smtp : {};
+      const portNum = Number(portRaw);
+      cfg.smtp = {
+        ...prior,
+        host,
+        user,
+        pass: pass || prior.pass || "",
+        from: from || prior.from || "",
+        port: Number.isFinite(portNum) && portNum > 0 ? Math.floor(portNum) : prior.port || 587,
+        secure: prior.secure === true,
+      };
+      opts.writeConfig(cfg);
+      sendJson(res, 200, { ok: true, configured: !!(cfg.smtp.host && cfg.smtp.user && cfg.smtp.pass) });
+      return;
+    }
+    if (req.method === "POST" && p === "/api/email/test") {
+      const cfg = opts.readConfig() || {};
+      const to = String(cfg.contactEmail || "").trim();
+      const smtp = cfg.smtp && typeof cfg.smtp === "object" ? cfg.smtp : {};
+      if (!to) { sendJson(res, 400, { ok: false, error: "Set the lead email address first." }); return; }
+      if (!smtp.host || !smtp.user || !smtp.pass) {
+        sendJson(res, 400, { ok: false, error: "Save the SMTP server, username and app password first." });
+        return;
+      }
+      const r = await sendEmail({
+        host: smtp.host,
+        port: smtp.port || 587,
+        secure: smtp.secure === true,
+        user: smtp.user,
+        pass: smtp.pass,
+        from: smtp.from || smtp.user,
+        to,
+        subject: "Magic Dialer email test",
+        text: "This is a test from Magic Dialer. Qualified leads will arrive at this address.",
+      });
+      if (!r.ok) { sendJson(res, 502, { ok: false, error: r.error || "The mail server rejected the test." }); return; }
+      sendJson(res, 200, { ok: true, to });
+      return;
+    }
     if (req.method === "GET" && p === "/api/health") {
       sendJson(res, 200, { ok: true, service: serviceName });
       return;
@@ -1159,6 +1355,19 @@ async function startWebUi(opts) {
       const voipExt = String(body.voipExt || "").trim();
       const voipDomain = String(body.voipDomain || "").trim();
       const voipPortRaw = String(body.voipPort || "").trim();
+      const smtpHost = String(body.smtpHost || "").trim();
+      const smtpPortRaw = String(body.smtpPort || "").trim();
+      const smtpUser = String(body.smtpUser || "").trim();
+      const smtpPass = String(body.smtpPass || "");
+      const smtpFrom = String(body.smtpFrom || "").trim();
+      if (smtpHost && !smtpUser) {
+        sendJson(res, 400, { ok: false, error: "Enter the SMTP username that goes with the server." });
+        return;
+      }
+      if (smtpHost && !contactEmail) {
+        sendJson(res, 400, { ok: false, error: "Enter the email address that should receive qualified leads." });
+        return;
+      }
       const cfg = opts.readConfig() || {};
       cfg.companyName = companyName;
       cfg.product = product;
@@ -1195,6 +1404,21 @@ async function startWebUi(opts) {
           ready: !!(username && sipPassword),
         };
         if (!cfg.voip.port) delete cfg.voip.port;
+      }
+      if (smtpHost || smtpUser || smtpFrom || smtpPortRaw) {
+        /* Merge like voip: a blank password field means "keep the saved one".
+         * Re-saving the sales form must never silently stop lead email. */
+        const prior = cfg.smtp && typeof cfg.smtp === "object" ? cfg.smtp : {};
+        const portNum = Number(smtpPortRaw);
+        cfg.smtp = {
+          ...prior,
+          host: smtpHost || prior.host || "",
+          user: smtpUser || prior.user || "",
+          pass: smtpPass || prior.pass || "",
+          from: smtpFrom || prior.from || "",
+          port: Number.isFinite(portNum) && portNum > 0 ? Math.floor(portNum) : prior.port || 587,
+          secure: prior.secure === true,
+        };
       }
       opts.writeConfig(cfg);
       try { opts.onSetup && opts.onSetup(cfg); } catch {}
