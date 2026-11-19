@@ -13,6 +13,7 @@ $tests = @(
   "agent\vad-turn-boundary.behavior.test.js",
   "agent\vad-adaptive-eos.behavior.test.js",
   "agent\brain-prompt-coverage.behavior.test.js",
+  "agent\language-repair.behavior.test.js",
   "agent\brain-honesty-guard.contract.test.js",
   "agent\stt-turn-budget.contract.test.js",
   "agent\no-silent-turn.behavior.test.js",

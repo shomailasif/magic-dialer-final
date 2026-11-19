@@ -1,7 +1,8 @@
 const { requestId, safeError } = require("./safe-diagnostic");
 const health = require("./gateway-health");
 const { withPortalSlot, withPortalPrioritySlot } = require("./portal-queue");
-const { languageName } = require("./language");
+const { languageName, normalizeLanguage, detectLanguageText } = require("./language");
+const { NON_LATIN_LOCALE, isMostlyNonLatin } = require("./script-guard");
 const { providerKey } = require("./provider-key");
 const localAi = require("./local-ai");
 const localPolicy = require("./local-policy");
@@ -544,25 +545,19 @@ function localTranscript(history) {
 
 /* One offline turn. Throws instead of returning half an answer, so the caller
  * can fall through to the hosted brain without a second decision. */
-async function completeLocal({ history, config, maxTokens, timeoutMs }) {
-  const startedAt = Date.now();
-  /* The decisive turns first, without starting the model. Price, a brush-off,
-   * "where did you get my number" and the MC question are the turns a 1B model
-   * gets wrong, and skipping the sampler makes them instant as well as correct.
-   * An intent with every phrased variant already spent returns null here, so the
-   * conversation still moves. */
-  const policy = localPolicy.policyReply(localPolicy.lastLeadLine(history), { config, history });
-  if (policy) {
-    return {
-      ok: true,
-      text: policy.text,
-      model: "local-policy",
-      path: "local-policy",
-      intent: policy.intent,
-      elapsedMs: Date.now() - startedAt,
-      usage: null,
-    };
-  }
+function policyTurn(policy, startedAt) {
+  return {
+    ok: true,
+    text: policy.text,
+    model: "local-policy",
+    path: "local-policy",
+    intent: policy.intent,
+    elapsedMs: Date.now() - startedAt,
+    usage: null,
+  };
+}
+
+async function localModelTurn({ history, config, maxTokens, timeoutMs, startedAt }) {
   const budget = Math.max(1500, Math.min(Number(timeoutMs) || LOCAL_TURN_TIMEOUT_MS, LOCAL_TURN_TIMEOUT_MS));
   const messages = [
     { role: "system", content: localSystemPrompt(config) },
@@ -613,6 +608,32 @@ async function completeLocal({ history, config, maxTokens, timeoutMs }) {
     elapsedMs: Date.now() - startedAt,
     usage: r.usage || null,
   };
+}
+
+async function completeLocal({ history, config, maxTokens, timeoutMs }) {
+  const startedAt = Date.now();
+  const loc = normalizeLanguage(config && config.locale, "en");
+  /* The decisive turns first, without starting the model. Price, a brush-off,
+   * "where did you get my number" and the MC question are the turns a 1B model
+   * gets wrong, and skipping the sampler makes them instant as well as correct.
+   * An intent with every phrased variant already spent returns null here, so the
+   * conversation still moves.
+   *
+   * Those lines are English, so a call configured for another language cannot
+   * use them: it would speak English to an Urdu or Spanish prospect for the
+   * whole call, which is what the language repair exists to stop. There the
+   * model gets the turn (its prompt names the language) and the policy is the
+   * fallback when the model's answer is unusable. */
+  const policy = localPolicy.policyReply(localPolicy.lastLeadLine(history), { config, history });
+  if (policy && loc === "en") return policyTurn(policy, startedAt);
+  try {
+    return await localModelTurn({ history, config, maxTokens, timeoutMs, startedAt });
+  } catch (err) {
+    /* An English line in the wrong language is poor; a silent turn is worse.
+     * The offline path has no second model to fall through to. */
+    if (policy) return policyTurn(policy, startedAt);
+    throw err;
+  }
 }
 
 /* Load the model and cache the prompt prefix while the phone is still ringing.
@@ -835,23 +856,100 @@ function guardReply(text, transcript, config) {
   return out;
 }
 
+/* ---- spoken language compliance ----
+ *
+ * A call configured for Urdu was answered in English: the 20b fallback ignored
+ * the ACTIVE CONVERSATION LANGUAGE line and the offline policy only speaks
+ * English, so the prospect heard the wrong language for the whole call. Naming
+ * the language in the prompt is necessary but not sufficient, so the reply is
+ * checked and one repair turn is spent before it is spoken.
+ *
+ * The check is deliberately narrow. It answers one question - "is this plain
+ * English on a call that is not in English?" - because a false positive costs a
+ * round trip and a false negative is what shipped the bug. It does not grade
+ * fluency, and it never rewrites a reply itself: the model gets the correction,
+ * and if it still fails the first answer is spoken rather than nothing.
+ */
+const ENGLISH_WORDS =
+  /\b(?:the|is|are|you|your|we|our|and|to|of|a|an|for|with|that|this|what|how|can|could|will|would|do|does|have|has|it|i'm|i've|not|from|about|there|here)\b/gi;
+
+/** True when the text reads as ordinary English rather than a Latin-script
+ *  rendering of another language. Roman Urdu ("Aap kaise hain, dispatch
+ *  chahiye?") contains almost none of these words; an English sentence is
+ *  mostly made of them. */
+function looksEnglish(text) {
+  const words = String(text || "").match(/[A-Za-z][A-Za-z']*/g) || [];
+  if (words.length < 4) return false;
+  const hits = String(text || "").match(ENGLISH_WORDS) || [];
+  return hits.length / words.length >= 0.25;
+}
+
+/** True when a reply is plausibly in the configured language. */
+function replyLanguageOk(text, locale) {
+  const loc = normalizeLanguage(locale, "en");
+  if (loc === "en") return true;
+  const s = String(text || "");
+  if ((s.replace(/[^\p{L}\p{N}]/gu, "") || "").length < 4) return true;
+  if (isMostlyNonLatin(s)) return true; // the right script, or at least not English
+  const guessed = detectLanguageText(s, null);
+  if (guessed === loc) return true; // "Hola, no hablo ingles" on an es call
+  if (looksEnglish(s)) return false; // the shipped defect
+  /* Latin text that no marker recognises is not evidence of the wrong language:
+   * short replies and Roman Urdu look exactly like this. Only a confident
+   * English match is repaired. */
+  return guessed === null || !NON_LATIN_LOCALE.has(loc);
+}
+
+/** One correction turn in the configured language, or the original reply when
+ *  the model will not comply. English is bad, silence is worse. */
+async function speakInConfiguredLanguage(history, config, first, opts = {}) {
+  const loc = normalizeLanguage(config && config.locale, "en");
+  if (!first || !first.text || replyLanguageOk(first.text, loc)) return first;
+  const ask = opts.ask || complete;
+  const repaired = await ask({
+    history: [
+      ...history,
+      { role: "assistant", content: String(first.text) },
+      { role: "user", content: `Say that again in ${languageName(loc)} only. The last reply was in English. Same meaning, one or two short spoken sentences, no explanation.` },
+    ],
+    config,
+    maxTokens: opts.maxTokens,
+  });
+  if (repaired && repaired.text && replyLanguageOk(repaired.text, loc)) return repaired;
+  console.log(`[brain] reply was not in ${loc}; one repair turn did not fix it, speaking the original`);
+  return first;
+}
+
 async function nextTurn({ transcript, ...config }) {
   const history = (transcript || []).filter((x) => x && x.text && !String(x.text).startsWith("(silence)"))
     .map((x) => ({ role: x.role === "agent" ? "assistant" : "user", content: String(x.text) }));
-  const r = await complete({ history, config });
-  if (r && r.text) r.text = guardReply(r.text, transcript, config);
+  let r = await complete({ history, config });
+  if (!r || !r.text) return r;
+  /* Safety first, then language. The guard replaces an invented figure with a
+   * neutral English line; repairing that line into the call's language is the
+   * point, so the order matters. The repaired text is guarded again: a
+   * translation turn that invents its own number keeps the safe English line
+   * rather than speaking it. */
+  r.text = guardReply(r.text, transcript, config);
+  const spoken = await speakInConfiguredLanguage(history, config, r);
+  if (spoken !== r) {
+    const safe = guardReply(spoken.text, transcript, config);
+    if (safe !== spoken.text) {
+      console.log("[brain] language repair introduced a fact the guard refuses; speaking the guarded line");
+    } else {
+      r = spoken;
+    }
+  }
   return r;
 }
 
 async function opening(config) {
-  return complete({
-    history: [{
-      role: "user",
-      content: "Start this OUTBOUND sales call now with one brief natural spoken sentence in the active conversation language. Introduce yourself and the company, then stop — do not ask how you can help, do not say this is a sales call, do not use inbound/receptionist wording, do not list questions, and do not mention AI or automation.",
-    }],
-    config,
-    maxTokens: DEFAULT_ANSWER_TOKENS,
-  });
+  const history = [{
+    role: "user",
+    content: "Start this OUTBOUND sales call now with one brief natural spoken sentence in the active conversation language. Introduce yourself and the company, then stop - do not ask how you can help, do not say this is a sales call, do not use inbound/receptionist wording, do not list questions, and do not mention AI or automation.",
+  }];
+  const first = await complete({ history, config, maxTokens: DEFAULT_ANSWER_TOKENS });
+  return speakInConfiguredLanguage(history, config, first, { maxTokens: DEFAULT_ANSWER_TOKENS });
 }
 
   async function preflightBrain(config) {
@@ -884,4 +982,4 @@ async function opening(config) {
   return true;
 }
 
-module.exports = { complete, nextTurn, opening, preflightBrain, warmLocal, localSystemPrompt, systemPrompt, clean, guardReply, trimToCompleteSentence, DEFAULT_ANSWER_TOKENS, MAX_ANSWER_TOKENS };
+module.exports = { complete, nextTurn, opening, preflightBrain, warmLocal, localSystemPrompt, systemPrompt, clean, guardReply, trimToCompleteSentence, replyLanguageOk, looksEnglish, speakInConfiguredLanguage, DEFAULT_ANSWER_TOKENS, MAX_ANSWER_TOKENS };
